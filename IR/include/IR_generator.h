@@ -330,11 +330,12 @@ public:
   void Visit(EnumVariants *enum_variants_ptr) override;
   void Visit(AssociatedItem *associated_item_ptr) override;
   void Output(std::ofstream &file);
+  [[nodiscard]] const std::vector<IRFunctionNode> &GetIRFunctions() const;
+  [[nodiscard]] const std::vector<IRStructNode> &GetIRStructs() const;
 private:
   void AddFunction(const std::shared_ptr<IntegratedType> &return_type);
   void AddStruct();
   std::pair<int, bool> GetTypeSize(const std::shared_ptr<IntegratedType> &type); // the returned pair is <size, has_int>
-  void InitializeArrayByLoop();
   void RecursiveInitialize(const Node *expression_ptr, int ptr_id);
   void DeclareItems(const std::shared_ptr<ScopeNode> &new_scope);
   int GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr<IntegratedType> &expected_type);

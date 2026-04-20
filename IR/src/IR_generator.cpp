@@ -2694,3 +2694,11 @@ void IRVisitor::Output(std::ofstream &file) {
     file << "}\n\n";
   }
 }
+
+const std::vector<IRFunctionNode> &IRVisitor::GetIRFunctions() const {
+  return this->functions_;
+}
+
+const std::vector<IRStructNode> &IRVisitor::GetIRStructs() const {
+  return this->structs_;
+}
