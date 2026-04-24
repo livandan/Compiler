@@ -117,6 +117,7 @@ protected:
   friend class ValueTypeVisitor;
   friend class IRVisitor;
   friend struct Value;
+  friend class CodeGenerator;
   std::vector<Node *> children_;
   std::vector<NodeType> type_;
   const std::vector<Token> &tokens_;
