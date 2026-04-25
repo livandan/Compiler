@@ -332,6 +332,7 @@ public:
   void Output(std::ofstream &file);
   [[nodiscard]] const std::vector<IRFunctionNode> &GetIRFunctions() const;
   [[nodiscard]] const std::vector<IRStructNode> &GetIRStructs() const;
+  [[nodiscard]] int GetMainFuncID() const;
 private:
   void AddFunction(const std::shared_ptr<IntegratedType> &return_type);
   void AddStruct();

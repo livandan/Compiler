@@ -52,7 +52,8 @@ struct RISCVBlock {
 };
 
 struct RISCVFunctionNode {
-  int stack_space;
+  explicit RISCVFunctionNode(const int stack_space = 0) : stack_space_(stack_space) {}
+  int stack_space_;
   std::vector<RISCVBlock> blocks_;
   std::map<int, int> location_;
 };
@@ -65,11 +66,11 @@ public:
   int ComputeStackSpace(int func_id) const;
   std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
   void Generate();
-  void Output(const std::string &filename) const;
+  void Output(std::ofstream &output_file) const;
 private:
   const std::vector<IRFunctionNode> &IR_functions_;
   const std::vector<IRStructNode> &IR_structs_;
-  const std::vector<RISCVFunctionNode> RISCV_functions_;
+  std::vector<RISCVFunctionNode> RISCV_functions_;
   const int main_func_id_;
   int current_func_id_ = 8;
 };

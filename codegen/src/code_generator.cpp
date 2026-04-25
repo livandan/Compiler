@@ -96,13 +96,16 @@ int CodeGenerator::ComputeStackSpace(int func_id) const {
 }
 
 void CodeGenerator::Generate() {
-
+  RISCV_functions_.resize(IR_functions_.size());
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    const int space = ComputeStackSpace(i);
+    RISCV_functions_[i].stack_space_ = space;
+  }
 }
 
-void CodeGenerator::Output(const std::string &filename) const {
+void CodeGenerator::Output(std::ofstream &output_file) const {
   std::ifstream builtin_fn("../RCompiler-Testcases/IR-1/builtin/builtin_fn.txt");
   std::ifstream builtin_str("../RCompiler-Testcases/IR-1/builtin/builtin_str.txt");
-  std::ofstream output_file(filename);
   std::string line_in_file;
   if (builtin_fn.is_open()) {
     if (output_file.is_open()) {

@@ -2702,3 +2702,7 @@ const std::vector<IRFunctionNode> &IRVisitor::GetIRFunctions() const {
 const std::vector<IRStructNode> &IRVisitor::GetIRStructs() const {
   return this->structs_;
 }
+
+int IRVisitor::GetMainFuncID() const {
+  return this->main_function_id_;
+}
