@@ -7,7 +7,7 @@
 #include "IR_generator.h"
 #include "code_generator.h"
 
-TEST(IRTestBatch, debugging_test) {
+TEST(CodegenTestSingle, debugging_test) {
   const std::string file = "../RCompiler-Testcases/working_space/debugging";
   const std::string code_file = file + ".rx";
   const std::string IR_file = file + ".ll";
