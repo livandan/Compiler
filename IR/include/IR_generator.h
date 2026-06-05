@@ -3,6 +3,7 @@
 
 #include "visitor_frame.h"
 #include "node.h"
+#include <set>
 
 enum IRInstructionType {
   unknown_, two_var_binary_operation_, var_const_binary_operation_,
@@ -246,6 +247,12 @@ struct IRBlock {
     }
   } /* is_value varies from 0b000 to 0b111,
   the three bits represent the condition / first value / second value is literal value */
+  void AddPhi(const int result_id, const std::shared_ptr<IntegratedType> &type,
+      const int value0, const int label0, const int value1, const int label1, const int is_value) {
+    instructions_.push_back(IRInstruction(phi_, result_id, add_, type,
+        value0, value1, 0, label0, label1,
+        0, 0, equal_, is_value));
+  } /* is_value varies from 0b00 to 0b11, representing the value0 / value1 is literal value. */
   void AddBuiltinMemset(const int size, const bool is_all_1, const int dest_ptr) {
     instructions_.push_back(IRInstruction(builtin_memset_, size, add_, nullptr,
         (is_all_1 ? 1 : 0), 0, 0, 0, 0, 0, dest_ptr,
@@ -340,6 +347,8 @@ private:
   void RecursiveInitialize(const Node *expression_ptr, int ptr_id);
   void DeclareItems(const std::shared_ptr<ScopeNode> &new_scope);
   int GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr<IntegratedType> &expected_type);
+  int GetPreviousBlockHelper(int func_id, int start_block, int target_block, std::set<int> &visited_block) const;
+  [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);
   void Print(std::ofstream &file, const IRInstruction &instruction);
   std::vector<IRFunctionNode> functions_;

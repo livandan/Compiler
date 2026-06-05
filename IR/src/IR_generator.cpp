@@ -347,6 +347,51 @@ int IRVisitor::GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr
   return variable_id;
 }
 
+int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
+    std::set<int> &visited_block) const {
+  const auto &last_instruction = functions_[func_id].blocks_.at(start_block).instructions_.back();
+  if (last_instruction.instruction_type_ == unconditional_br_) {
+    const int next_block = last_instruction.destination_;
+    if (next_block == target_block) {
+      return start_block;
+    }
+    if (visited_block.contains(next_block)) {
+      return -1;
+    }
+    visited_block.insert(next_block);
+    return GetPreviousBlockHelper(func_id, next_block, target_block, visited_block);
+  }
+  if (functions_[func_id].blocks_.at(start_block).instructions_.back().instruction_type_ == conditional_br_) {
+    const int block1 = last_instruction.if_true_, block2 = last_instruction.if_false_;
+    if (visited_block.contains(block1) && visited_block.contains(block2)) {
+      return -1;
+    }
+    if (visited_block.contains(block1)) { // block2 has not been visited
+      visited_block.insert(block2);
+      return GetPreviousBlockHelper(func_id, block2, target_block, visited_block);
+    }
+    if (visited_block.contains(block2)) { // block1 has not been visited
+      visited_block.insert(block1);
+      return GetPreviousBlockHelper(func_id, block1, target_block, visited_block);
+    }
+    // block1 and block2 all not been visited
+    visited_block.insert(block1);
+    const int ans1 = GetPreviousBlockHelper(func_id, block1, target_block, visited_block);
+    if (ans1 != -1 || visited_block.contains(block2)) {
+      return ans1;
+    }
+    visited_block.insert(block2);
+    return GetPreviousBlockHelper(func_id, block2, target_block, visited_block);
+  }
+  return -1;
+}
+
+int IRVisitor::GetPreviousBlock(const int func_id, const int start_block, const int target_block) const {
+  std::set<int> visited_block;
+  visited_block.insert(start_block);
+  return GetPreviousBlockHelper(func_id, start_block, target_block, visited_block);
+}
+
 void IRVisitor::Visit(Trait *trait_ptr) {}
 void IRVisitor::Visit(Implementation *implementation_ptr) {}
 void IRVisitor::Visit(Enumeration *enumeration_ptr) {}
@@ -877,10 +922,18 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             block_stack_.back() = exit_if_block_id;
             if (if_block_value != -1 && expression_ptr->children_.back()->IR_ID_ != -1) {
               expression_ptr->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-              functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddSelect(0b000,
-                  expression_ptr->IR_ID_, expression_ptr->children_[2]->IR_ID_,
-                  expression_ptr->integrated_type_, if_block_value,
-                  expression_ptr->integrated_type_, expression_ptr->children_.back()->IR_ID_);
+              const int if_end_block = GetPreviousBlock(wrapping_functions_.back(), if_block_id,
+                  exit_if_block_id);
+              const int else_end_block = GetPreviousBlock(wrapping_functions_.back(), else_block_id,
+                  exit_if_block_id);
+              functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddPhi(
+                  expression_ptr->IR_ID_, expression_ptr->integrated_type_,
+                  if_block_value, if_end_block,
+                  expression_ptr->children_.back()->IR_ID_, else_end_block, 0b00);
+              // functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddSelect(0b000,
+              //     expression_ptr->IR_ID_, expression_ptr->children_[2]->IR_ID_,
+              //     expression_ptr->integrated_type_, if_block_value,
+              //     expression_ptr->integrated_type_, expression_ptr->children_.back()->IR_ID_);
             } else if (if_block_value != -1) {
               expression_ptr->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
               functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddSelect(0b100,
@@ -1590,6 +1643,9 @@ void IRVisitor::Visit(Expression *expression_ptr) {
                     expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
                     expression_ptr->children_[1]->IR_var_ID_);
               }
+              // function.blocks_[block_stack_.back()].AddVarConstIcmp(false_block_ans_id,
+              //     equal_, expression_ptr->children_[1]->integrated_type_,
+              //     expression_ptr->children_[1]->IR_ID_, 1);
               function.blocks_[block_stack_.back()].AddSelect(0b011, false_block_ans_id,
                   expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
                   1, expression_ptr->children_[1]->integrated_type_, 0);
@@ -1598,10 +1654,16 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             // merge
             block_stack_.back() = merged_label;
             expression_ptr->IR_ID_ = function.var_id_++;
-            function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
-                expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
-                false_block_ans_id);
+            const int if_true_end_block = GetPreviousBlock(wrapping_functions_.back(), if_true_block_label,
+                merged_label);
+            const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
+                merged_label);
+            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+                true_block_ans_id, if_true_end_block, false_block_ans_id, if_false_end_block, 0b00);
+            // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
+            //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+            //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
+            //     false_block_ans_id);
           }
           break;
         }
@@ -1669,6 +1731,8 @@ void IRVisitor::Visit(Expression *expression_ptr) {
                     expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
                     expression_ptr->children_[1]->IR_var_ID_);
               }
+              // function.blocks_[block_stack_.back()].AddVarConstIcmp(true_block_ans_id, equal_,
+              //     expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_, 1);
               function.blocks_[block_stack_.back()].AddSelect(0b011, true_block_ans_id,
                   expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
                   1, expression_ptr->children_[1]->integrated_type_, 0);
@@ -1684,10 +1748,16 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             // merge
             block_stack_.back() = merged_label;
             expression_ptr->IR_ID_ = function.var_id_++;
-            function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
-                expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
-                false_block_ans_id);
+            const int if_true_end_block = GetPreviousBlock(wrapping_functions_.back(), if_true_block_label,
+                merged_label);
+            const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
+                merged_label);
+            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+                true_block_ans_id, if_true_end_block, false_block_ans_id, if_false_end_block, 0b00);
+            // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
+            //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+            //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
+            //     false_block_ans_id);
           }
           break;
         }
@@ -2503,7 +2573,18 @@ void IRVisitor::Print(std::ofstream &file, const IRInstruction &instruction) {
       break;
     }
     case phi_: {
-      IRThrow("No phi function.");
+      file << "%var." << instruction.result_id_ << " = phi ";
+      OutputType(file, instruction.result_type_);
+      if ((instruction.function_name_ & 0b10) != 0) { // the first value is literal value
+        file << " [ " << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
+      } else {
+        file << " [ %var." << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
+      }
+      if ((instruction.function_name_ & 0b01) != 0) { // the second value is literal value
+        file << "[ " << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
+      } else {
+        file << "[ %var." << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
+      }
       break;
     }
     case value_select_ii_: {
