@@ -22,10 +22,19 @@ struct RISCVInstruction {
       imm_(imm), label_(label) {}
 };
 
+struct MoveInstruction {
+  int src_, dest_;
+  const std::shared_ptr<IntegratedType> &type_;
+  bool src_is_value_;
+  MoveInstruction(const int src, const int dest, const std::shared_ptr<IntegratedType> &type, const bool src_is_value)
+      : src_(src), dest_(dest), type_(type), src_is_value_(src_is_value) {}
+};
+
 void CodegenThrow(const std::string &err_info);
 
 struct RISCVBlock {
   std::vector<RISCVInstruction> instructions_;
+  std::vector<MoveInstruction> move_instructions_;
   void PushArithmetic_R(const RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
     if (type < 1 || type > 10) {
       CodegenThrow("Incorrectly use PushArithmetic_R(...).");
@@ -200,6 +209,9 @@ struct RISCVBlock {
   void PushCall(const bool is_builtin, const int func_id) {
     instructions_.push_back(RISCVInstruction(r_call_, is_builtin ? 1 : 0, -1, -1, -1, func_id));
   } // builtin: 1-print; 2-println; 3-printInt; 4-printlnInt; 5-getString; 6-getInt; 7-builtin_memset; 8-builtin_memcpy
+  void PushMove(const std::shared_ptr<IntegratedType> &type, const bool src_is_value, const int src, const int dest) {
+    move_instructions_.push_back(MoveInstruction(src, dest, type, src_is_value));
+  }
 };
 
 struct RISCVFunctionNode {
@@ -208,6 +220,85 @@ struct RISCVFunctionNode {
   RISCVBlock alloca_block_;
   std::map<int, RISCVBlock> blocks_;
   std::map<int, std::pair<bool, int>> location_; // int, bool, int: var_id, is_in_register, location
+};
+
+struct BlockJumping {
+  int from, to;
+};
+
+struct AssignmentGraph {
+private:
+  const int max_n_;
+  struct Edge { // u -> v means v = u
+    int to, next;
+    const std::shared_ptr<IntegratedType> &type;
+  };
+  std::vector<int> heads_;
+  std::vector<int> status_; // 0: not ready; 1: ready; 2: temporarily stored
+  std::vector<Edge> edges_;
+  std::map<int, int> tmp_store_;
+public:
+  explicit AssignmentGraph(const int max_n) : max_n_(max_n) {
+    heads_.resize(max_n_);
+    status_.resize(max_n_);
+    edges_.resize(0);
+    for (int i = 0; i < max_n_; ++i) {
+      heads_[i] = -1;
+      status_[i] = 0;
+    }
+  }
+  void AddEdge(const int src, const int dest, const std::shared_ptr<IntegratedType> &type) {
+    edges_.push_back({dest, heads_[src], type});
+    heads_[src] = static_cast<int>(edges_.size()) - 1;
+  }
+  void EliminateCycles(const BlockJumping block_jump, int &tmp_var_id, std::map<int, RISCVBlock> &blocks) {
+    while (true) {
+      for (int i = 0; i < max_n_; ++i) {
+        for (int edge_id = heads_[i], previous_edge_id = -1; edge_id != -1;
+            previous_edge_id = edge_id, edge_id = edges_[edge_id].next) {
+          const Edge &edge = edges_[edge_id];
+          int src = i;
+          if (status_[i] == 2) {
+            src = tmp_store_[i];
+          }
+          if (status_[edge.to]) {
+            blocks[block_jump.from].PushMove(edge.type, false, src, edge.to);
+            if (previous_edge_id == -1) {
+              heads_[i] = edge.next;
+            } else {
+              edges_[previous_edge_id].next = edge.next;
+            }
+          }
+        }
+      }
+      bool finished = true;
+      bool stuck = true;
+      for (int i = 0; i < max_n_; ++i) {
+        if (heads_[i] != -1) {
+          finished = false;
+        }
+        if (status_[i] == 0) {
+          if (heads_[i] == -1) {
+            status_[i] = 1;
+            stuck = false;
+          }
+        }
+      }
+      if (finished) {
+        return;
+      }
+      if (stuck) {
+        int to_be_stored = -1;
+        for (int i = 0; i < max_n_; ++i) {
+          if (heads_[i] != -1 && status_[i] == 0) {
+            to_be_stored = i;
+          }
+        }
+        blocks[block_jump.from].PushMove(edges_[heads_[to_be_stored]].type, false, to_be_stored, tmp_var_id++);
+        status_[to_be_stored] = 2;
+      }
+    }
+  }
 };
 
 struct ParameterPassPosition {
@@ -221,15 +312,16 @@ public:
   explicit CodeGenerator(const std::vector<IRFunctionNode> &functions,
       const std::vector<IRStructNode> &structs, const int main_func_id)
       : IR_functions_(functions), IR_structs_(structs), main_func_id_(main_func_id) {}
+  void Generate();
+  void Output(std::ofstream &output_file) const;
+private:
   [[nodiscard]] std::pair<bool, int> GetParamPassPos(int function_id, int param_id) const;
+  void PhiToMove();
   void MemAlloc(int func_id);
   [[nodiscard]] int RegSavedLocation(int func_id, int reg_id) const; // return the relative address to the stack pointer
   void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
-  void Generate();
-  void Output(std::ofstream &output_file) const;
-private:
   const std::vector<IRFunctionNode> &IR_functions_;
   const std::vector<IRStructNode> &IR_structs_;
   std::vector<RISCVFunctionNode> RISCV_functions_;

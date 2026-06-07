@@ -85,6 +85,44 @@ std::pair<bool, int> CodeGenerator::GetParamPassPos(const int function_id, const
   return {false, -(RISCV_functions_[function_id].stack_space_ - RISCV_functions_[function_id].location_.at(param_id).second)};
 } // {true, reg_id} or {false, neg_offset}
 
+void CodeGenerator::PhiToMove() {
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    std::map<BlockJumping, AssignmentGraph> assign_relations;
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      for (const auto &instruction : block.instructions_) {
+        if (instruction.instruction_type_ == phi_) {
+          if (instruction.function_name_ & 0b10) { // value0 is literal value
+            RISCV_functions_[i].blocks_[instruction.if_true_].PushMove(instruction.result_type_,
+                true, instruction.operand_1_id_, instruction.result_id_);
+          } else {
+            if (!assign_relations.contains({instruction.if_true_, block_id})) {
+              assign_relations.insert(std::pair<BlockJumping, AssignmentGraph>(
+                  {instruction.if_true_, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
+            }
+            assign_relations[{instruction.if_true_, block_id}].AddEdge(instruction.operand_1_id_,
+                instruction.result_id_, instruction.result_type_);
+          }
+          if (instruction.function_name_ & 0b01) { // value1 is literal value
+            RISCV_functions_[i].blocks_[instruction.if_false_].PushMove(instruction.result_type_,
+                true, instruction.operand_2_id_, instruction.result_id_);
+          } else {
+            if (!assign_relations.contains({instruction.if_false_, block_id})) {
+              assign_relations.insert(std::pair<BlockJumping, AssignmentGraph>(
+                  {instruction.if_false_, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
+            }
+            assign_relations[{instruction.if_false_, block_id}].AddEdge(instruction.operand_2_id_,
+                instruction.result_id_, instruction.result_type_);
+          }
+        }
+      }
+    }
+    int tmp_var_id = IR_functions_[i].var_id_;
+    for (auto &[block_jump, graph] : assign_relations) {
+      graph.EliminateCycles(block_jump, tmp_var_id, RISCV_functions_[i].blocks_);
+    }
+  }
+}
+
 void CodeGenerator::MemAlloc(const int func_id) {
   int &space = RISCV_functions_[func_id].stack_space_;
   space = 112; // 28 * 4 bytes for register saving
@@ -92,7 +130,11 @@ void CodeGenerator::MemAlloc(const int func_id) {
   for (int i = 0; i < IR_functions_[func_id].parameter_types_.size(); ++i) {
     if (used_register == 8 || IR_functions_[func_id].parameter_types_[i]->basic_type == array_type
         || IR_functions_[func_id].parameter_types_[i]->basic_type == struct_type) {
+      const auto [need_space, need_alignment] = GetSize(IR_functions_[func_id].parameter_types_[i]);
       space += GetSize(IR_functions_[func_id].parameter_types_[i]).first;
+      if (need_alignment && space % 4 != 0) {
+        space = space - space % 4 + 4;
+      }
       RISCV_functions_[func_id].location_[i] = {false, space};
     } else {
       RISCV_functions_[func_id].location_[i] = {true, used_register + 10};
@@ -114,10 +156,10 @@ void CodeGenerator::MemAlloc(const int func_id) {
           || instruction.instruction_type_ == non_void_call_
           || (instruction.instruction_type_ == builtin_call_ && instruction.function_name_ == 2)) {
         const auto [need_space, need_alignment] = GetSize(instruction.result_type_);
+        space += need_space;
         if (need_alignment && space % 4 != 0) {
           space = space - space % 4 + 4;
         }
-        space += need_space;
         RISCV_functions_[func_id].location_[instruction.result_id_] = {false, space};
       } else if (instruction.instruction_type_ == value_select_ii_
           || instruction.instruction_type_ == value_select_iv_
@@ -131,17 +173,17 @@ void CodeGenerator::MemAlloc(const int func_id) {
           CodegenThrow("The type in the select instruction is neither int nor bool! Check and polish the interpretation to enable select instruction to handle other types!");
         }
         const auto [need_space, need_alignment] = GetSize(instruction.result_type_);
+        space += need_space;
         if (need_alignment && space % 4 != 0) {
           space = space - space % 4 + 4;
         }
-        space += need_space;
         RISCV_functions_[func_id].location_[instruction.result_id_] = {false, space};
       } else if (instruction.instruction_type_ == get_element_ptr_by_value_
           || instruction.instruction_type_ == get_element_ptr_by_variable_) {
+        space += 4;
         if (space % 4 != 0) {
           space = space - space % 4 + 4;
         }
-        space += 4;
         RISCV_functions_[func_id].location_[instruction.result_id_] = {false, space};
       } else if (instruction.instruction_type_ == two_var_icmp_
           || instruction.instruction_type_ == var_const_icmp_
@@ -151,43 +193,22 @@ void CodeGenerator::MemAlloc(const int func_id) {
       }
     }
   }
-  space = (space + 3) / 4 * 4;
-
-  // Calculate the relative address to sp.
-  for (int i = 0; i < IR_functions_[func_id].parameter_types_.size(); ++i) {
-    if (RISCV_functions_[func_id].location_[i].first == false) {
-      RISCV_functions_[func_id].location_[i].second = space - RISCV_functions_[func_id].location_[i].second;
+  for (const auto &[block_id, block] : IR_functions_[func_id].blocks_) {
+    for (const auto &mv_instruction : RISCV_functions_[func_id].blocks_[block_id].move_instructions_) {
+      if (!RISCV_functions_[func_id].location_.contains(mv_instruction.dest_)) {
+        const auto [need_space, need_alignment] = GetSize(mv_instruction.type_);
+        space += need_space;
+        if (need_alignment && space % 4 != 0) {
+          space = space - space % 4 + 4;
+        }
+        RISCV_functions_[func_id].location_[mv_instruction.dest_] = {false, space};
+      }
     }
   }
-  for (const auto &instruction : IR_functions_[func_id].alloca_instructions_) {
-    RISCV_functions_[func_id].location_[instruction.result_id_].second
-        = space - RISCV_functions_[func_id].location_[instruction.result_id_].second;
-  }
-  for (const auto &[block_id, block] : IR_functions_[func_id].blocks_) {
-    for (const auto &instruction : block.instructions_) {
-      if (instruction.instruction_type_ == two_var_binary_operation_
-          || instruction.instruction_type_ == var_const_binary_operation_
-          || instruction.instruction_type_ == const_var_binary_operation_
-          || instruction.instruction_type_ == load_
-          || instruction.instruction_type_ == ptr_load_
-          || instruction.instruction_type_ == non_void_call_
-          || instruction.instruction_type_ == builtin_call_
-          || instruction.instruction_type_ == get_element_ptr_by_value_
-          || instruction.instruction_type_ == get_element_ptr_by_variable_
-          || instruction.instruction_type_ == two_var_icmp_
-          || instruction.instruction_type_ == var_const_icmp_
-          || instruction.instruction_type_ == const_var_icmp_
-          || instruction.instruction_type_ == value_select_ii_
-          || instruction.instruction_type_ == value_select_iv_
-          || instruction.instruction_type_ == value_select_vi_
-          || instruction.instruction_type_ == value_select_vv_
-          || instruction.instruction_type_ == variable_select_ii_
-          || instruction.instruction_type_ == variable_select_iv_
-          || instruction.instruction_type_ == variable_select_vi_
-          || instruction.instruction_type_ == variable_select_vv_) {
-        RISCV_functions_[func_id].location_[instruction.result_id_].second
-            = space - RISCV_functions_[func_id].location_[instruction.result_id_].second;
-      }
+  space = (space + 3) / 4 * 4;
+  for (const auto [var_id, location] : RISCV_functions_[func_id].location_) {
+    if (!location.first) {
+      RISCV_functions_[func_id].location_[var_id].second = space - RISCV_functions_[func_id].location_[var_id].second;
     }
   }
 }
@@ -275,6 +296,7 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
 
 void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
+  PhiToMove();
   for (int i = 0; i < IR_functions_.size(); ++i) {
     MemAlloc(i);
   }
@@ -299,7 +321,6 @@ void CodeGenerator::Generate() {
     bb0.PushJ(IR_functions_[i].blocks_.begin()->first);
     // blocks
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
-      RISCV_functions_[i].blocks_[block_id] = RISCVBlock();
       auto &r_block = RISCV_functions_[i].blocks_[block_id];
       for (const auto &instruction : block.instructions_) {
         switch (instruction.instruction_type_) {
@@ -673,7 +694,6 @@ void CodeGenerator::Generate() {
             break;
           }
           case ptr_store_: {
-            const auto [store_size, need_alignment] = GetSize(instruction.result_type_);
             auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
               r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
@@ -1580,11 +1600,11 @@ void CodeGenerator::Generate() {
                 }
                 break;
               }
+              default:;
             }
             break;
           }
-          case phi_: {
-            CodegenThrow("Phi instruction has not been interpreted.");
+          case phi_: { // already transformed into move instructions
             break;
           }
           case value_select_ii_: {
@@ -1680,6 +1700,22 @@ void CodeGenerator::Generate() {
             break;
           }
           default:;
+        }
+      }
+      for (const auto &mv_instruction : r_block.move_instructions_) {
+        const auto [dest_in_reg, dest_location] = RISCV_functions_[i].location_[mv_instruction.dest_];
+        if (mv_instruction.src_is_value_) {
+          if (dest_in_reg) {
+            r_block.PushLi(dest_location, mv_instruction.src_);
+          } else if (mv_instruction.type_->basic_type == bool_type) {
+            r_block.PushLi(5, mv_instruction.src_);
+            r_block.PushMemory_S(r_sb_, 5, dest_location, 2);
+          } else {
+            r_block.PushLi(5, mv_instruction.src_);
+            r_block.PushMemory_S(r_sw_, 5, dest_location, 2);
+          }
+        } else { // the src is a variable
+          VariableAssignment(i, r_block, mv_instruction.dest_, mv_instruction.src_, mv_instruction.type_);
         }
       }
     }
