@@ -208,7 +208,7 @@ struct RISCVBlock {
   }
   void PushCall(const bool is_builtin, const int func_id) {
     instructions_.push_back(RISCVInstruction(r_call_, is_builtin ? 1 : 0, -1, -1, -1, func_id));
-  } // builtin: 1-print; 2-println; 3-printInt; 4-printlnInt; 5-getString; 6-getInt; 7-builtin_memset; 8-builtin_memcpy
+  } // builtin: 0-print; 1-println; 2-printInt; 3-printlnInt; 4-getString; 5-getInt; 6-builtin_memset; 7-builtin_memcpy
   void PushMove(const std::shared_ptr<IntegratedType> &type, const bool src_is_value, const int src, const int dest) {
     move_instructions_.push_back(MoveInstruction(src, dest, type, src_is_value));
   }
@@ -322,6 +322,14 @@ private:
   void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
+  void PrintReg(std::ofstream &file, int reg) const;
+  void PrintLabel(std::ofstream &file, int label, int func_id) const;
+  void Print_AR(std::ofstream &file, const RISCVInstruction &instruction) const;
+  void Print_AI(std::ofstream &file, const RISCVInstruction &instruction) const;
+  void Print_MI(std::ofstream &file, const RISCVInstruction &instruction) const;
+  void Print_MS(std::ofstream &file, const RISCVInstruction &instruction) const;
+  void Print_B(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const;
+  void Print(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const;
   const std::vector<IRFunctionNode> &IR_functions_;
   const std::vector<IRStructNode> &IR_structs_;
   std::vector<RISCVFunctionNode> RISCV_functions_;

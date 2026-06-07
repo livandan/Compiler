@@ -1722,6 +1722,461 @@ void CodeGenerator::Generate() {
   }
 }
 
+void CodeGenerator::PrintReg(std::ofstream &file, const int reg) const {
+  switch (reg) {
+    case 0: {
+      file << "x0";
+      break;
+    }
+    case 1: {
+      file << "ra";
+      break;
+    }
+    case 2: {
+      file << "sp";
+      break;
+    }
+    case 3: {
+      file << "gp";
+      break;
+    }
+    case 4: {
+      file << "tp";
+      break;
+    }
+    case 5:
+    case 6:
+    case 7: {
+      file << "t" << reg - 5;
+      break;
+    }
+    case 8:
+    case 9: {
+      file << "s" << reg - 8;
+      break;
+    }
+    case 10:
+    case 11:
+    case 12:
+    case 13:
+    case 14:
+    case 15:
+    case 16:
+    case 17: {
+      file << "a" << reg - 10;
+      break;
+    }
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+    case 25:
+    case 26:
+    case 27: {
+      file << "s" << reg - 16;
+      break;
+    }
+    case 28:
+    case 29:
+    case 30:
+    case 31: {
+      file << "t" << reg - 25;
+      break;
+    }
+    default:;
+  }
+}
+
+void CodeGenerator::PrintLabel(std::ofstream &file, const int label, const int func_id) const {
+  file << ".LBB" << func_id << "_" << label;
+}
+
+void CodeGenerator::Print_AR(std::ofstream &file, const RISCVInstruction &instruction) const {
+  PrintReg(file, instruction.rd_);
+  file << ", ";
+  PrintReg(file, instruction.rs1_);
+  file << ", ";
+  PrintReg(file, instruction.rs2_);
+}
+
+void CodeGenerator::Print_AI(std::ofstream &file, const RISCVInstruction &instruction) const {
+  PrintReg(file, instruction.rd_);
+  file << ", ";
+  PrintReg(file, instruction.rs1_);
+  file << ", " << instruction.imm_;
+}
+
+void CodeGenerator::Print_MI(std::ofstream &file, const RISCVInstruction &instruction) const {
+  PrintReg(file, instruction.rd_);
+  file << ", " << instruction.imm_ << "(";
+  PrintReg(file, instruction.rs1_);
+  file << ")";
+}
+
+void CodeGenerator::Print_MS(std::ofstream &file, const RISCVInstruction &instruction) const {
+  PrintReg(file, instruction.rs2_);
+  file << ", " << instruction.imm_ << "(";
+  PrintReg(file, instruction.rs1_);
+  file << ")";
+}
+
+void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruction, const int func_id) const {
+  PrintReg(file, instruction.rs1_);
+  file << ", ";
+  PrintReg(file, instruction.rs2_);
+  file << ", ";
+  PrintLabel(file, instruction.label_, func_id);
+}
+
+void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const {
+  file << '\t';
+  switch (instruction.instruction_type_) {
+    case r_add_: {
+      file << "add\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_sub_: {
+      file << "sub\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_and_: {
+      file << "and\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_or_: {
+      file << "or\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_xor_: {
+      file << "xor\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_sll_: {
+      file << "sll\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_srl_: {
+      file << "srl\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_sra_: {
+      file << "sra\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_slt_: {
+      file << "slt\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_sltu_: {
+      file << "sltu\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_addi_: {
+      file << "addi\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_andi_: {
+      file << "andi\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_ori_: {
+      file << "ori\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_xori_: {
+      file << "xori\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_slli_: {
+      file << "slli\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_srli_: {
+      file << "srli\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_srai_: {
+      file << "srai\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_slti_: {
+      file << "slti\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_sltiu_: {
+      file << "sltiu\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_lb_: {
+      file << "lb\t";
+      Print_MI(file, instruction);
+      break;
+    }
+    case r_lbu_: {
+      file << "lbu\t";
+      Print_MI(file, instruction);
+      break;
+    }
+    case r_lh_: {
+      file << "lh\t";
+      Print_MI(file, instruction);
+      break;
+    }
+    case r_lhu_: {
+      file << "lhu\t";
+      Print_MI(file, instruction);
+      break;
+    }
+    case r_lw_: {
+      file << "lw\t";
+      Print_MI(file, instruction);
+      break;
+    }
+    case r_sb_: {
+      file << "sb\t";
+      Print_MS(file, instruction);
+      break;
+    }
+    case r_sh_: {
+      file << "sh\t";
+      Print_MS(file, instruction);
+      break;
+    }
+    case r_sw_: {
+      file << "sw\t";
+      Print_MS(file, instruction);
+      break;
+    }
+    case r_beq_: {
+      file << "beq\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_bge_: {
+      file << "bge\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_bgeu_: {
+      file << "bgeu\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_blt_: {
+      file << "blt\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_bltu_: {
+      file << "bltu\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_bne_: {
+      file << "bne\t";
+      Print_B(file, instruction, func_id);
+      break;
+    }
+    case r_jal_: {
+      file << "jal\t";
+      PrintReg(file, instruction.rd_);
+      file << ", ";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_jalr_: {
+      file << "jalr\t";
+      Print_AI(file, instruction);
+      break;
+    }
+    case r_auipc_: {
+      file << "auipc\t";
+      PrintReg(file, instruction.rd_);
+      file << ", " << instruction.imm_;
+      break;
+    }
+    case r_lui_: {
+      file << "lui\t";
+      PrintReg(file, instruction.rd_);
+      file << ", " << instruction.imm_;
+      break;
+    }
+    case r_ebreak_: {
+      file << "ebreak";
+      break;
+    }
+    case r_ecall_: {
+      file << "ecall";
+      break;
+    }
+    case r_mul_: {
+      file << "mul\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_div_: {
+      file << "div\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_divu_: {
+      file << "divu\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_rem_: {
+      file << "rem\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_remu_: {
+      file << "remu\t";
+      Print_AR(file, instruction);
+      break;
+    }
+    case r_exit_: {
+      file << "exit";
+      break;
+    }
+    case r_beqz_: {
+      file << "beqz\t";
+      PrintReg(file, instruction.rs1_);
+      file << ", ";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_bnez_: {
+      file << "bnez\t";
+      PrintReg(file, instruction.rs1_);
+      file << ", ";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_j_: {
+      file << "j\t";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_jal_ra_: {
+      file << "jal\t";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_jr_: {
+      file << "jr\t";
+      PrintReg(file, instruction.rs1_);
+      break;
+    }
+    case r_la_: {
+      file << "la\t";
+      PrintReg(file, instruction.rd_);
+      file << ", ";
+      PrintLabel(file, instruction.label_, func_id);
+      break;
+    }
+    case r_li_: {
+      file << "li\t";
+      PrintReg(file, instruction.rd_);
+      file << ", " << instruction.imm_;
+      break;
+    }
+    case r_mv_: {
+      file << "mv\t";
+      PrintReg(file, instruction.rd_);
+      file << ", ";
+      PrintReg(file, instruction.rs1_);
+      break;
+    }
+    case r_neg_: {
+      file << "neg\t";
+      PrintReg(file, instruction.rd_);
+      file << ", ";
+      PrintReg(file, instruction.rs1_);
+      break;
+    }
+    case r_nop_: {
+      file << "nop";
+      break;
+    }
+    case r_not_: {
+      file << "not\t";
+      PrintReg(file, instruction.rd_);
+      file << ", ";
+      PrintReg(file, instruction.rs1_);
+      break;
+    }
+    case r_ret_: {
+      file << "ret";
+      break;
+    }
+    case r_call_: {
+      file << "call\t";
+      if (instruction.rd_) { // builtin
+        switch (instruction.label_) {
+          case 0: {
+            file << "print";
+            break;
+          }
+          case 1: {
+            file << "println";
+            break;
+          }
+          case 2: {
+            file << "printInt";
+            break;
+          }
+          case 3: {
+            file << "printlnInt";
+            break;
+          }
+          case 4: {
+            file << "getString";
+            break;
+          }
+          case 5: {
+            file << "getInt";
+            break;
+          }
+          case 6: {
+            file << "builtin_memset";
+            break;
+          }
+          case 7: {
+            file << "builtin_memcpy";
+            break;
+          }
+        }
+      } else {
+        file << "fn." << instruction.label_;
+      }
+      break;
+    }
+    default:;
+  }
+}
+
 void CodeGenerator::Output(std::ofstream &output_file) const {
   std::ifstream builtin_fn("../RCompiler-Testcases/IR-1/builtin/builtin_fn.txt");
   std::ifstream builtin_str("../RCompiler-Testcases/IR-1/builtin/builtin_str.txt");
@@ -1757,12 +2212,16 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
           << "fn." << i << ":                                   # @fn." << i << '\n';
     }
     output_file << "# %bb.0:                                # %alloca\n";
-    // todo: output instructions in %bb.0
-
-    for (const auto &[block_label, block] : IR_functions_[i].blocks_) {
+    for (const auto &instruction : RISCV_functions_[i].alloca_block_) {
+      Print(output_file, instruction, current_func_id);
+    }
+    for (const auto &[block_label, block] : RISCV_functions_[i].blocks_) {
       output_file << ".LBB" << current_func_id << '_' << block_label
           << ":                               # %label_" << block_label << '\n';
       // todo: output instructions in order
+      for (const auto &instruction : block.instructions_) {
+        Print(output_file, instruction, current_func_id);
+      }
     }
     output_file << ".Lfunc_end" << current_func_id << ":\n";
     if (i == main_func_id_) {
