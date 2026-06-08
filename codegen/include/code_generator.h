@@ -188,16 +188,8 @@ struct RISCVBlock {
   }
   void PushReturn(const int released_stack_space) {
     if (released_stack_space < 2048) {
-      PushMemory_I(r_lw_, 1, released_stack_space - 4, 2);
       PushArithmetic_I(r_addi_, 2, 2, released_stack_space);
-    } else if (released_stack_space < 2052) {
-      PushMemory_I(r_lw_, 1, released_stack_space - 4, 2);
-      PushLi(31, released_stack_space);
-      PushArithmetic_R(r_add_, 2, 2, 31);
     } else {
-      PushLi(31, released_stack_space - 4);
-      PushArithmetic_R(r_add_, 31, 2, 31);
-      PushMemory_I(r_lw_, 1, 0, 31);
       PushLi(31, released_stack_space);
       PushArithmetic_R(r_add_, 2, 2, 31);
     }
@@ -224,6 +216,18 @@ struct RISCVFunctionNode {
 
 struct BlockJumping {
   int from, to;
+  bool operator<(const BlockJumping &b) const {
+    if (from < b.from) {
+      return true;
+    }
+    if (from > b.from) {
+      return false;
+    }
+    if (to < b.to) {
+      return true;
+    }
+    return false;
+  }
 };
 
 struct AssignmentGraph {
@@ -238,10 +242,13 @@ private:
   std::vector<Edge> edges_;
   std::map<int, int> tmp_store_;
 public:
+  AssignmentGraph() : max_n_(0) {
+    CodegenThrow("The graph cannot be default constructed.");
+  }
   explicit AssignmentGraph(const int max_n) : max_n_(max_n) {
     heads_.resize(max_n_);
     status_.resize(max_n_);
-    edges_.resize(0);
+    // edges_.resize(0);
     for (int i = 0; i < max_n_; ++i) {
       heads_[i] = -1;
       status_[i] = 0;

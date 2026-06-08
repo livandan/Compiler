@@ -1641,9 +1641,22 @@ void CodeGenerator::Generate() {
           }
           case variable_select_ii_:
           case variable_select_iv_:
-          case variable_select_vi_:
-          case variable_select_vv_: {
+          case variable_select_vi_: {
             CodegenThrow("Unexpected variable select instruction.");
+            break;
+          }
+          case variable_select_vv_: {
+            // %var.result_id <- %var.condition ? 1 : 0
+            int src_reg = RISCV_functions_[i].location_[instruction.condition_id_].second;
+            if (!RISCV_functions_[i].location_[instruction.condition_id_].first) {
+              r_block.PushMemory_I(r_lbu_, 5, src_reg, 2);
+              src_reg = 5;
+            }
+            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+              r_block.PushArithmetic_R(r_add_, RISCV_functions_[i].location_[instruction.result_id_].second, src_reg, 0);
+            } else {
+              r_block.PushMemory_S(r_sb_, src_reg, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            }
             break;
           }
           case builtin_memset_: {
@@ -2175,6 +2188,7 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
     }
     default:;
   }
+  file << '\n';
 }
 
 void CodeGenerator::Output(std::ofstream &output_file) const {
@@ -2212,13 +2226,12 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
           << "fn." << i << ":                                   # @fn." << i << '\n';
     }
     output_file << "# %bb.0:                                # %alloca\n";
-    for (const auto &instruction : RISCV_functions_[i].alloca_block_) {
+    for (const auto &instruction : RISCV_functions_[i].alloca_block_.instructions_) {
       Print(output_file, instruction, current_func_id);
     }
     for (const auto &[block_label, block] : RISCV_functions_[i].blocks_) {
       output_file << ".LBB" << current_func_id << '_' << block_label
           << ":                               # %label_" << block_label << '\n';
-      // todo: output instructions in order
       for (const auto &instruction : block.instructions_) {
         Print(output_file, instruction, current_func_id);
       }
