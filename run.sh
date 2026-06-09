@@ -3,7 +3,7 @@
 #cmake --build cmake-build-debug
 #./cmake-build-debug/IR_test
 
-success_count=0
+IR_success_count=0
 
 for INDEX in {1..50}; do
   echo "compiling ${INDEX}.ll into assembly..."
@@ -15,7 +15,7 @@ for INDEX in {1..50}; do
       diff "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.out" -Z
       if [ $? -eq 0 ]; then
         echo "!!!!!!!!!!!!!! ${INDEX} success!"
-        ((success_count++))
+        ((IR_success_count++))
       else
         echo "********************************************************************************** ${INDEX} failed in diff"
       fi
@@ -27,7 +27,7 @@ for INDEX in {1..50}; do
   fi
 done
 
-echo "${success_count} success out of 50"
+echo "IR generating tests: ${IR_success_count} success out of 50"
 
 
 #echo "compiling debugging.ll into assembly..."
@@ -48,3 +48,25 @@ echo "${success_count} success out of 50"
 #else
 #  echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed in generating .s"
 #fi
+
+
+echo "============================= Codegen Tests Begins ============================="
+
+code_gen_success_count=0
+
+for INDEX in {1..50}; do
+  reimu -f="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -i="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" -s=200000000
+  if [ $? -eq 0 ]; then
+    diff "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.out" -Z
+    if [ $? -eq 0 ]; then
+      echo "!!!!!!!!!!!!!! ${INDEX} success!"
+      ((code_gen_success_count++))
+    else
+      echo "********************************************************************************** ${INDEX} failed in diff"
+    fi
+  else
+    echo "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ ${INDEX} failed in executing reimu"
+  fi
+done
+
+echo "codegen tests: ${code_gen_success_count} success out of 50"
