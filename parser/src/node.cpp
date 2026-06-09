@@ -211,13 +211,13 @@ void Node::AddChild(const NodeType node_type) {
       type_.push_back(type_associated_item);
       break;
     default:
-      std::cerr << "Invalid type: " << node_type << "!\n";
+      // std::cerr << "Invalid type: " << node_type << "!\n";
       throw "";
   }
 }
 
 void Node::ThrowErr(const NodeType node_type, const std::string &info) const {
-  switch (node_type) {
+  /*switch (node_type) {
     case type_crate:
       std::cerr << "Crate: ";
       break;
@@ -358,7 +358,7 @@ void Node::ThrowErr(const NodeType node_type, const std::string &info) const {
     std::cerr << "Unexpected ending!\n";
   } else {
     std::cerr << "line " << tokens_[ptr_].GetLine() << " column " << tokens_[ptr_].GetColumn() << ": " << info << "\n";
-  }
+  }*/
   throw "";
 }
 
