@@ -48,8 +48,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_add_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_add_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -57,8 +61,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_and_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_and_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -66,8 +74,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_or_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_or_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -75,8 +87,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_xor_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_xor_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -86,8 +102,12 @@ struct RISCVBlock {
         } else if (imm <= 15) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_sll_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_sll_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -97,8 +117,12 @@ struct RISCVBlock {
         } else if (imm <= 15) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_srl_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_srl_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -108,8 +132,12 @@ struct RISCVBlock {
         } else if (imm <= 15) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_sra_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_sra_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -117,8 +145,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_slt_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_slt_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -126,8 +158,12 @@ struct RISCVBlock {
         if (imm >= -2048 && imm <= 2047) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
-          instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-          instructions_.push_back(RISCVInstruction(r_sltu_, rd, rs1, 31, -1, -1));
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_sltu_, rd, rs1, tmp_reg, -1, -1));
         }
         break;
       }
@@ -143,9 +179,13 @@ struct RISCVBlock {
     if (imm >= -2048 && imm <= 2047) {
       instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
     } else {
-      instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-      instructions_.push_back(RISCVInstruction(r_add_, 31, rs1, 31, -1, -1));
-      instructions_.push_back(RISCVInstruction(type, rd, 31, -1, 0, -1));
+      int tmp_reg = 31;
+      if (rs1 == tmp_reg) {
+        tmp_reg = 5;
+      }
+      instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+      instructions_.push_back(RISCVInstruction(r_add_, tmp_reg, rs1, tmp_reg, -1, -1));
+      instructions_.push_back(RISCVInstruction(type, rd, tmp_reg, -1, 0, -1));
     }
   }
   void PushMemory_S(const RISCVInstructionType type, const int rs2, const int imm, const int rs1) {
@@ -155,9 +195,16 @@ struct RISCVBlock {
     if (imm >= -2048 && imm <= 2047) {
       instructions_.push_back(RISCVInstruction(type, -1, rs1, rs2, imm, -1));
     } else {
-      instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-      instructions_.push_back(RISCVInstruction(r_add_, 31, rs1, 31, -1, -1));
-      instructions_.push_back(RISCVInstruction(type, -1, 31, rs2, 0, -1));
+      int tmp_reg = 31;
+      if (rs1 == tmp_reg || rs2 == tmp_reg) {
+        tmp_reg = 5;
+      }
+      if (rs1 == tmp_reg || rs2 == tmp_reg) {
+        tmp_reg = 6;
+      }
+      instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+      instructions_.push_back(RISCVInstruction(r_add_, tmp_reg, rs1, tmp_reg, -1, -1));
+      instructions_.push_back(RISCVInstruction(type, -1, tmp_reg, rs2, 0, -1));
     }
   }
   void PushControl_B(const RISCVInstructionType type, const int rs1, const int rs2, const int label) {
@@ -180,9 +227,13 @@ struct RISCVBlock {
     if (imm >= -2048 && imm <= 2047) {
       instructions_.push_back(RISCVInstruction(r_jalr_, rd, rs1, -1, imm, -1));
     } else {
-      instructions_.push_back(RISCVInstruction(r_li_, 31, -1, -1, imm, -1));
-      instructions_.push_back(RISCVInstruction(r_add_, 31, rs1, 31, -1, -1));
-      instructions_.push_back(RISCVInstruction(r_jalr_, rd, 31, -1, 0, -1));
+      int tmp_reg = 31;
+      if (rs1 == tmp_reg) {
+        tmp_reg = 5;
+      }
+      instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+      instructions_.push_back(RISCVInstruction(r_add_, tmp_reg, rs1, tmp_reg, -1, -1));
+      instructions_.push_back(RISCVInstruction(r_jalr_, rd, tmp_reg, -1, 0, -1));
     }
   }
   void PushLi(const int rd, const int imm) {

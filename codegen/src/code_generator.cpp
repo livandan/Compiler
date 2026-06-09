@@ -1663,15 +1663,15 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memset_: {
-            int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
-              r_block.PushMemory_I(r_lw_, 5, dest_register, 2);
-              dest_register = 5;
-            }
             for (int x = 0; x < 32; ++x) {
               if (register_saver.at(x) == caller_save) {
                 r_block.PushMemory_S(r_sw_, x, RegSavedLocation(i, x), 2);
               }
+            }
+            int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+            if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
+              r_block.PushMemory_I(r_lw_, 5, dest_register, 2);
+              dest_register = 5;
             }
             r_block.PushArithmetic_R(r_add_, 10, dest_register, 0);
             r_block.PushLi(11, instruction.operand_1_id_ == 0 ? 0 : -1);
@@ -1685,6 +1685,11 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memcpy_: {
+            for (int x = 0; x < 32; ++x) {
+              if (register_saver.at(x) == caller_save) {
+                r_block.PushMemory_S(r_sw_, x, RegSavedLocation(i, x), 2);
+              }
+            }
             int dest_register = RISCV_functions_[i].location_[instruction.destination_].second;
             if (!RISCV_functions_[i].location_[instruction.destination_].first) {
               r_block.PushMemory_I(r_lw_, 5, dest_register, 2);
@@ -1698,11 +1703,6 @@ void CodeGenerator::Generate() {
             if (src_register == 10) {
               r_block.PushArithmetic_R(r_add_, 6, src_register, 0);
               src_register = 6;
-            }
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_S(r_sw_, x, RegSavedLocation(i, x), 2);
-              }
             }
             r_block.PushArithmetic_R(r_add_, 10, dest_register, 0);
             r_block.PushArithmetic_R(r_add_, 11, src_register, 0);
