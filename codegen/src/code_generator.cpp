@@ -1810,6 +1810,11 @@ void CodeGenerator::PrintLabel(std::ofstream &file, const int label, const int f
   file << ".LBB" << func_id << "_" << label;
 }
 
+void CodeGenerator::PrintJumpLabel(std::ofstream &file, const int block_label,
+    const int jump_label, const int func_id) const {
+  file << ".LBB" << func_id << "_" << block_label << "_jump_" << jump_label;
+}
+
 void CodeGenerator::Print_AR(std::ofstream &file, const RISCVInstruction &instruction) const {
   PrintReg(file, instruction.rd_);
   file << ", ";
@@ -1839,15 +1844,17 @@ void CodeGenerator::Print_MS(std::ofstream &file, const RISCVInstruction &instru
   file << ")";
 }
 
-void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruction, const int func_id) const {
+void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruction,
+    const int func_id, const int block_id) const {
   PrintReg(file, instruction.rs1_);
   file << ", ";
   PrintReg(file, instruction.rs2_);
   file << ", ";
-  PrintLabel(file, instruction.label_, func_id);
+  PrintJumpLabel(file, block_id, instruction.label_, func_id);
 }
 
-void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const {
+void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instruction,
+    const int func_id, const int block_id) const {
   file << '\t';
   switch (instruction.instruction_type_) {
     case r_add_: {
@@ -1987,32 +1994,32 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
     }
     case r_beq_: {
       file << "beq\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_bge_: {
       file << "bge\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_bgeu_: {
       file << "bgeu\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_blt_: {
       file << "blt\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_bltu_: {
       file << "bltu\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_bne_: {
       file << "bne\t";
-      Print_B(file, instruction, func_id);
+      Print_B(file, instruction, func_id, block_id);
       break;
     }
     case r_jal_: {
@@ -2230,13 +2237,18 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
     }
     output_file << "# %bb.0:                                # %alloca\n";
     for (const auto &instruction : RISCV_functions_[i].alloca_block_.instructions_) {
-      Print(output_file, instruction, current_func_id);
+      Print(output_file, instruction, current_func_id, -1);
     }
     for (const auto &[block_label, block] : RISCV_functions_[i].blocks_) {
       output_file << ".LBB" << current_func_id << '_' << block_label
           << ":                               # %label_" << block_label << '\n';
       for (const auto &instruction : block.instructions_) {
-        Print(output_file, instruction, current_func_id);
+        Print(output_file, instruction, current_func_id, block_label);
+      }
+      for (int j = 0; j < block.jump_blocks_.size(); ++j) {
+        output_file << ".LBB" << current_func_id << '_' << block_label << "_jump_" << j
+            << ":                               # %label_" << block_label << "_jump_" << j << '\n';
+        Print(output_file, block.jump_blocks_[j], current_func_id, block_label);
       }
     }
     output_file << ".Lfunc_end" << current_func_id << ":\n";

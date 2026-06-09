@@ -35,6 +35,7 @@ void CodegenThrow(const std::string &err_info);
 struct RISCVBlock {
   std::vector<RISCVInstruction> instructions_;
   std::vector<MoveInstruction> move_instructions_;
+  std::vector<RISCVInstruction> jump_blocks_;
   void PushArithmetic_R(const RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
     if (type < 1 || type > 10) {
       CodegenThrow("Incorrectly use PushArithmetic_R(...).");
@@ -163,7 +164,8 @@ struct RISCVBlock {
     if (type < 28 || type > 33) {
       CodegenThrow("Incorrectly use PushControl_B(...).");
     }
-    instructions_.push_back(RISCVInstruction(type, -1, rs1, rs2, -1, label));
+    instructions_.push_back(RISCVInstruction(type, -1, rs1, rs2, -1, static_cast<int>(jump_blocks_.size())));
+    jump_blocks_.push_back(RISCVInstruction(r_j_, -1, -1, -1, -1, label));
   }
   void PushExtended(const  RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
     if (type < 40 || type > 44) {
@@ -331,12 +333,13 @@ private:
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
   void PrintReg(std::ofstream &file, int reg) const;
   void PrintLabel(std::ofstream &file, int label, int func_id) const;
+  void PrintJumpLabel(std::ofstream &file, int block_label, int jump_label, int func_id) const;
   void Print_AR(std::ofstream &file, const RISCVInstruction &instruction) const;
   void Print_AI(std::ofstream &file, const RISCVInstruction &instruction) const;
   void Print_MI(std::ofstream &file, const RISCVInstruction &instruction) const;
   void Print_MS(std::ofstream &file, const RISCVInstruction &instruction) const;
-  void Print_B(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const;
-  void Print(std::ofstream &file, const RISCVInstruction &instruction, int func_id) const;
+  void Print_B(std::ofstream &file, const RISCVInstruction &instruction, int func_id, int block_id) const;
+  void Print(std::ofstream &file, const RISCVInstruction &instruction, int func_id, int block_id) const;
   const std::vector<IRFunctionNode> &IR_functions_;
   const std::vector<IRStructNode> &IR_structs_;
   std::vector<RISCVFunctionNode> RISCV_functions_;
