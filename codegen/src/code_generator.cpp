@@ -217,12 +217,12 @@ void CodeGenerator::MemAlloc(const int func_id) {
 int CodeGenerator::RegSavedLocation(const int func_id, const int reg_id) const {
   const int stack_space = RISCV_functions_[func_id].stack_space_;
   if (reg_id == 1) {
-    return stack_space;
+    return stack_space - 4;
   }
   if (reg_id <= 4) {
     CodegenThrow("x0, x2, x3 and x4 have no saving space in the stack.");
   }
-  return stack_space - 4 * (reg_id - 4);
+  return stack_space - 4 * (reg_id - 3);
 }
 
 void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
