@@ -564,37 +564,42 @@ void CodeGenerator::Generate() {
             break;
           }
           case load_: {
-            int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-              r_block.PushMemory_I(r_lw_, 5, src_register, 2);
-              src_register = 5;
-            }
-            // src_register keeps the real address that the pointer points to
             const auto [load_size, need_alignment] = GetSize(instruction.result_type_);
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               CodegenThrow("Unexpectedly load into a register.");
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+              if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
+                r_block.PushMemory_I(r_lw_, 5, src_register, 2);
+                src_register = 5;
+              }
+              // src_register keeps the real address that the pointer points to
               if (load_size == 1) {
                 r_block.PushMemory_I(r_lbu_, result_reg, 0, src_register);
               } else if (load_size == 4 && need_alignment) {
                 r_block.PushMemory_I(r_lw_, result_reg, 0, src_register);
               } else {
-                r_block.PushArithmetic_R(r_add_, result_reg, 0, 0);
-                for (int b = 0; b < load_size; ++b) {
-                  r_block.PushMemory_I(r_lbu_, 5, b, src_register);
-                  if (b != 0) {
-                    r_block.PushArithmetic_I(r_slli_, 5, 5, 8 * b);
-                  }
-                  r_block.PushArithmetic_R(r_or_, result_reg, result_reg, 5);
-                }
+                CodegenThrow("Unexpectedly loaded strange data into register.");
               }
             } else {
               const auto result_address_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               // move data from the space that starts from *pointer to that starts from result address
               if (load_size == 1) {
+                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, src_register, 2);
+                  src_register = 5;
+                }
+                // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lbu_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sb_, 5, result_address_offset, 2);
               } else if (load_size == 4 && need_alignment) {
+                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, src_register, 2);
+                  src_register = 5;
+                }
+                // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sw_, 5, result_address_offset, 2);
               } else {
@@ -603,6 +608,12 @@ void CodeGenerator::Generate() {
                     r_block.PushMemory_S(r_sw_, x, RegSavedLocation(i, x), 2);
                   }
                 }
+                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, src_register, 2);
+                  src_register = 5;
+                }
+                // src_register keeps the real address that the pointer points to
                 r_block.PushArithmetic_R(r_add_, 11, 0, src_register);
                 r_block.PushArithmetic_I(r_addi_, 10, 2, result_address_offset);
                 r_block.PushLi(12, load_size);
@@ -636,14 +647,14 @@ void CodeGenerator::Generate() {
           }
           case variable_store_: {
             const auto [store_size, need_alignment] = GetSize(instruction.result_type_);
-            auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-              r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
-              dest_reg = 5;
-            }
-            // dest_reg keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) { // the data to be stored is already in a src_reg
               const auto src_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
+              if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
+                r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
+                dest_reg = 5;
+              }
+              // dest_reg keeps the real address that the pointer points to
               if (store_size == 1) {
                 r_block.PushMemory_S(r_sb_, src_reg, 0, dest_reg);
               } else if (store_size == 4 && need_alignment) {
@@ -656,9 +667,21 @@ void CodeGenerator::Generate() {
               }
             } else { // the data to be stored is in the memory
               if (store_size == 1) {
+                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                }
+                // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sb_, 6, 0, dest_reg);
               } else if (store_size == 4 && need_alignment) {
+                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                }
+                // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sw_, 6, 0, dest_reg);
               } else {
@@ -667,6 +690,12 @@ void CodeGenerator::Generate() {
                     r_block.PushMemory_S(r_sw_, x, RegSavedLocation(i, x), 2);
                   }
                 }
+                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
+                  r_block.PushMemory_I(r_lw_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                }
+                // dest_reg keeps the real address that the pointer points to
                 r_block.PushArithmetic_R(r_add_, 10, 0, dest_reg); // process it first to prevent the content of dest_register from being modified
                 r_block.PushArithmetic_I(r_addi_, 11, 2, RISCV_functions_[i].location_[instruction.result_id_].second);
                 r_block.PushLi(12, store_size);
