@@ -143,6 +143,7 @@ void CodeGenerator::MemAlloc(const int func_id) {
   }
   for (const auto &instruction : IR_functions_[func_id].alloca_instructions_) {
     space += 4;
+    space = (space + 3) / 4 * 4;
     RISCV_functions_[func_id].location_[instruction.result_id_] = {false, space};
     space += GetSize(instruction.result_type_).first;
   }
