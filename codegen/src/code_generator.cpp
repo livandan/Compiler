@@ -604,8 +604,12 @@ void CodeGenerator::Generate() {
           case variable_ret_: {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               r_block.PushArithmetic_I(r_addi_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 0);
-            } else {
+            } else if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
               r_block.PushMemory_I(r_lw_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            } else if (instruction.result_type_->basic_type == bool_type) {
+              r_block.PushMemory_I(r_lbu_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            } else {
+              CodegenThrow("Invalid result type to be passed in register a0.");
             }
             for (int x = 0; x < 32; ++x) {
               if (register_saver.at(x) == callee_save) {
