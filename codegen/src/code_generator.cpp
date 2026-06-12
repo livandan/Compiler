@@ -1747,6 +1747,14 @@ void CodeGenerator::Generate() {
           default:;
         }
       }
+      std::vector<RISCVInstruction> jump_instructions;
+      while (!r_block.instructions_.empty() &&
+          ((r_block.instructions_.back().instruction_type_ >= 28 && r_block.instructions_.back().instruction_type_ <= 35)
+          || (r_block.instructions_.back().instruction_type_ >= 46 && r_block.instructions_.back().instruction_type_ <= 50)
+          || r_block.instructions_.back().instruction_type_ == 57)) {
+        jump_instructions.push_back(r_block.instructions_.back());
+        r_block.instructions_.pop_back();
+      }
       for (const auto &mv_instruction : r_block.move_instructions_) {
         const auto [dest_in_reg, dest_location] = RISCV_functions_[i].location_[mv_instruction.dest_];
         if (mv_instruction.src_is_value_) {
@@ -1762,6 +1770,10 @@ void CodeGenerator::Generate() {
         } else { // the src is a variable
           VariableAssignment(i, r_block, mv_instruction.dest_, mv_instruction.src_, mv_instruction.type_);
         }
+      }
+      while (!jump_instructions.empty()) {
+        r_block.instructions_.push_back(jump_instructions.back());
+        jump_instructions.pop_back();
       }
     }
   }
