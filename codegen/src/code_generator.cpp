@@ -332,11 +332,23 @@ void CodeGenerator::Generate() {
             int first_var_register = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-              r_block.PushMemory_I(r_lw_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_I(r_lw_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              } else {
+                CodegenThrow("Invalid binary operator type.");
+              }
               first_var_register = 5;
             }
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-              r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              } else {
+                CodegenThrow("Invalid binary operator type.");
+              }
               second_var_register = 6;
             }
             switch (instruction.operator_) {
@@ -390,14 +402,32 @@ void CodeGenerator::Generate() {
               }
               default:;
             }
-            r_block.PushMemory_S(r_sw_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+            } else {
+              const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_S(r_sw_, 5, result_offset, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_S(r_sb_, 5, result_offset, 2);
+              } else {
+                CodegenThrow("Invalid binary operation result type.");
+              }
+            }
             break;
           }
           case var_const_binary_operation_: {
             int first_var_register = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             constexpr int second_var_register = 6;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-              r_block.PushMemory_I(r_lw_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_I(r_lw_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+              } else {
+                CodegenThrow("Invalid binary operator type.");
+              }
               first_var_register = 5;
             }
             r_block.PushLi(second_var_register, instruction.operand_2_id_);
@@ -452,14 +482,32 @@ void CodeGenerator::Generate() {
               }
               default:;
             }
-            r_block.PushMemory_S(r_sw_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+            } else {
+              const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_S(r_sw_, 5, result_offset, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_S(r_sb_, 5, result_offset, 2);
+              } else {
+                CodegenThrow("Invalid binary operation result type.");
+              }
+            }
             break;
           }
           case const_var_binary_operation_: {
             constexpr int first_var_register = 5;
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-              r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+              } else {
+                CodegenThrow("Invalid binary operator type.");
+              }
               second_var_register = 6;
             }
             r_block.PushLi(first_var_register, instruction.operand_1_id_);
@@ -514,7 +562,19 @@ void CodeGenerator::Generate() {
               }
               default:;
             }
-            r_block.PushMemory_S(r_sw_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+            } else {
+              const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
+              if (instruction.result_type_->is_int) {
+                r_block.PushMemory_S(r_sw_, 5, result_offset, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_S(r_sb_, 5, result_offset, 2);
+              } else {
+                CodegenThrow("Invalid binary operation result type.");
+              }
+            }
             break;
           }
           case conditional_br_: {
