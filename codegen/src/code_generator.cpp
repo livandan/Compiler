@@ -865,18 +865,30 @@ void CodeGenerator::Generate() {
             break;
           }
           case two_var_icmp_: {
+            int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
+            int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
+            if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
+              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
+                r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 5, op1_reg, 2);
+              } else {
+                CodegenThrow("Invalid icmp operator type.");
+              }
+              op1_reg = 5;
+            }
+            if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
+              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
+                r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 6, op2_reg, 2);
+              } else {
+                CodegenThrow("Invalid icmp operator type.");
+              }
+              op2_reg = 6;
+            }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 == %op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -887,16 +899,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case not_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 != %op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
@@ -907,16 +909,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_greater_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
                 } else {
@@ -926,16 +918,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_greater_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg); // reg5 <- 1 iff %op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -946,16 +928,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_less_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
                 } else {
@@ -965,16 +937,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_less_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg); // reg5 <- 1 iff %op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -985,16 +947,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_greater_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
                 } else {
@@ -1004,16 +956,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_greater_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg); // reg5 <- 1 iff %op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1024,16 +966,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_less_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
                 } else {
@@ -1043,16 +975,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_less_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg); // reg5 <- 1 iff %op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1067,13 +989,19 @@ void CodeGenerator::Generate() {
             break;
           }
           case var_const_icmp_: {
+            int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
+            if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
+              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
+                r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 5, op1_reg, 2);
+              } else {
+                CodegenThrow("Invalid icmp operator type.");
+              }
+              op1_reg = 5;
+            }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 == op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1084,11 +1012,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case not_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 != op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
@@ -1099,11 +1022,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_greater_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 constexpr int op2_reg = 6;
                 r_block.PushLi(op2_reg, instruction.operand_2_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1115,11 +1033,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_greater_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushArithmetic_I(r_sltiu_, 5, op1_reg, instruction.operand_2_id_); // reg5 <- 1 iff %op1 < op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1130,11 +1043,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_less_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, instruction.operand_2_id_);
                 } else {
@@ -1144,12 +1052,7 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_less_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
                 constexpr int op2_reg = 6;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushLi(6, instruction.operand_2_id_);
                 r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg); // reg5 <- 1 iff op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1161,11 +1064,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_greater_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 constexpr int op2_reg = 6;
                 r_block.PushLi(op2_reg, instruction.operand_2_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1177,11 +1075,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_greater_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushArithmetic_I(r_slti_, 5, op1_reg, instruction.operand_2_id_); // reg5 <- 1 iff %op1 < op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1192,11 +1085,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_less_than_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_slti_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, instruction.operand_2_id_);
                 } else {
@@ -1206,12 +1094,7 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_less_equal_: {
-                int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
                 constexpr int op2_reg = 6;
-                if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-                  op1_reg = 5;
-                }
                 r_block.PushLi(6, instruction.operand_2_id_);
                 r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg); // reg5 <- 1 iff op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1227,13 +1110,19 @@ void CodeGenerator::Generate() {
             break;
           }
           case const_var_icmp_: {
+            int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
+            if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
+              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
+                r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
+              } else if (instruction.result_type_->basic_type == bool_type) {
+                r_block.PushMemory_I(r_lbu_, 6, op2_reg, 2);
+              } else {
+                CodegenThrow("Invalid icmp operator type.");
+              }
+              op2_reg = 6;
+            }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 == %op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1244,11 +1133,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case not_equal_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 != %op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
@@ -1259,11 +1143,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_greater_than_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, instruction.operand_1_id_);
                 } else {
@@ -1274,12 +1153,7 @@ void CodeGenerator::Generate() {
               }
               case unsigned_greater_equal_: {
                 constexpr int op1_reg = 5;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg); // reg5 <- 1 iff op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1291,12 +1165,7 @@ void CodeGenerator::Generate() {
               }
               case unsigned_less_than_: {
                 constexpr int op1_reg = 5;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
                 } else {
@@ -1306,11 +1175,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case unsigned_less_equal_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_I(r_sltiu_, 5, op2_reg, instruction.operand_1_id_); // reg5 <- 1 iff %op2 < op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1321,11 +1185,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_greater_than_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_slti_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, instruction.operand_1_id_);
                 } else {
@@ -1336,12 +1195,7 @@ void CodeGenerator::Generate() {
               }
               case signed_greater_equal_: {
                 constexpr int op1_reg = 5;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg); // reg5 <- 1 iff op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
@@ -1353,12 +1207,7 @@ void CodeGenerator::Generate() {
               }
               case signed_less_than_: {
                 constexpr int op1_reg = 5;
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
                 } else {
@@ -1368,11 +1217,6 @@ void CodeGenerator::Generate() {
                 break;
               }
               case signed_less_equal_: {
-                int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
-                if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-                  r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-                  op2_reg = 6;
-                }
                 r_block.PushArithmetic_I(r_slti_, 5, op2_reg, instruction.operand_1_id_); // reg5 <- 1 iff %op2 < op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
