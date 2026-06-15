@@ -182,8 +182,7 @@ void Mem2Reg::ComputeDominators() {
   for (int i = 1; i <= n_; ++i) {
     int block = vertex_[i];
     if (idom_dfn[i] != 0) {
-      int idom_block = vertex_[idom_dfn[i]];
-      idom_[block] = idom_block;
+      idom_[block] = vertex_[idom_dfn[i]];
     } else {
       idom_[block] = -1; // entry block
     }
@@ -256,9 +255,9 @@ void Mem2Reg::ComputeDominanceFrontier() {
 
   for (const auto &[b, preds] : predecessors_) {
     if (preds.size() < 2) continue;
-    for (int p : preds) {
+    for (const int p : preds) {
       int runner = p;
-      while (idom_.count(runner) && idom_[runner] != -1 &&
+      while (idom_.contains(runner) && idom_[runner] != -1 &&
              runner != idom_[b]) {
         dom_frontier_[runner].insert(b);
         runner = idom_[runner];
@@ -271,60 +270,113 @@ void Mem2Reg::ComputeDominanceFrontier() {
 // Promotability check
 // ============================================================================
 
-bool Mem2Reg::IsPromotable(int alloca_id) {
-  // Must be a scalar type (int, bool, pointer, or enum — all word-sized scalars)
-  // We check indirectly: only promote if all stores/loads are simple scalars.
-  // Types are obtained from the alloca instruction.
-
-  // Scan all blocks for uses of this alloca.
-  bool has_var_store = false;
-  bool has_value_store = false;
-
+bool Mem2Reg::IsPromotable(const int alloca_id) const {
   for (const auto &[block_id, block] : func_->blocks_) {
-    for (int idx = 0; idx < (int)block.instructions_.size(); ++idx) {
-      const auto &inst = block.instructions_[idx];
+    for (const auto &inst : block.instructions_) {
       switch (inst.instruction_type_) {
-        case load_: {
-          if (inst.pointer_ == alloca_id) {
-            // OK — scalar load from this alloca
-          }
-          break;
-        }
-        case variable_store_: {
-          if (inst.pointer_ == alloca_id) {
-            has_var_store = true;
-          }
-          break;
-        }
-        case value_store_: {
-          if (inst.pointer_ == alloca_id) {
-            has_value_store = true;
-          }
-          break;
-        }
-        default: {
-          // Check if alloca_id is used as pointer_ in any other context
-          if (inst.pointer_ == alloca_id) {
-            // ptr_load_, get_element_ptr_*, ptr_store_, builtin_memset_,
-            // builtin_memcpy_ — address taken, not promotable
+        // case two_var_binary_operation_:
+        // case var_const_binary_operation_:
+        // case const_var_binary_operation_:
+        // case conditional_br_:
+        // case unconditional_br_:
+        // case value_ret_:
+        // case void_ret_:
+        // case alloca_:
+        // case load_:
+        // case ptr_load_:
+        // case value_store_:
+        // case builtin_call_:
+        // case two_var_icmp_:
+        // case var_const_icmp_:
+        // case const_var_icmp_:
+        // case value_select_vv_:
+        // case variable_select_vv_:
+        case variable_ret_:
+        case variable_store_:
+        case ptr_store_: {
+          if (inst.result_id_ == alloca_id) {
             return false;
           }
-          // Also check if it appears as an operand to other instructions
-          // (should not normally happen for a pointer variable, but be safe)
           break;
         }
+        case get_element_ptr_by_value_:
+        case get_element_ptr_by_variable_:
+        case builtin_memset_: {
+          if (inst.pointer_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case builtin_memcpy_: {
+          if (inst.destination_ == alloca_id || inst.pointer_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case non_void_call_:
+        case void_call_: {
+          for (const auto &argument : inst.function_call_arguments_) {
+            if (argument.is_variable_ && argument.value_ == alloca_id) {
+              return false;
+            }
+          }
+          break;
+        }
+        case phi_: {
+          if ((inst.function_name_ & 0b10) == 0 && inst.operand_1_id_ == alloca_id) {
+            return false;
+          }
+          if ((inst.function_name_ & 0b01) == 0 && inst.operand_2_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case value_select_ii_: {
+          if (inst.condition_id_ == 0 && inst.operand_2_id_ == alloca_id) {
+            return false;
+          }
+          if (inst.condition_id_ != 0 && inst.operand_1_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case value_select_iv_: {
+          if (inst.condition_id_ != 0 && inst.operand_1_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case value_select_vi_: {
+          if (inst.condition_id_ == 0 && inst.operand_2_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case variable_select_ii_: {
+          if (inst.operand_2_id_ == alloca_id) {
+            return false;
+          }
+          if (inst.operand_1_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case variable_select_iv_: {
+          if (inst.operand_1_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        case variable_select_vi_: {
+          if (inst.operand_2_id_ == alloca_id) {
+            return false;
+          }
+          break;
+        }
+        default:;
       }
     }
   }
-
-  // For now, require all stores to be variable_store_ (no constants)
-  // and at least one store must exist (or the alloca is undefined).
-  // Actually, an alloca with no stores is just undefined on every load —
-  // we can still promote it by giving all loads an undef value, but
-  // this is unusual. Skip it for simplicity.
-  if (has_value_store) return false;
-  if (!has_var_store) return false;
-
   return true;
 }
 

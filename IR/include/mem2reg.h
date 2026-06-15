@@ -35,7 +35,7 @@ private:
 
   // --- Alloca promotion analysis ---
   // Returns true if the alloca is a scalar whose address is never taken outside load/store.
-  bool IsPromotable(int alloca_id);
+  bool IsPromotable(int alloca_id) const;
 
   // --- SSA construction for one alloca ---
   void PromoteAlloca(int alloca_id);
