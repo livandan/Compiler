@@ -153,7 +153,7 @@ void Mem2Reg::ComputeDominators() {
     }
 
     bucket_[semi_[w_dfn]].push_back(w_dfn);
-    Union(parent_block_[w], w_dfn); // LINK(parent[w], w)
+    Union(dfn_[parent_block_[w]], w_dfn); // LINK(parent[w], w)
 
     // Process bucket of parent[w]
     int p_dfn = dfn_[parent_block_[w]];
