@@ -351,6 +351,7 @@ private:
   [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);
   void Print(std::ofstream &file, const IRInstruction &instruction);
+  friend class Mem2Reg;
   std::vector<IRFunctionNode> functions_;
   std::vector<IRStructNode> structs_;
   std::vector<int> wrapping_functions_;

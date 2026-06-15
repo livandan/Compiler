@@ -50,27 +50,19 @@ TEST(Mem2RegTestSingle, debugging_test) {
     exit(0);
   }
 
-  // Copy IR functions and run mem2reg
-  std::vector<IRFunctionNode> functions = IR_generator.GetIRFunctions();
-  Mem2Reg mem2reg;
-  mem2reg.Run(functions);
+  Mem2Reg mem2reg(IR_generator);
+  mem2reg.Run();
 
-  // Output IR (after mem2reg), for debugging
+  // Output IR
   std::ofstream IR_output_file(IR_file);
   if (IR_output_file.is_open()) {
-    // Create a temporary IRVisitor to output the mem2reg'd functions
-    // We'll just write a simple output manually or reuse IR_generator
-    IR_output_file << "; IR after mem2reg (original + mem2reg'd functions)\n";
-    // Output the functions the same way as IR_generator does
-    // Re-use IR_generator.Output which prints the original functions_
-    // We output the mem2reg'd version separately for debugging
     IR_generator.Output(IR_output_file);
     IR_output_file.close();
   } else {
     std::cerr << "[Error] Cannot open " << IR_file << "!\n";
   }
 
-  CodeGenerator RISCV_generator(functions,
+  CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
       IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
   RISCV_generator.Generate();
 
@@ -89,6 +81,7 @@ TEST(Mem2RegTest, test_all) {
   for (int i = 1; i <= 50; ++i) {
     const std::string file = "../RCompiler-Testcases/IR-1/src/comprehensive" + std::to_string(i) + "/comprehensive" + std::to_string(i);
     const std::string code_file = file + ".rx";
+    const std::string IR_file = file + "_mem2reg.ll";
     const std::string RISCV_file = file + "_mem2reg.s";
     std::ifstream reader(code_file);
     if (!reader.is_open()) {
@@ -127,12 +120,19 @@ TEST(Mem2RegTest, test_all) {
       exit(0);
     }
 
-    // Copy IR functions and run mem2reg
-    std::vector<IRFunctionNode> functions = IR_generator.GetIRFunctions();
-    Mem2Reg mem2reg;
-    mem2reg.Run(functions);
+    Mem2Reg mem2reg(IR_generator);
+    mem2reg.Run();
 
-    CodeGenerator RISCV_generator(functions,
+    // Output IR
+    std::ofstream IR_output_file(IR_file);
+    if (IR_output_file.is_open()) {
+      IR_generator.Output(IR_output_file);
+      IR_output_file.close();
+    } else {
+      std::cerr << "[Error] Cannot open " << IR_file << "!\n";
+    }
+
+    CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
         IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
     RISCV_generator.Generate();
     std::ofstream RISCV_output_file(RISCV_file);

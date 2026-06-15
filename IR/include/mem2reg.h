@@ -8,15 +8,38 @@
 
 void Mem2RegThrow(const std::string &err_info);
 
-// A reaching definition: either a variable ID or nothing (undef).
+// A reaching definition: a variable ID, a constant value, or nothing (undef).
 struct ReachingDef {
   bool valid = false;
-  int var_id = -1; // valid only when valid==true
+  bool is_constant = false; // true if the reaching def is a literal constant
+  int var_id = -1;          // valid when valid && !is_constant
+  int const_value = 0;      // valid when valid && is_constant
+
+  static ReachingDef Var(int id) {
+    ReachingDef d;
+    d.valid = true;
+    d.is_constant = false;
+    d.var_id = id;
+    return d;
+  }
+  static ReachingDef Const(int val) {
+    ReachingDef d;
+    d.valid = true;
+    d.is_constant = true;
+    d.const_value = val;
+    return d;
+  }
+  static ReachingDef Undef() {
+    ReachingDef d;
+    d.valid = false;
+    return d;
+  }
 };
 
 class Mem2Reg {
 public:
-  void Run(std::vector<IRFunctionNode> &functions);
+  explicit Mem2Reg(IRVisitor &IR_generator);
+  void Run();
 
 private:
   void RunOnFunction(IRFunctionNode &func);
@@ -41,12 +64,13 @@ private:
   void PromoteAlloca(int alloca_id);
 
   // --- Instruction rewriting helpers ---
-  // Replace every use of old_id with new_id (as a variable) in all instructions of func_.
-  void ReplaceAllUses(int old_id, int new_id) const;
+  // Replace every use of old_id with new_def (variable or constant) in all instructions of func_.
+  void ReplaceAllUses(int old_id, const ReachingDef &new_def) const;
 
   // --- Cleanup ---
   void RemoveDeadInstructions() const;
 
+  std::vector<IRFunctionNode> &functions_;
   // ========== per-function state (reset for each function) ==========
   IRFunctionNode *func_ = nullptr;
   int entry_block_ = -1;
@@ -75,13 +99,14 @@ private:
   std::vector<std::vector<int>> bucket_; // bucket[v] = vertices whose sdom is v
 
   // --- Promotion state for current alloca ---
-  // block_id → set of (instruction_index, stored_value_var_id) for variable_store_ to this alloca
+  // block_id → list of stores to this alloca
   struct StoreInfo {
     int inst_idx;
-    int value_id;
+    int value_id;     // variable ID (if !is_constant) or constant value (if is_constant)
+    bool is_constant;  // true when the stored value is a literal constant (from value_store_)
   };
   std::map<int, std::vector<StoreInfo>> stores_of_alloca_;
-  // block_id → set of (instruction_index, load_result_id) for loads from this alloca
+  // block_id → list of loads from this alloca
   struct LoadInfo {
     int inst_idx;
     int load_result_id;
