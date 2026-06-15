@@ -314,8 +314,7 @@ public:
   void EliminateCycles(const BlockJumping block_jump, int &tmp_var_id, std::map<int, RISCVBlock> &blocks) {
     while (true) {
       for (int i = 0; i < max_n_; ++i) {
-        for (int edge_id = heads_[i], previous_edge_id = -1; edge_id != -1;
-            previous_edge_id = edge_id, edge_id = edges_[edge_id].next) {
+        for (int edge_id = heads_[i], previous_edge_id = -1; edge_id != -1; edge_id = edges_[edge_id].next) {
           const Edge &edge = edges_[edge_id];
           int src = i;
           if (status_[i] == 2) {
@@ -328,6 +327,8 @@ public:
             } else {
               edges_[previous_edge_id].next = edge.next;
             }
+          } else {
+            previous_edge_id = edge_id;
           }
         }
       }
@@ -352,7 +353,11 @@ public:
         for (int i = 0; i < max_n_; ++i) {
           if (heads_[i] != -1 && status_[i] == 0) {
             to_be_stored = i;
+            break;
           }
+        }
+        if (to_be_stored == -1) {
+          CodegenThrow("Assignment graph cycle could not be resolved.");
         }
         blocks[block_jump.from].PushMove(edges_[heads_[to_be_stored]].type, false, to_be_stored, tmp_var_id++);
         status_[to_be_stored] = 2;
