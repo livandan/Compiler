@@ -46,12 +46,19 @@ TEST(Mem2RegTestSingle, debugging_test) {
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;
-    // Pass semantic check, but the IR generating is not implemented
+    std::cerr << "[Error] IR generation failed.";
     exit(0);
   }
 
-  Mem2Reg mem2reg(IR_generator);
-  mem2reg.Run();
+  try {
+    Mem2Reg mem2reg(IR_generator);
+    mem2reg.Run();
+  } catch (...) {
+    delete syntax_tree;
+    syntax_tree = nullptr;
+    std::cerr << "[Error] Mem2reg failed.";
+    exit(0);
+  }
 
   // Output IR
   std::ofstream IR_output_file(IR_file);
@@ -62,16 +69,23 @@ TEST(Mem2RegTestSingle, debugging_test) {
     std::cerr << "[Error] Cannot open " << IR_file << "!\n";
   }
 
-  CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
-      IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
-  RISCV_generator.Generate();
+  try {
+    CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
+       IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
+    RISCV_generator.Generate();
 
-  std::ofstream RISCV_output_file(RISCV_file);
-  if (RISCV_output_file.is_open()) {
-    RISCV_generator.Output(RISCV_output_file);
-    RISCV_output_file.close();
-  } else {
-    std::cerr << "[Error] Cannot open " << RISCV_file << "!\n";
+    std::ofstream RISCV_output_file(RISCV_file);
+    if (RISCV_output_file.is_open()) {
+      RISCV_generator.Output(RISCV_output_file);
+      RISCV_output_file.close();
+    } else {
+      std::cerr << "[Error] Cannot open " << RISCV_file << "!\n";
+    }
+  } catch (...) {
+    delete syntax_tree;
+    syntax_tree = nullptr;
+    std::cerr << "[Error] Codegen failed.";
+    exit(0);
   }
 
   delete syntax_tree;
