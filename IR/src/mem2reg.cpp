@@ -276,23 +276,6 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
   for (const auto &[block_id, block] : func_->blocks_) {
     for (const auto &inst : block.instructions_) {
       switch (inst.instruction_type_) {
-        // case two_var_binary_operation_:
-        // case var_const_binary_operation_:
-        // case const_var_binary_operation_:
-        // case conditional_br_:
-        // case unconditional_br_:
-        // case value_ret_:
-        // case void_ret_:
-        // case alloca_:
-        // case load_:
-        // case ptr_load_:
-        // case value_store_:
-        // case builtin_call_:
-        // case two_var_icmp_:
-        // case var_const_icmp_:
-        // case const_var_icmp_:
-        // case value_select_vv_:
-        // case variable_select_vv_:
         case variable_ret_:
         case variable_store_:
         case ptr_store_: {
@@ -442,7 +425,7 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
   // --- Step 2: Place phi nodes ---
   std::set<int> phi_blocks;
   std::set<int> phi_result_ids;
-  std::vector<int> worklist(def_blocks.begin(), def_blocks.end());
+  std::vector worklist(def_blocks.begin(), def_blocks.end());
 
   // Cache the alloca type
   std::shared_ptr<IntegratedType> alloca_type = nullptr;
@@ -457,7 +440,7 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
     int x = worklist.back();
     worklist.pop_back();
     for (int y : dom_frontier_[x]) {
-      if (!phi_blocks.count(y)) {
+      if (!phi_blocks.contains(y)) {
         int phi_result_id = func_->var_id_++;
         phi_result_ids.insert(phi_result_id);
         // Insert phi with sentinels -1 for unfilled operands
@@ -483,7 +466,7 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
     // Process phi instructions in this block — their results are new defs
     for (auto &inst : block_insts) {
       if (inst.instruction_type_ == phi_ &&
-          phi_result_ids.count(inst.result_id_)) {
+          phi_result_ids.contains(inst.result_id_)) {
         reaching_stack.push(ReachingDef::Var(inst.result_id_));
         push_count++;
       }
@@ -543,16 +526,15 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
   // --- Step 4: Fill phi operands using block_exit_defs ---
   for (int block_id : phi_blocks) {
     auto &insts = func_->blocks_[block_id].instructions_;
-    auto preds = std::vector<int>(predecessors_[block_id].begin(),
-                                  predecessors_[block_id].end());
+    auto preds = std::vector(predecessors_[block_id].begin(), predecessors_[block_id].end());
 
     for (auto &inst : insts) {
       if (inst.instruction_type_ == phi_ &&
-          phi_result_ids.count(inst.result_id_)) {
-        if (preds.size() >= 1) {
+          phi_result_ids.contains(inst.result_id_)) {
+        if (!preds.empty()) {
           int p0 = preds[0];
           inst.if_true_ = p0;
-          ReachingDef def0 = block_exit_defs.count(p0)
+          ReachingDef def0 = block_exit_defs.contains(p0)
               ? block_exit_defs[p0] : ReachingDef::Undef();
           if (def0.valid && !def0.is_constant) {
             inst.operand_1_id_ = def0.var_id;
@@ -565,7 +547,7 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
         if (preds.size() >= 2) {
           int p1 = preds[1];
           inst.if_false_ = p1;
-          ReachingDef def1 = block_exit_defs.count(p1)
+          ReachingDef def1 = block_exit_defs.contains(p1)
               ? block_exit_defs[p1] : ReachingDef::Undef();
           if (def1.valid && !def1.is_constant) {
             inst.operand_2_id_ = def1.var_id;
@@ -649,6 +631,22 @@ void Mem2Reg::ReplaceAllUses(const int old_id, const ReachingDef &new_def) const
 // Helper: replace old_id with new_id (both variables) in a single instruction
 // ---------------------------------------------------------------------------
 void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
+  // Generic pointer_ field replacement for instructions that have one
+  switch (inst.instruction_type_) {
+    case load_:
+    case ptr_load_:
+    case variable_store_:
+    case value_store_:
+    case ptr_store_:
+    case get_element_ptr_by_value_:
+    case get_element_ptr_by_variable_:
+    case builtin_memset_: {
+      if (inst.pointer_ == old_id) inst.pointer_ = new_id;
+      break;
+    }
+    default:;
+  }
+
   switch (inst.instruction_type_) {
     case two_var_binary_operation_: {
       if (inst.operand_1_id_ == old_id) inst.operand_1_id_ = new_id;
@@ -756,6 +754,53 @@ void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
 }
 
 // ---------------------------------------------------------------------------
+// Constant-folding helpers for ReplaceVarWithConst
+// ---------------------------------------------------------------------------
+static int FoldBinaryOp(BinaryOperator op, int lhs, int rhs) {
+  switch (op) {
+    case add_:  return lhs + rhs;
+    case sub_:  return lhs - rhs;
+    case mul_:  return lhs * rhs;
+    case udiv_: return rhs != 0 ? static_cast<int>(static_cast<unsigned>(lhs) / static_cast<unsigned>(rhs)) : 0;
+    case sdiv_: return rhs != 0 ? lhs / rhs : 0;
+    case urem_: return rhs != 0 ? static_cast<int>(static_cast<unsigned>(lhs) % static_cast<unsigned>(rhs)) : 0;
+    case srem_: return rhs != 0 ? lhs % rhs : 0;
+    case shl_:  return lhs << rhs;
+    case ashr_: return lhs >> rhs;
+    case and_:  return lhs & rhs;
+    case or_:   return lhs | rhs;
+    case xor_:  return lhs ^ rhs;
+  }
+  return 0;
+}
+
+static bool FoldIcmp(IcmpCond cond, int lhs, int rhs) {
+  switch (cond) {
+    case equal_:                  return lhs == rhs;
+    case not_equal_:              return lhs != rhs;
+    case unsigned_greater_than_:  return static_cast<unsigned>(lhs) >  static_cast<unsigned>(rhs);
+    case unsigned_greater_equal_: return static_cast<unsigned>(lhs) >= static_cast<unsigned>(rhs);
+    case unsigned_less_than_:     return static_cast<unsigned>(lhs) <  static_cast<unsigned>(rhs);
+    case unsigned_less_equal_:    return static_cast<unsigned>(lhs) <= static_cast<unsigned>(rhs);
+    case signed_greater_than_:    return lhs >  rhs;
+    case signed_greater_equal_:   return lhs >= rhs;
+    case signed_less_than_:       return lhs <  rhs;
+    case signed_less_equal_:      return lhs <= rhs;
+  }
+  return false;
+}
+
+// Helper: replace the instruction with a constant assignment to its result_id.
+// Uses value_select_ii_ with condition=1 and both operands set to the constant.
+static void ReplaceInstWithConst(IRInstruction &inst, int folded_val) {
+  inst.instruction_type_ = value_select_vv_;
+  inst.condition_id_ = 1;          // true → pick operand_1
+  inst.operand_1_id_ = folded_val;
+  inst.operand_2_id_ = folded_val;
+  // result_type_ / another_type_  stay as-is (the original result type)
+}
+
+// ---------------------------------------------------------------------------
 // Helper: replace old_id with a constant in a single instruction
 // ---------------------------------------------------------------------------
 void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
@@ -765,24 +810,24 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
       if (inst.operand_1_id_ == old_id) {
         inst.instruction_type_ = const_var_binary_operation_;
         inst.operand_1_id_ = const_val;
-        // operand_2_id_ stays as the other variable
       } else if (inst.operand_2_id_ == old_id) {
         inst.instruction_type_ = var_const_binary_operation_;
         inst.operand_2_id_ = const_val;
-        // operand_1_id_ stays as the other variable
       }
       break;
     }
     case var_const_binary_operation_: {
       if (inst.operand_1_id_ == old_id) {
-        // Both operands become constants — fold? Not mem2reg's job.
-        // Leave as-is; the const operand is already const.
+        // Both operands are now constants → fold
+        int folded = FoldBinaryOp(inst.operator_, const_val, inst.operand_2_id_);
+        ReplaceInstWithConst(inst, folded);
       }
       break;
     }
     case const_var_binary_operation_: {
       if (inst.operand_2_id_ == old_id) {
-        // Both operands become constants — leave as-is.
+        int folded = FoldBinaryOp(inst.operator_, inst.operand_1_id_, const_val);
+        ReplaceInstWithConst(inst, folded);
       }
       break;
     }
@@ -794,6 +839,21 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
       } else if (inst.operand_2_id_ == old_id) {
         inst.instruction_type_ = var_const_icmp_;
         inst.operand_2_id_ = const_val;
+      }
+      break;
+    }
+    case var_const_icmp_: {
+      if (inst.operand_1_id_ == old_id) {
+        // Both operands are now constants → fold to 0 or 1
+        int folded = FoldIcmp(inst.icmp_condition_, const_val, inst.operand_2_id_) ? 1 : 0;
+        ReplaceInstWithConst(inst, folded);
+      }
+      break;
+    }
+    case const_var_icmp_: {
+      if (inst.operand_2_id_ == old_id) {
+        int folded = FoldIcmp(inst.icmp_condition_, inst.operand_1_id_, const_val) ? 1 : 0;
+        ReplaceInstWithConst(inst, folded);
       }
       break;
     }
@@ -816,7 +876,6 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
     // --- Conditional branch ---
     case conditional_br_: {
       if (inst.condition_id_ == old_id) {
-        // Constant condition: fold to unconditional branch
         inst.instruction_type_ = unconditional_br_;
         inst.destination_ = (const_val != 0) ? inst.if_true_ : inst.if_false_;
       }
@@ -846,61 +905,147 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
     case phi_: {
       if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id) {
         inst.operand_1_id_ = const_val;
-        inst.function_name_ |= 0b10; // mark as literal
+        inst.function_name_ |= 0b10;
       }
       if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id) {
         inst.operand_2_id_ = const_val;
-        inst.function_name_ |= 0b01; // mark as literal
+        inst.function_name_ |= 0b01;
       }
       break;
     }
-    // --- Select: variable → value select ---
+    // --- Select: replace variable operand with constant ---
+    case value_select_ii_: {
+      if (inst.condition_id_ != 0 && inst.operand_1_id_ == old_id) {
+        inst.operand_1_id_ = const_val;
+        inst.operand_2_id_ = const_val;
+        inst.instruction_type_ = value_select_vv_;
+      }
+      if (inst.condition_id_ == 0 && inst.operand_2_id_ == old_id) {
+        inst.operand_1_id_ = const_val;
+        inst.operand_2_id_ = const_val;
+        inst.instruction_type_ = value_select_vv_;
+      }
+      break;
+    }
+    case value_select_iv_: {
+      if (inst.condition_id_ != 0 && inst.operand_1_id_ == old_id) {
+        inst.operand_1_id_ = const_val;
+        inst.operand_2_id_ = const_val;
+        inst.instruction_type_ = value_select_vv_;
+      }
+      break;
+    }
+    case value_select_vi_: {
+      if (inst.condition_id_ == 0 && inst.operand_2_id_ == old_id) {
+        inst.operand_1_id_ = const_val;
+        inst.operand_2_id_ = const_val;
+        inst.instruction_type_ = value_select_vv_;
+      }
+      break;
+    }
     case variable_select_ii_: {
       if (inst.condition_id_ == old_id) {
-        inst.instruction_type_ = value_select_ii_;
-        inst.condition_id_ = const_val;
-      }
-      if (inst.operand_1_id_ == old_id) {
-        inst.instruction_type_ = value_select_ii_;
-        inst.operand_1_id_ = const_val;
-      }
-      if (inst.operand_2_id_ == old_id) {
-        inst.instruction_type_ = value_select_ii_;
-        inst.operand_2_id_ = const_val;
+        if (const_val == 0) {
+          inst.condition_id_ = 0;
+          if (inst.operand_2_id_ == old_id) {
+            inst.operand_1_id_ = const_val;
+            inst.operand_2_id_ = const_val;
+            inst.instruction_type_ = value_select_vv_;
+          } else {
+            inst.operand_1_id_ = inst.operand_2_id_;
+            inst.instruction_type_ = value_select_ii_;
+          }
+        } else {
+          inst.condition_id_ = 1;
+          if (inst.operand_1_id_ == old_id) {
+            inst.operand_1_id_ = const_val;
+            inst.operand_2_id_ = const_val;
+            inst.instruction_type_ = value_select_vv_;
+          } else {
+            inst.operand_2_id_ = inst.operand_1_id_;
+            inst.instruction_type_ = value_select_ii_;
+          }
+        }
+      } else {
+        if (inst.operand_1_id_ == old_id && inst.operand_2_id_ == old_id) {
+          inst.operand_1_id_ = const_val;
+          inst.operand_2_id_ = const_val;
+          inst.instruction_type_ = variable_select_vv_;
+        } else if (inst.operand_1_id_ == old_id) {
+          inst.operand_1_id_ = const_val;
+          inst.instruction_type_ = variable_select_vi_;
+        } else if (inst.operand_2_id_ == old_id) {
+          inst.operand_2_id_ = const_val;
+          inst.instruction_type_ = variable_select_iv_;
+        }
       }
       break;
     }
     case variable_select_iv_: {
       if (inst.condition_id_ == old_id) {
-        inst.instruction_type_ = value_select_iv_;
-        inst.condition_id_ = const_val;
-      }
-      if (inst.operand_1_id_ == old_id) {
-        inst.instruction_type_ = value_select_iv_;
-        inst.operand_1_id_ = const_val;
+        if (const_val == 0) {
+          inst.condition_id_ = 0;
+          inst.operand_1_id_ = inst.operand_2_id_;
+          inst.instruction_type_ = value_select_vv_;
+        } else {
+          inst.condition_id_ = 1;
+          if (inst.operand_1_id_ == old_id) {
+            inst.operand_1_id_ = const_val;
+            inst.operand_2_id_ = const_val;
+            inst.instruction_type_ = value_select_vv_;
+          } else {
+            inst.operand_2_id_ = inst.operand_1_id_;
+            inst.instruction_type_ = value_select_ii_;
+          }
+        }
+      } else {
+        if (inst.operand_1_id_ == old_id) {
+          inst.operand_1_id_ = const_val;
+          inst.instruction_type_ = variable_select_vv_;
+        }
       }
       break;
     }
     case variable_select_vi_: {
       if (inst.condition_id_ == old_id) {
-        inst.instruction_type_ = value_select_vi_;
-        inst.condition_id_ = const_val;
-      }
-      if (inst.operand_2_id_ == old_id) {
-        inst.instruction_type_ = value_select_vi_;
-        inst.operand_2_id_ = const_val;
+        if (const_val == 0) {
+          inst.condition_id_ = 0;
+          if (inst.operand_2_id_ == old_id) {
+            inst.operand_1_id_ = const_val;
+            inst.operand_2_id_ = const_val;
+            inst.instruction_type_ = value_select_vv_;
+          } else {
+            inst.operand_1_id_ = inst.operand_2_id_;
+            inst.instruction_type_ = value_select_ii_;
+          }
+        } else {
+          inst.condition_id_ = 1;
+          inst.operand_2_id_ = inst.operand_1_id_;
+          inst.instruction_type_ = value_select_vv_;
+        }
+      } else {
+        if (inst.operand_2_id_ == old_id) {
+          inst.operand_2_id_ = const_val;
+          inst.instruction_type_ = variable_select_vv_;
+        }
       }
       break;
     }
     case variable_select_vv_: {
       if (inst.condition_id_ == old_id) {
-        inst.instruction_type_ = value_select_vv_;
-        inst.condition_id_ = const_val;
+        if (const_val == 0) {
+          inst.condition_id_ = 0;
+          inst.operand_1_id_ = inst.operand_2_id_;
+          inst.instruction_type_ = value_select_vv_;
+        } else {
+          inst.condition_id_ = 1;
+          inst.operand_2_id_ = inst.operand_1_id_;
+          inst.instruction_type_ = value_select_vv_;
+        }
       }
       break;
     }
-    default:
-      break;
+    default:;
   }
 }
 

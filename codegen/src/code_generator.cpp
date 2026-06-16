@@ -277,7 +277,7 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
 }
 void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
     const int value_src, const std::shared_ptr<IntegratedType> &type) {
-  if (type->basic_type == i32_type) {
+  if (type->is_int) {
     if (RISCV_functions_[func_id].location_[var_dest].first) {
       r_block.PushLi(RISCV_functions_[func_id].location_[var_dest].second, value_src);
     } else {
