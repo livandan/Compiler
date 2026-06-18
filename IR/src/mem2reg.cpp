@@ -45,18 +45,22 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
     }
   }
 
-  // Promote each alloca
+  // Promote each alloca. PromoteAlloca may bail out (e.g., it discovers the
+  // phi fan-in would exceed the IR's 2-operand phi capacity). When that
+  // happens, the alloca is left intact, so we must NOT remove it from the
+  // alloca list.
+  std::set<int> actually_promoted;
   for (int alloca_id : promotable_alloca_ids) {
-    PromoteAlloca(alloca_id);
+    if (PromoteAlloca(alloca_id)) {
+      actually_promoted.insert(alloca_id);
+    }
   }
 
   // Remove the promoted alloca instructions from alloca list
   {
-    const std::set promoted_set(promotable_alloca_ids.begin(),
-                                     promotable_alloca_ids.end());
     std::vector<IRInstruction> remaining;
     for (auto &inst : func_->alloca_instructions_) {
-      if (!promoted_set.contains(inst.result_id_)) {
+      if (!actually_promoted.contains(inst.result_id_)) {
         remaining.push_back(inst);
       }
     }
@@ -65,6 +69,13 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
 
   // Remove dead load/store instructions
   RemoveDeadInstructions();
+
+  // After promotion, some phis may be dead — their result is never read.
+  // This happens when, e.g., an alloca has stores+loads in the same descendant
+  // block (the phi at the dominance frontier was needed for SSA correctness
+  // but its value is shadowed by the local store before any load reads it).
+  // Iteratively remove dead phis.
+  RemoveDeadPhis();
 }
 
 // ============================================================================
@@ -280,6 +291,8 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case variable_store_:
         case ptr_store_: {
           if (inst.result_id_ == alloca_id) {
+            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: result_id matches in "
+                      << static_cast<int>(inst.instruction_type_) << " at block " << block_id << "\n";
             return false;
           }
           break;
@@ -288,12 +301,14 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case get_element_ptr_by_variable_:
         case builtin_memset_: {
           if (inst.pointer_ == alloca_id) {
+            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: pointer matches in gep/memset\n";
             return false;
           }
           break;
         }
         case builtin_memcpy_: {
           if (inst.destination_ == alloca_id || inst.pointer_ == alloca_id) {
+            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: used in memcpy\n";
             return false;
           }
           break;
@@ -302,6 +317,7 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case void_call_: {
           for (const auto &argument : inst.function_call_arguments_) {
             if (argument.is_variable_ && argument.value_ == alloca_id) {
+              std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: passed to call as variable arg\n";
               return false;
             }
           }
@@ -369,10 +385,11 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
 // Promote a single alloca
 // ============================================================================
 
-void Mem2Reg::PromoteAlloca(int alloca_id) {
+bool Mem2Reg::PromoteAlloca(int alloca_id) {
   current_alloca_id_ = alloca_id;
   stores_of_alloca_.clear();
   loads_of_alloca_.clear();
+  std::cerr << "[m2r] PromoteAlloca: alloca_id=" << alloca_id << "\n";
 
   // --- Step 1: Collect stores and loads ---
   // Gather all blocks that contain a store (definition) to this alloca.
@@ -420,7 +437,76 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
     }
   }
 
-  if (def_blocks.empty()) return; // nothing to promote
+  if (def_blocks.empty()) return true; // nothing to promote (no stores, but loads may exist)
+
+  // --- Step 1.5: Pruned-SSA liveness precomputation ---
+  // A phi at block Y is only useful if the alloca is *loaded* somewhere in
+  // Y's dom-tree subtree (Y itself or any descendant). Otherwise the phi is
+  // dead — its result is never read — and inserting it would force bogus
+  // operands on the "undef" predecessor paths.
+  //
+  // We compute live_load_in_subtree[Y] = true iff some block in {Y ∪ dom-descendants(Y)}
+  // contains a load of this alloca. Bottom-up over the dom tree.
+
+  // First, the set of blocks that themselves load this alloca.
+  std::set<int> blocks_that_load;
+  for (const auto &[block_id, block] : func_->blocks_) {
+    for (const auto &inst : block.instructions_) {
+      if ((inst.instruction_type_ == load_ || inst.instruction_type_ == ptr_load_)
+          && inst.pointer_ == alloca_id) {
+        blocks_that_load.insert(block_id);
+        break;
+      }
+    }
+  }
+
+  // Bottom-up computation via post-order of the dom tree. We process dom-tree
+  // nodes in reverse DFN order — this guarantees children are processed before
+  // their parents.
+  std::map<int, bool> live_load_in_subtree;
+  for (int i = static_cast<int>(vertex_.size()) - 1; i >= 1; --i) {
+    int b = vertex_[i];
+    bool any = blocks_that_load.contains(b);
+    for (int child : dom_children_[b]) {
+      if (live_load_in_subtree[child]) any = true;
+    }
+    live_load_in_subtree[b] = any;
+  }
+
+  // --- Step 1.6: Bail-out check for unsupported phi fan-in ---
+  // This IR's phi instruction has exactly two operand slots (one per predecessor
+  // label). If any *live* phi block (after pruning) would have more than two
+  // predecessors, we cannot represent the phi correctly — so we skip promotion
+  // for this alloca entirely.
+  //
+  // We compute the iterated dominance frontier, intersect with live blocks
+  // (pruned SSA), and check the predecessor count.
+  {
+    std::set<int> iter_df;
+    std::vector wl(def_blocks.begin(), def_blocks.end());
+    while (!wl.empty()) {
+      int x = wl.back();
+      wl.pop_back();
+      for (int y : dom_frontier_[x]) {
+        if (!iter_df.contains(y)) {
+          iter_df.insert(y);
+          wl.push_back(y);
+        }
+      }
+    }
+    for (int y : iter_df) {
+      // Pruned SSA: a phi at Y is only useful if the alloca is loaded somewhere
+      // in Y's dom-tree subtree. Otherwise it's dead and we can skip it.
+      if (!live_load_in_subtree[y]) continue;
+      const auto it = predecessors_.find(y);
+      if (it != predecessors_.end() && it->second.size() > 2) {
+        std::cerr << "[m2r]   alloca " << alloca_id
+                  << ": NOT promotable — live iterated DF block " << y << " has "
+                  << it->second.size() << " predecessors (phi supports only 2)\n";
+        return false;
+      }
+    }
+  }
 
   // --- Step 2: Place phi nodes ---
   std::set<int> phi_blocks;
@@ -443,6 +529,8 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
       if (!phi_blocks.contains(y)) {
         int phi_result_id = func_->var_id_++;
         phi_result_ids.insert(phi_result_id);
+        std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
+                  << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
         // Insert phi with sentinels -1 for unfilled operands
         func_->blocks_[y].instructions_.insert(
             func_->blocks_[y].instructions_.begin(),
@@ -508,9 +596,16 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
 
     // Record the reaching definition at the end of this block
     block_exit_defs[block_id] = reaching_stack.top();
+    std::cerr << "[m2r]     rename_dfs visited block " << block_id
+              << ": exit_def.valid=" << reaching_stack.top().valid
+              << (reaching_stack.top().valid ? (reaching_stack.top().is_constant
+                  ? (", const=" + std::to_string(reaching_stack.top().const_value))
+                  : (", var=" + std::to_string(reaching_stack.top().var_id))) : "")
+              << "\n";
 
     // Recurse into dominator tree children
     for (int child : dom_children_[block_id]) {
+      std::cerr << "[m2r]       block " << block_id << " -> child " << child << "\n";
       rename_dfs(child);
     }
 
@@ -531,6 +626,11 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
     for (auto &inst : insts) {
       if (inst.instruction_type_ == phi_ &&
           phi_result_ids.contains(inst.result_id_)) {
+        std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
+                  << inst.result_id_ << " at block " << block_id
+                  << " (preds=";
+        for (int p : preds) std::cerr << " " << p;
+        std::cerr << ")\n";
         if (!preds.empty()) {
           int p0 = preds[0];
           inst.if_true_ = p0;
@@ -539,9 +639,17 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
           if (def0.valid && !def0.is_constant) {
             inst.operand_1_id_ = def0.var_id;
             inst.function_name_ &= ~0b10; // operand1 is variable
+            std::cerr << "[m2r]     op1 from pred " << p0 << ": var " << def0.var_id << "\n";
           } else if (def0.valid) {
             inst.operand_1_id_ = def0.const_value;
             inst.function_name_ |= 0b10;  // operand1 is literal
+            std::cerr << "[m2r]     op1 from pred " << p0 << ": const " << def0.const_value << "\n";
+          } else {
+            // Undef path — represent as literal 0 (null/zero) rather than
+            // leaving the default, which would otherwise be misread as var.0.
+            inst.operand_1_id_ = 0;
+            inst.function_name_ |= 0b10;
+            std::cerr << "[m2r]     op1 from pred " << p0 << ": UNDEF -> literal 0\n";
           }
         }
         if (preds.size() >= 2) {
@@ -552,9 +660,15 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
           if (def1.valid && !def1.is_constant) {
             inst.operand_2_id_ = def1.var_id;
             inst.function_name_ &= ~0b01; // operand2 is variable
+            std::cerr << "[m2r]     op2 from pred " << p1 << ": var " << def1.var_id << "\n";
           } else if (def1.valid) {
             inst.operand_2_id_ = def1.const_value;
             inst.function_name_ |= 0b01;  // operand2 is literal
+            std::cerr << "[m2r]     op2 from pred " << p1 << ": const " << def1.const_value << "\n";
+          } else {
+            inst.operand_2_id_ = 0;
+            inst.function_name_ |= 0b01;
+            std::cerr << "[m2r]     op2 from pred " << p1 << ": UNDEF -> literal 0\n";
           }
         }
         break;
@@ -601,6 +715,7 @@ void Mem2Reg::PromoteAlloca(int alloca_id) {
   }
 
   current_alloca_id_ = -1;
+  return true;
 }
 
 // Forward declarations for helper functions used by ReplaceAllUses
@@ -1067,5 +1182,122 @@ void Mem2Reg::RemoveDeadInstructions() const {
       }
     }
     block.instructions_ = std::move(remaining);
+  }
+}
+
+// Iterate to fixed point: remove phis whose result is never referenced by
+// any other instruction (including other phis). Removing one phi may make
+// another phi unused, so loop until no changes.
+void Mem2Reg::RemoveDeadPhis() const {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    // Collect the set of phi result ids in this function.
+    std::set<int> phi_results;
+    for (const auto &[block_id, block] : func_->blocks_) {
+      for (const auto &inst : block.instructions_) {
+        if (inst.instruction_type_ == phi_) {
+          phi_results.insert(inst.result_id_);
+        }
+      }
+    }
+    // Collect the set of phi result ids that are *referenced* by some other
+    // instruction. A phi references another phi if one of its variable operands
+    // equals that phi's result id.
+    std::set<int> referenced;
+    auto consider = [&](const IRInstruction &inst, int var_id, bool is_var) {
+      // Only count variable references; literals are not variable ids.
+      if (is_var && var_id != 0) referenced.insert(var_id);
+    };
+    for (const auto &[block_id, block] : func_->blocks_) {
+      for (const auto &inst : block.instructions_) {
+        // Skip phi itself for the operand check below — we look at uses FROM
+        // other instructions (and FROM phis at different positions).
+        switch (inst.instruction_type_) {
+          case phi_:
+            consider(inst, inst.operand_1_id_, !(inst.function_name_ & 0b10));
+            consider(inst, inst.operand_2_id_, !(inst.function_name_ & 0b01));
+            break;
+          case two_var_binary_operation_:
+          case two_var_icmp_:
+            consider(inst, inst.operand_1_id_, true);
+            consider(inst, inst.operand_2_id_, true);
+            break;
+          case var_const_binary_operation_:
+          case const_var_binary_operation_:
+          case var_const_icmp_:
+          case const_var_icmp_:
+            consider(inst, inst.operand_1_id_, true);
+            consider(inst, inst.operand_2_id_, true);
+            break;
+          case conditional_br_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case variable_ret_:
+          case variable_store_:
+          case ptr_store_:
+            consider(inst, inst.result_id_, true);
+            break;
+          case get_element_ptr_by_variable_:
+            consider(inst, inst.index_, true);
+            break;
+          case non_void_call_:
+          case void_call_:
+          case builtin_call_:
+            for (const auto &arg : inst.function_call_arguments_) {
+              consider(inst, arg.value_, arg.is_variable_);
+            }
+            break;
+          case value_select_ii_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case value_select_iv_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case value_select_vi_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case value_select_vv_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case variable_select_ii_:
+            consider(inst, inst.condition_id_, true);
+            consider(inst, inst.operand_1_id_, true);
+            consider(inst, inst.operand_2_id_, true);
+            break;
+          case variable_select_iv_:
+            consider(inst, inst.condition_id_, true);
+            consider(inst, inst.operand_1_id_, true);
+            break;
+          case variable_select_vi_:
+            consider(inst, inst.condition_id_, true);
+            consider(inst, inst.operand_2_id_, true);
+            break;
+          case variable_select_vv_:
+            consider(inst, inst.condition_id_, true);
+            break;
+          case builtin_memcpy_:
+            consider(inst, inst.destination_, true);
+            consider(inst, inst.pointer_, true);
+            break;
+          default:;
+        }
+      }
+    }
+    // Remove phis whose result is unreferenced.
+    for (auto &[block_id, block] : func_->blocks_) {
+      std::vector<IRInstruction> remaining;
+      for (const auto &inst : block.instructions_) {
+        if (inst.instruction_type_ == phi_ &&
+            phi_results.contains(inst.result_id_) &&
+            !referenced.contains(inst.result_id_)) {
+          changed = true;
+          // Drop this dead phi.
+          continue;
+        }
+        remaining.push_back(inst);
+      }
+      block.instructions_ = std::move(remaining);
+    }
   }
 }

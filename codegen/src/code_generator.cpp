@@ -578,12 +578,28 @@ void CodeGenerator::Generate() {
             break;
           }
           case conditional_br_: {
-            int condition_var_register = RISCV_functions_[i].location_[instruction.condition_id_].second;
-            if (!RISCV_functions_[i].location_[instruction.condition_id_].first) {
-              r_block.PushMemory_I(r_lbu_, 5, RISCV_functions_[i].location_[instruction.condition_id_].second, 2);
-              condition_var_register = 5;
+            // NOTE: phi-induced moves for the branch targets are emitted in
+            // the post-block pass *after* the regular instructions, just
+            // before the terminator. Those moves clobber scratch registers
+            // (5, 6, 7), so we must load the condition INTO a scratch
+            // register AFTER the moves run — otherwise the moves will
+            // clobber it and the branch will see a stale value.
+            //
+            // We therefore stash the load + branch on a separate
+            // "deferred terminator" stream that the post-block pass emits
+            // after the moves.
+            bool cond_in_reg = RISCV_functions_[i].location_[instruction.condition_id_].first;
+            int cond_home = RISCV_functions_[i].location_[instruction.condition_id_].second;
+            if (cond_in_reg) {
+              // mv t0, cond_home — defer it so it runs after the moves.
+              r_block.deferred_load_.push_back(
+                  RISCVInstruction(r_add_, 5, cond_home, 0, -1, -1));
+            } else {
+              // lbu t0, cond_home(sp) — defer it.
+              r_block.deferred_load_.push_back(
+                  RISCVInstruction(r_lbu_, 5, 2, -1, cond_home, -1));
             }
-            r_block.PushControl_B(r_beq_, 0, condition_var_register, instruction.if_false_);
+            r_block.PushControl_B(r_beq_, 0, 5, instruction.if_false_);
             r_block.PushJ(instruction.if_true_);
             break;
           }
@@ -839,28 +855,41 @@ void CodeGenerator::Generate() {
             break;
           }
           case get_element_ptr_by_variable_: { // pointer: array/struct ptr; result_id: element ptr; result_type: array/struct type
-            int index_reg = RISCV_functions_[i].location_[instruction.index_].second;
-            if (!RISCV_functions_[i].location_[instruction.index_].first) {
-              r_block.PushMemory_I(r_lw_, 5, index_reg, 2);
-              index_reg = 5;
+            // We must NOT clobber the index variable's home register, because
+            // (after mem2reg) the same variable may be referenced by a later
+            // instruction in a different block. Always move/copy the index
+            // value into a scratch register first.
+            int index_var_reg = RISCV_functions_[i].location_[instruction.index_].second;
+            const bool index_in_reg = RISCV_functions_[i].location_[instruction.index_].first;
+            if (index_in_reg) {
+              // Copy from the home register into t0 (=5) without modifying the home reg.
+              r_block.PushArithmetic_R(r_add_, 5, index_var_reg, 0);
+            } else {
+              r_block.PushMemory_I(r_lw_, 5, index_var_reg, 2);
             }
             auto [element_size, need_alignment] = GetSize(instruction.result_type_->element_type);
             if (need_alignment) {
               element_size = (element_size + 3) / 4 * 4;
             }
+            // reg 6 holds element_size, then is reused for pointer load below.
+            // The offset is computed in reg 5 (which is a scratch).
             r_block.PushLi(6, element_size);
-            r_block.PushExtended(r_mul_, index_reg, index_reg, 6);
-            // the offset is stored in the index_reg
+            r_block.PushExtended(r_mul_, 5, 5, 6);
+            // the offset is stored in reg 5
             int pointer_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
+              // pointer is on stack; load into reg 6 (reg 6 is now free, element_size no longer needed)
               r_block.PushMemory_I(r_lw_, 6, pointer_reg, 2);
               pointer_reg = 6;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              r_block.PushArithmetic_R(r_add_, instruction.result_id_, pointer_reg, index_reg);
+              r_block.PushArithmetic_R(r_add_, instruction.result_id_, pointer_reg, 5);
             } else {
-              r_block.PushArithmetic_R(r_add_, 5, pointer_reg, index_reg);
-              r_block.PushMemory_S(r_sw_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+              // result is on stack; we need a scratch for the add result.
+              // reg 5 holds the offset, reg 6 holds the pointer (or it's the home reg).
+              // Use reg 7 as scratch for the add.
+              r_block.PushArithmetic_R(r_add_, 7, pointer_reg, 5);
+              r_block.PushMemory_S(r_sw_, 7, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             }
             break;
           }
@@ -1664,6 +1693,7 @@ void CodeGenerator::Generate() {
         jump_instructions.push_back(r_block.instructions_.back());
         r_block.instructions_.pop_back();
       }
+      // Emit phi-induced moves (these clobber scratch registers 5/6/7).
       for (const auto &mv_instruction : r_block.move_instructions_) {
         const auto [dest_in_reg, dest_location] = RISCV_functions_[i].location_[mv_instruction.dest_];
         if (mv_instruction.src_is_value_) {
@@ -1679,6 +1709,11 @@ void CodeGenerator::Generate() {
         } else { // the src is a variable
           VariableAssignment(i, r_block, mv_instruction.dest_, mv_instruction.src_, mv_instruction.type_);
         }
+      }
+      // Now emit deferred loads (e.g., the conditional branch's condition
+      // reload) so they execute after the moves and before the terminator.
+      for (const auto &def : r_block.deferred_load_) {
+        r_block.instructions_.push_back(def);
       }
       while (!jump_instructions.empty()) {
         r_block.instructions_.push_back(jump_instructions.back());

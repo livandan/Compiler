@@ -61,7 +61,9 @@ private:
   bool IsPromotable(int alloca_id) const;
 
   // --- SSA construction for one alloca ---
-  void PromoteAlloca(int alloca_id);
+  // Returns true if the alloca was promoted, false if the pass bailed out
+  // (in which case the alloca is left intact).
+  bool PromoteAlloca(int alloca_id);
 
   // --- Instruction rewriting helpers ---
   // Replace every use of old_id with new_def (variable or constant) in all instructions of func_.
@@ -69,6 +71,7 @@ private:
 
   // --- Cleanup ---
   void RemoveDeadInstructions() const;
+  void RemoveDeadPhis() const;
 
   std::vector<IRFunctionNode> &functions_;
   // ========== per-function state (reset for each function) ==========

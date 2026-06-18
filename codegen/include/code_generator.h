@@ -36,6 +36,11 @@ struct RISCVBlock {
   std::vector<RISCVInstruction> instructions_;
   std::vector<MoveInstruction> move_instructions_;
   std::vector<RISCVInstruction> jump_blocks_;
+  // Instructions to be emitted *after* the phi-induced moves but *before*
+  // the block terminator (branches/jumps). Used by conditional branches to
+  // ensure their condition load survives the moves (which clobber scratch
+  // registers).
+  std::vector<RISCVInstruction> deferred_load_;
   void PushArithmetic_R(const RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
     if (type < 1 || type > 10) {
       CodegenThrow("Incorrectly use PushArithmetic_R(...).");

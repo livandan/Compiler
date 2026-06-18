@@ -2575,13 +2575,26 @@ void IRVisitor::Print(std::ofstream &file, const IRInstruction &instruction) {
     case phi_: {
       file << "%var." << instruction.result_id_ << " = phi ";
       OutputType(file, instruction.result_type_);
+      // For pointer-typed phis, an undef operand is encoded as literal 0
+      // (set by mem2reg). Emit it as `null` rather than integer 0 to satisfy
+      // LLVM's type checker on `phi ptr`.
+      const bool is_ptr_phi = instruction.result_type_ &&
+          instruction.result_type_->basic_type == pointer_type;
       if ((instruction.function_name_ & 0b10) != 0) { // the first value is literal value
-        file << " [ " << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
+        if (is_ptr_phi && instruction.operand_1_id_ == 0) {
+          file << " [ null, %label_" << instruction.if_true_ << " ], ";
+        } else {
+          file << " [ " << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
+        }
       } else {
         file << " [ %var." << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
       }
       if ((instruction.function_name_ & 0b01) != 0) { // the second value is literal value
-        file << "[ " << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
+        if (is_ptr_phi && instruction.operand_2_id_ == 0) {
+          file << "[ null, %label_" << instruction.if_false_ << " ]";
+        } else {
+          file << "[ " << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
+        }
       } else {
         file << "[ %var." << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
       }

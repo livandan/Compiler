@@ -8,8 +8,10 @@
 #include "mem2reg.h"
 #include "code_generator.h"
 
-TEST(Mem2RegTestSingle, debugging_test) {
-  const std::string file = "../RCompiler-Testcases/working_space/debugging";
+// Helper that runs tokenize -> semantic -> IR -> mem2reg -> codegen on one .rx file,
+// writing the post-mem2reg IR to <base>_mem2reg.ll and RISC-V to <base>_mem2reg.s.
+static void RunMem2RegOn(const std::string &base) {
+  const std::string file = "../RCompiler-Testcases/working_space/" + base;
   const std::string code_file = file + ".rx";
   const std::string IR_file = file + "_mem2reg.ll";
   const std::string RISCV_file = file + "_mem2reg.s";
@@ -46,7 +48,7 @@ TEST(Mem2RegTestSingle, debugging_test) {
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;
-    std::cerr << "[Error] IR generation failed.";
+    std::cerr << "[Error] IR generation failed for " << base << '\n';
     exit(0);
   }
 
@@ -56,7 +58,7 @@ TEST(Mem2RegTestSingle, debugging_test) {
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;
-    std::cerr << "[Error] Mem2reg failed.";
+    std::cerr << "[Error] Mem2reg failed for " << base << '\n';
     exit(0);
   }
 
@@ -71,7 +73,7 @@ TEST(Mem2RegTestSingle, debugging_test) {
 
   try {
     CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
-       IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
+        IR_generator.GetIRStructs(), IR_generator.GetMainFuncID());
     RISCV_generator.Generate();
 
     std::ofstream RISCV_output_file(RISCV_file);
@@ -84,11 +86,87 @@ TEST(Mem2RegTestSingle, debugging_test) {
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;
-    std::cerr << "[Error] Codegen failed.";
+    std::cerr << "[Error] Codegen failed for " << base << '\n';
     exit(0);
   }
 
   delete syntax_tree;
+}
+
+TEST(Mem2RegTestSingle, debugging_test) {
+  RunMem2RegOn("debugging");
+}
+
+TEST(Mem2RegTestSingle, t1_simple_alloca) {
+  RunMem2RegOn("t1_simple_alloca");
+}
+
+TEST(Mem2RegTestSingle, t2_if_else_phi) {
+  RunMem2RegOn("t2_if_else_phi");
+}
+
+TEST(Mem2RegTestSingle, t3_loop_counter) {
+  RunMem2RegOn("t3_loop_counter");
+}
+
+TEST(Mem2RegTestSingle, t4_loop_exit_value) {
+  RunMem2RegOn("t4_loop_exit_value");
+}
+
+TEST(Mem2RegTestSingle, t5_multi_var) {
+  RunMem2RegOn("t5_multi_var");
+}
+
+TEST(Mem2RegTestSingle, t6_nested_branch) {
+  RunMem2RegOn("t6_nested_branch");
+}
+
+TEST(Mem2RegTestSingle, t7_loop_conditional) {
+  RunMem2RegOn("t7_loop_conditional");
+}
+
+TEST(Mem2RegTestSingle, t8_uninit) {
+  RunMem2RegOn("t8_uninit");
+}
+
+TEST(Mem2RegTestSingle, t9_array_mixed) {
+  RunMem2RegOn("t9_array_mixed");
+}
+
+TEST(Mem2RegTestSingle, t10_const_store) {
+  RunMem2RegOn("t10_const_store");
+}
+
+TEST(Mem2RegTestSingle, t12_minimal) {
+  RunMem2RegOn("t12_minimal");
+}
+
+TEST(Mem2RegTestSingle, t13_with_update) {
+  RunMem2RegOn("t13_with_update");
+}
+
+TEST(Mem2RegTestSingle, t14_simple_build) {
+  RunMem2RegOn("t14_simple_build");
+}
+
+TEST(Mem2RegTestSingle, t15_simple_if_else) {
+  RunMem2RegOn("t15_simple_if_else");
+}
+
+TEST(Mem2RegTestSingle, t16_recursion) {
+  RunMem2RegOn("t16_recursion");
+}
+
+TEST(Mem2RegTestSingle, t17_update_simple) {
+  RunMem2RegOn("t17_update_simple");
+}
+
+TEST(Mem2RegTestSingle, t18_mutual_recursion) {
+  RunMem2RegOn("t18_mutual_recursion");
+}
+
+TEST(Mem2RegTestSingle, t19_loop_mutual) {
+  RunMem2RegOn("t19_loop_mutual");
 }
 
 TEST(Mem2RegTest, test_all) {
