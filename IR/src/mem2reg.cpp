@@ -793,6 +793,11 @@ static bool FoldIcmp(IcmpCond cond, int lhs, int rhs) {
 // Helper: replace the instruction with a constant assignment to its result_id.
 // Uses value_select_ii_ with condition=1 and both operands set to the constant.
 static void ReplaceInstWithConst(IRInstruction &inst, int folded_val) {
+  if (inst.instruction_type_ == var_const_icmp_ || inst.instruction_type_ == const_var_icmp_) {
+    inst.result_type_->basic_type = bool_type;
+    inst.result_type_->is_int = false;
+    inst.another_type_ = inst.result_type_;
+  }
   inst.instruction_type_ = value_select_vv_;
   inst.condition_id_ = 1;          // true → pick operand_1
   inst.operand_1_id_ = folded_val;
