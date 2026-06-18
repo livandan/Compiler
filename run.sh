@@ -55,7 +55,7 @@ echo "============================= Codegen Tests Begins =======================
 code_gen_success_count=0
 
 for INDEX in {1..50}; do
-  reimu -f="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -i="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" -s=200000000
+  reimu -f="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_mem2reg.s" -i="RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" -s=200000000
   if [ $? -eq 0 ]; then
     diff "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.out" -Z
     if [ $? -eq 0 ]; then
