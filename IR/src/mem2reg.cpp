@@ -842,20 +842,24 @@ void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
       if (inst.condition_id_ == old_id) inst.condition_id_ = new_id;
       break;
     }
+    // For value_select_*: condition is a LITERAL (0 or 1), so condition_id_
+    // is never a variable to replace. The OPERANDS (operand_1_id_ / operand_2_id_)
+    // are variables, and we must replace them.
     case value_select_ii_: {
-      if (inst.condition_id_ == old_id) inst.condition_id_ = new_id;
+      if (inst.operand_1_id_ == old_id) inst.operand_1_id_ = new_id;
+      if (inst.operand_2_id_ == old_id) inst.operand_2_id_ = new_id;
       break;
     }
     case value_select_iv_: {
-      if (inst.condition_id_ == old_id) inst.condition_id_ = new_id;
+      if (inst.operand_1_id_ == old_id) inst.operand_1_id_ = new_id;
       break;
     }
     case value_select_vi_: {
-      if (inst.condition_id_ == old_id) inst.condition_id_ = new_id;
+      if (inst.operand_2_id_ == old_id) inst.operand_2_id_ = new_id;
       break;
     }
     case value_select_vv_: {
-      if (inst.condition_id_ == old_id) inst.condition_id_ = new_id;
+      // Both operands are literal; no variable to replace.
       break;
     }
     case builtin_memcpy_: {

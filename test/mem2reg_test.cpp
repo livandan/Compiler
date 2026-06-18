@@ -169,6 +169,30 @@ TEST(Mem2RegTestSingle, t19_loop_mutual) {
   RunMem2RegOn("t19_loop_mutual");
 }
 
+TEST(Mem2RegTestSingle, t20_avl_search) {
+  RunMem2RegOn("t20_avl_search");
+}
+
+TEST(Mem2RegTestSingle, t21_avl_min) {
+  RunMem2RegOn("t21_avl_min");
+}
+
+TEST(Mem2RegTestSingle, t22_avl_rotations) {
+  RunMem2RegOn("t22_avl_rotations");
+}
+
+TEST(Mem2RegTestSingle, t23_and_chain) {
+  RunMem2RegOn("t23_and_chain");
+}
+
+TEST(Mem2RegTestSingle, t24_avl_conditions) {
+  RunMem2RegOn("t24_avl_conditions");
+}
+
+TEST(Mem2RegTestSingle, t25_avl_full) {
+  RunMem2RegOn("t25_avl_full");
+}
+
 TEST(Mem2RegTest, test_all) {
   for (int i = 1; i <= 50; ++i) {
     const std::string file = "../RCompiler-Testcases/IR-1/src/comprehensive" + std::to_string(i) + "/comprehensive" + std::to_string(i);
