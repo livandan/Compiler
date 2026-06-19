@@ -49,7 +49,49 @@ echo "IR generating tests: ${IR_success_count} success out of 50"
 #  echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed in generating .s"
 #fi
 
+echo ""
+echo ""
+echo ""
+echo ""
+echo "============================= Small Tests ==========================="
 
+success_count=0
+total_count=0
+
+for IN_FILE in RCompiler-Testcases/working_space/t*.in; do
+  BASENAME=$(basename "$IN_FILE" .in)
+  PREFIX="RCompiler-Testcases/working_space/${BASENAME}"
+  S_FILE="${PREFIX}_mem2reg.s"
+  OUT_FILE="${PREFIX}.out"
+  MY_OUT_FILE="${PREFIX}_my_output.out"
+
+  if [ ! -f "$S_FILE" ]; then
+    echo "-------- ${BASENAME} skipped (no _mem2reg.s)"
+    continue
+  fi
+  ((total_count++))
+
+  timeout 15s reimu -f="$S_FILE" -i="$IN_FILE" -o="$MY_OUT_FILE" -s=200000000
+  if [ $? -eq 0 ]; then
+    diff "$MY_OUT_FILE" "$OUT_FILE" -Z
+    if [ $? -eq 0 ]; then
+      ((success_count++))
+      echo "${BASENAME} success!!!"
+    else
+      echo "-------- ${BASENAME} failed in diff"
+    fi
+  else
+    echo "-------- ${BASENAME} failed in executing reimu"
+  fi
+done
+
+echo ""
+echo "Small tests: ${success_count} success out of ${total_count}"
+
+echo ""
+echo ""
+echo ""
+echo ""
 echo "============================= Codegen Tests Begins ============================="
 
 code_gen_success_count=0

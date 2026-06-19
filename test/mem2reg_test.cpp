@@ -195,6 +195,7 @@ TEST(Mem2RegTestSingle, t25_avl_full) {
 
 TEST(Mem2RegTest, test_all) {
   for (int i = 1; i <= 50; ++i) {
+    std::cerr << "Testing " << i << "\n";
     const std::string file = "../RCompiler-Testcases/IR-1/src/comprehensive" + std::to_string(i) + "/comprehensive" + std::to_string(i);
     const std::string code_file = file + ".rx";
     const std::string IR_file = file + "_mem2reg.ll";

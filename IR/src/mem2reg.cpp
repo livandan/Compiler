@@ -446,74 +446,26 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
   if (def_blocks.empty()) return true; // nothing to promote (no stores, but loads may exist)
 
-  // --- Step 1.5: Pruned-SSA liveness precomputation ---
-  // A phi at block Y is only useful if the alloca is *loaded* somewhere in
-  // Y's dom-tree subtree (Y itself or any descendant). Otherwise the phi is
-  // dead — its result is never read — and inserting it would force bogus
-  // operands on the "undef" predecessor paths.
-  //
-  // We compute live_load_in_subtree[Y] = true iff some block in {Y ∪ dom-descendants(Y)}
-  // contains a load of this alloca. Bottom-up over the dom tree.
+  // --- Step 1.5: (Pruned-SSA liveness precomputation removed) ---
+  // Previously this computed live_load_in_subtree[Y] = whether the alloca is
+  // loaded in Y's dom-subtree, and used it for two purposes:
+  //   (a) the bail-out check (Step 1.6, removed when phi fan-in became
+  //       unbounded), and
+  //   (b) skipping phi placement in Step 2 (pruned SSA).
+  // (b) turned out to be incorrect: a phi at a downstream block (loop header,
+  // etc.) may consume the value that flows through Y from a predecessor path,
+  // even if no instruction in Y's subtree performs a load. Dropping the phi at
+  // Y then starves the downstream phi of one of its operands and produces
+  // wrong code. We now place phis at every iterated-DF block and rely on
+  // RemoveDeadPhis() to clean up truly dead ones.
 
-  // First, the set of blocks that themselves load this alloca.
-  std::set<int> blocks_that_load;
-  for (const auto &[block_id, block] : func_->blocks_) {
-    for (const auto &inst : block.instructions_) {
-      if ((inst.instruction_type_ == load_ || inst.instruction_type_ == ptr_load_)
-          && inst.pointer_ == alloca_id) {
-        blocks_that_load.insert(block_id);
-        break;
-      }
-    }
-  }
 
-  // Bottom-up computation via post-order of the dom tree. We process dom-tree
-  // nodes in reverse DFN order — this guarantees children are processed before
-  // their parents.
-  std::map<int, bool> live_load_in_subtree;
-  for (int i = static_cast<int>(vertex_.size()) - 1; i >= 1; --i) {
-    int b = vertex_[i];
-    bool any = blocks_that_load.contains(b);
-    for (int child : dom_children_[b]) {
-      if (live_load_in_subtree[child]) any = true;
-    }
-    live_load_in_subtree[b] = any;
-  }
-
-  // --- Step 1.6: Bail-out check for unsupported phi fan-in ---
-  // This IR's phi instruction has exactly two operand slots (one per predecessor
-  // label). If any *live* phi block (after pruning) would have more than two
-  // predecessors, we cannot represent the phi correctly — so we skip promotion
-  // for this alloca entirely.
-  //
-  // We compute the iterated dominance frontier, intersect with live blocks
-  // (pruned SSA), and check the predecessor count.
-  {
-    std::set<int> iter_df;
-    std::vector wl(def_blocks.begin(), def_blocks.end());
-    while (!wl.empty()) {
-      int x = wl.back();
-      wl.pop_back();
-      for (int y : dom_frontier_[x]) {
-        if (!iter_df.contains(y)) {
-          iter_df.insert(y);
-          wl.push_back(y);
-        }
-      }
-    }
-    for (int y : iter_df) {
-      // Pruned SSA: a phi at Y is only useful if the alloca is loaded somewhere
-      // in Y's dom-tree subtree. Otherwise it's dead and we can skip it.
-      if (!live_load_in_subtree[y]) continue;
-      const auto it = predecessors_.find(y);
-      if (it != predecessors_.end() && it->second.size() > 2) {
-        std::cerr << "[m2r]   alloca " << alloca_id
-                  << ": NOT promotable — live iterated DF block " << y << " has "
-                  << it->second.size() << " predecessors (phi supports only 2)\n";
-        return false;
-      }
-    }
-  }
+  // --- Step 1.6: (Historic bail-out removed) ---
+  // Previously this pass bailed out whenever a live iterated-DF block had more
+  // than two predecessors, because the IR's phi instruction had only two
+  // operand slots. The phi data structure now stores its operands in a vector,
+  // so the fan-in limit is gone — we just place the phi and let Step 4 build
+  // a condition per predecessor.
 
   // --- Step 2: Place phi nodes ---
   std::set<int> phi_blocks;
@@ -533,20 +485,24 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
     int x = worklist.back();
     worklist.pop_back();
     for (int y : dom_frontier_[x]) {
-      if (!phi_blocks.contains(y)) {
-        int phi_result_id = func_->var_id_++;
-        phi_result_ids.insert(phi_result_id);
-        std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
-                  << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
-        // Insert phi with sentinels -1 for unfilled operands
-        func_->blocks_[y].AddPhi(phi_result_id, alloca_type, -1, -1, false);
-        // func_->blocks_[y].instructions_.insert(
-        //     func_->blocks_[y].instructions_.begin(),
-        //     IRInstruction(phi_, phi_result_id, add_, alloca_type, 0, 0,
-        //                   0, -1, -1, 0, 0, equal_, 0));
-        phi_blocks.insert(y);
-        worklist.push_back(y);
-      }
+      if (phi_blocks.contains(y)) continue;
+      // NOTE: pruned SSA (skipping phi placement when no live load exists in
+      // Y's dom-subtree) is *not* correct here. A phi at a downstream block
+      // (e.g., a loop header) may read the value that flows through Y from a
+      // predecessor path — even when no instruction in Y's subtree performs a
+      // load. Such a phi's operand on Y's path needs the merged value, which
+      // requires a phi at Y too. So we place phis at every iterated-DF block
+      // unconditionally; RemoveDeadPhis() later drops phis whose result is
+      // never read (the true dead-phi case).
+      int phi_result_id = func_->var_id_++;
+      phi_result_ids.insert(phi_result_id);
+      std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
+                << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
+      // Insert phi with one placeholder condition; Step 4 will rebuild the
+      // conditions vector to have exactly one entry per predecessor of Y.
+      func_->blocks_[y].AddPhi(phi_result_id, alloca_type, -1, -1, false);
+      phi_blocks.insert(y);
+      worklist.push_back(y);
     }
   }
 
@@ -626,57 +582,59 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
   rename_dfs(entry_block_);
 
   // --- Step 4: Fill phi operands using block_exit_defs ---
+  // Rebuild the conditions vector from scratch: one condition per actual
+  // predecessor of the phi block. (Step 2 only inserted a single placeholder
+  // condition; that placeholder exists purely so the PhiInstruction was
+  // created with the right result_id / type — its operand list is rebuilt here.)
   for (int block_id : phi_blocks) {
     auto preds = std::vector(predecessors_[block_id].begin(), predecessors_[block_id].end());
 
     for (auto &inst : func_->blocks_[block_id].phi_instructions_) {
-      if (phi_result_ids.contains(inst.result_id)) {
-        std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
-                  << inst.result_id << " at block " << block_id
-                  << " (preds=";
-        for (int p : preds) std::cerr << " " << p;
-        std::cerr << ")\n";
-        if (preds.size() != inst.conditions.size()) {
-          Mem2RegThrow("Mismatched pred & phi conditions size!");
+      if (!phi_result_ids.contains(inst.result_id)) continue;
+      std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
+                << inst.result_id << " at block " << block_id
+                << " (preds=";
+      for (int p : preds) std::cerr << " " << p;
+      std::cerr << ")\n";
+      std::vector<PhiCondition> rebuilt;
+      rebuilt.reserve(preds.size());
+      for (const int p : preds) {
+        ReachingDef def = block_exit_defs.contains(p) ? block_exit_defs[p] : ReachingDef::Undef();
+        if (def.valid && !def.is_constant) {
+          rebuilt.emplace_back(p, false, 0, def.var_id);
+          std::cerr << "[m2r]     condition from pred " << p << ": var " << def.var_id << "\n";
+        } else if (def.valid) {
+          rebuilt.emplace_back(p, true, def.const_value, -1);
+          std::cerr << "[m2r]     condition from pred " << p << ": const " << def.const_value << "\n";
+        } else {
+          // Undef path. The predecessor has no reaching def for this alloca
+          // (e.g., it's the entry block with no prior store, or it sits above
+          // the first def on some CFG path). LLVM models this as `undef`;
+          // downstream consumers (codegen in particular) need a concrete
+          // representation, so we lower undef to the literal 0 (the same
+          // value LLVM-style codegen picks for undef reads). This is also
+          // necessary because PhiToMove routes non-const conditions through
+          // AssignmentGraph::AddEdge(var_id, ...), and a sentinel var_id of
+          // -1 would index out of bounds.
+          rebuilt.emplace_back(p, true, 0, -1);
+          std::cerr << "[m2r]     condition from pred " << p << ": UNDEF -> const 0\n";
         }
-        for (const auto p : preds) {
-          int i = 0;
-          for (; i < inst.conditions.size(); ++i) {
-            if (inst.conditions[i].from_block_id == -1) {
-              break;
-            }
-          }
-          if (i == inst.conditions.size()) {
-            Mem2RegThrow("No undecided condition to be complete!");
-          }
-          inst.conditions[i].from_block_id = p;
-          ReachingDef def = block_exit_defs.contains(p) ? block_exit_defs[p] : ReachingDef::Undef();
-          if (def.valid && !def.is_constant) {
-            inst.conditions[i].var_id = def.var_id;
-            inst.conditions[i].is_const = false;
-            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": var " << def.var_id << "\n";
-          } else if (def.valid) {
-            inst.conditions[i].value = def.const_value;
-            inst.conditions[i].is_const = true;
-            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": const " << def.const_value << "\n";
-          } else {
-            // Undef path — represent as %var.-1 rather than
-            // leaving the default, which would otherwise be misread as var.0.
-            inst.conditions[i].value = 0;
-            inst.conditions[i].var_id = -1;
-            inst.conditions[i].is_const = false;
-            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": UNDEF -> %var.-1\n";
-          }
-        }
-        break;
       }
+      inst.conditions = std::move(rebuilt);
+      break;
     }
   }
 
   // --- Step 5: Replace all uses of load results with their reaching defs ---
+  // Even undef reaching defs must be replaced: the load instruction is already
+  // marked unknown_ and will be removed; if we don't rewrite its uses, every
+  // consumer will reference an undefined variable.
   for (const auto &[old_id, new_def] : replacement_map) {
     if (new_def.valid) {
       ReplaceAllUses(old_id, new_def);
+    } else {
+      // undef → literal 0 (works for i32, i1, and pointer when emitted as null)
+      ReplaceAllUses(old_id, ReachingDef::Const(0));
     }
   }
 
@@ -939,18 +897,24 @@ static bool FoldIcmp(IcmpCond cond, int lhs, int rhs) {
 }
 
 // Helper: replace the instruction with a constant assignment to its result_id.
-// Uses value_select_ii_ with condition=1 and both operands set to the constant.
+// Uses value_select_vv_ with condition=1 and both operands set to the constant.
 static void ReplaceInstWithConst(IRInstruction &inst, int folded_val) {
   if (inst.instruction_type_ == var_const_icmp_ || inst.instruction_type_ == const_var_icmp_) {
-    inst.result_type_->basic_type = bool_type;
-    inst.result_type_->is_int = false;
-    inst.another_type_ = inst.result_type_;
+    // Change the result type to bool (i1).  We must NOT mutate the existing
+    // result_type_ in-place because the same IntegratedType object can be
+    // shared (via shared_ptr) with other instructions — most importantly
+    // alloca instructions, whose type would be silently corrupted and produce
+    // phi type mismatches.  Create a copy and override the relevant fields.
+    auto bool_copy = std::make_shared<IntegratedType>(*inst.result_type_);
+    bool_copy->basic_type = bool_type;
+    bool_copy->is_int = false;
+    inst.result_type_ = bool_copy;
+    inst.another_type_ = bool_copy;
   }
   inst.instruction_type_ = value_select_vv_;
   inst.condition_id_ = 1;          // true → pick operand_1
   inst.operand_1_id_ = folded_val;
   inst.operand_2_id_ = folded_val;
-  // result_type_ / another_type_  stay as-is (the original result type)
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,16 +1253,17 @@ void Mem2Reg::RemoveDeadPhis() const {
             }
             break;
           case value_select_ii_:
-            consider(inst.condition_id_, true);
+            consider(inst.operand_1_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case value_select_iv_:
-            consider(inst.condition_id_, true);
+            consider(inst.operand_1_id_, true);
             break;
           case value_select_vi_:
-            consider(inst.condition_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case value_select_vv_:
-            consider(inst.condition_id_, true);
+            // Both operands are literal values; no variable to consider.
             break;
           case variable_select_ii_:
             consider(inst.condition_id_, true);

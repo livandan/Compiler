@@ -102,7 +102,7 @@ void CodeGenerator::PhiToMove() {
                   {condition.from_block_id, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
             }
             assign_relations[{condition.from_block_id, block_id}].AddEdge(condition.var_id,
-                condition.from_block_id, type);
+                dest_var_id, type);
           }
         }
       }
@@ -1705,7 +1705,16 @@ void CodeGenerator::Generate() {
       // Now emit deferred loads (e.g., the conditional branch's condition
       // reload) so they execute after the moves and before the terminator.
       for (const auto &def : r_block.deferred_load_) {
-        r_block.instructions_.push_back(def);
+        if (def.instruction_type_ == r_lbu_ && def.rs1_ == 2 &&
+            (def.imm_ < -2048 || def.imm_ > 2047)) {
+          // Large stack offset — use LI+ADD+LB sequence.
+          r_block.PushLi(7, def.imm_);
+          r_block.PushArithmetic_R(r_add_, 7, 7, 2);
+          r_block.instructions_.push_back(
+              RISCVInstruction(r_lbu_, def.rd_, 7, -1, 0, -1));
+        } else {
+          r_block.instructions_.push_back(def);
+        }
       }
       while (!jump_instructions.empty()) {
         r_block.instructions_.push_back(jump_instructions.back());
