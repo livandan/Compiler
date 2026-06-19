@@ -13,146 +13,51 @@ The compiler pipeline is: `.rx` → Lexer → Parser → Semantic → IR → Cod
 
 ## Phase 1: mem2reg (IR-level promotion)
 
-**Where**: Operates on `IRFunctionNode`'s blocks and alloca list — after IR generation, before codegen.  
-**Goal**: Eliminate alloca/load/store for scalar variables that never have their address taken, replacing them with direct value references and phi nodes.
+**Where**: Runs on `IRFunctionNode` after IR generation, before codegen.  
+**Goal**: Promote scalar allocas (int, bool, ptr) into SSA variables by
+eliminating their alloca/load/store and inserting phi instructions.
 
-### Step 1.1 — Identify promotable allocas
+### What gets promoted
 
-For each `alloca` in `IRFunctionNode::alloca_instructions_` with result_id `A`, scan all instructions in all blocks. If **any** use of `A` falls into the "prohibits promotion" category below, the alloca is not promotable. Otherwise it is promotable.
+An alloca is promotable if its address never escapes — it is only
+used as the `pointer_` of plain `load_`, `ptr_load_`,
+`variable_store_`, `value_store_`, or `ptr_store_`.  Any other use
+(GEP, memset, memcpy, passing to a call, or the alloca's result_id
+appearing as a stored value) blocks promotion.
 
-The analysis distinguishes three roles a variable ID can play in an instruction:
-- **As a pointer operand** — `A` appears directly as `pointer_` (or `destination_` in memcpy), meaning the instruction accesses memory through `A`.
-- **As a stored/loaded value** — `A` appears as `result_id_` in a load/store, or as an operand in arithmetic/calls/phs — this happens when `A` is a load result from the alloca, not the alloca itself. This is handled by `ReplaceAllUses` and does **not** affect promotability of the alloca.
-- **As the alloca identity** — `A` being the alloca pointer itself. Only the "pointer operand" usage matters for promotability.
+In practice this means loop counters, temporaries, and most local
+scalars are promoted; arrays and structs stay on the stack.
 
----
+### Algorithm overview
 
-#### Per-instruction-type analysis
+1. **Build CFG and compute dominators**  
+   Every block's successors and the Lengauer-Tarjan dominator tree
+   are built once per function.
 
-##### `load_`
-- **pointer_ = A**: The canonical case. Loading a scalar value from the alloca. **Permitted.**
-- **result_id_ = A**: Cannot happen — `A` is a pointer, `load_` produces a scalar, not a pointer-to-pointer.
-- **Verdict**: Permitted. The load result is later replaced with the reaching definition.
+2. **For each promotable alloca:**
+   - Collect all stores (definitions) and loads (uses) to that alloca
+     across all blocks.
+   - **Place phi instructions** at the iterated dominance frontier of
+     the definition blocks, so every path's reaching definition
+     arrives at the correct merge point.
+   - **Rename (SSA construction)**: walk the dominator tree
+     depth-first.  When a store is seen, push its stored value onto
+     a reaching-def stack; when a load is seen, record the stack top
+     as its replacement.  Both the load and store are marked dead.
+   - **Fill phi operands**: each phi's conditions are rebuilt from the
+     block-exit reaching definitions of its predecessor blocks.
+   - **Replace uses**: every old load result is replaced with its
+     reaching definition (a variable, constant, or undef→0).
+     Trivially constant binary ops and icmps are folded on the spot.
 
-##### `ptr_load_`
-- **pointer_ = A**: Loads a pointer value from the alloca. Semantically equivalent to `load_` but for pointer-typed variables. **Should be permitted** for pointer-typed alloca, but currently conservatively **prohibited** (treated as address-taken, since the alloca stores a pointer that could escape). Could be relaxed later.
-- **Verdict**: Conservatively prohibited. A pointer-typed alloca stays on the stack.
+3. **Cleanup**: all promoted alloca instructions are removed, all
+   dead loads/stores are dropped, and phis whose result is never
+   referenced are iteratively pruned.
 
-##### `variable_store_`
-- **pointer_ = A**: Storing a variable's value into the alloca. This is a definition (reaching def). **Permitted.**
-- **result_id_ = A**: Cannot happen — `A` is a pointer, not a scalar value.
-- **Verdict**: Permitted. The stored variable ID becomes the new reaching definition.
-
-##### `value_store_`
-- **pointer_ = A**: Storing a literal constant into the alloca. **Prohibited** in the current conservative implementation, because replacing a load with a constant requires changing instruction types (e.g. `two_var_binary_operation_` → `var_const_binary_operation_`), creating a complex rewrite matrix. Could be relaxed: all uses of the load result would need to switch to their const-variant instruction types.
-- **Verdict**: Conservatively prohibited. Allocas initialized with constants stay on the stack.
-
-##### `ptr_store_`
-- **pointer_ = A**: Storing a pointer value into the alloca. For pointer-typed alloca this is the store counterpart to `ptr_load_`. Currently **prohibited** (same rationale as `ptr_load_`).
-- **result_id_ = A**: The alloca's address is being stored into another memory location — **address has escaped**. Definitely **prohibited** (though unlikely in practice for scalar allocas in this IR).
-- **Verdict**: Prohibited.
-
-##### `get_element_ptr_by_value_` / `get_element_ptr_by_variable_`
-- **pointer_ = A**: The alloca is being indexed as an aggregate (array/struct). **Prohibited** — scalars don't have elements.
-- **result_id_ = A**: An element pointer derived from `A` is stored somewhere — **address has escaped**. **Prohibited.**
-- **index_ = A** (variable variant only): `A` would need to be a load result (integer used as index), not the alloca itself. Doesn't affect promotability of the alloca. Permitted for the load replacement.
-- **Verdict**: Prohibited if `pointer_` or `result_id_` matches `A`.
-
-##### `conditional_br_`
-- **condition_id_ = A**: `A` would be a load result (i1 bool), not the alloca pointer. Does not affect promotability. Handled by `ReplaceAllUses`.
-- **Verdict**: Does not affect alloca promotability.
-
-##### `unconditional_br_`
-- Only references block labels. **Verdict**: Irrelevant.
-
-##### `value_ret_` / `variable_ret_` / `void_ret_`
-- Return instructions. `result_id_` in `variable_ret_` could be a load result → handled by `ReplaceAllUses`. **Verdict**: Does not affect alloca promotability.
-
-##### `alloca_`
-- The instruction being analyzed. **Verdict**: This is the target of promotion, not a usage.
-
-##### `two_var_binary_operation_` / `var_const_binary_operation_` / `const_var_binary_operation_`
-- Operands could be load results → handled by `ReplaceAllUses` (var→var replacement). If the replacement is a constant (from `value_store_`), the instruction type would need changing — this is why `value_store_` is conservatively prohibited in the promotability check.
-- **Verdict**: Does not affect alloca promotability.
-
-##### `two_var_icmp_` / `var_const_icmp_` / `const_var_icmp_`
-- Operands could be load results → handled by `ReplaceAllUses`. Same constant-replacement concern as binary ops.
-- **Verdict**: Does not affect alloca promotability.
-
-##### `non_void_call_` / `void_call_` / `builtin_call_`
-- **function_call_arguments_**: If a `FunctionCallArgument` has `is_variable_ == true` and `value_ == A`, and the argument is a pointer type, then `A` (the alloca pointer) is being passed to a function — **address has escaped, prohibited**. If the argument is a scalar type, this would mean `A` is a load result, not the alloca itself → permitted.
-- `result_id_` (non_void/builtin): Could be a load result from the alloca which is then stored → handled by replacement.
-- **Current implementation note**: The `IsPromotable` check does not scan `function_call_arguments_`. This is a known gap — in practice allocas are not directly passed as call arguments in this IR (values are loaded first).
-- **Verdict**: Does not affect alloca promotability in practice, but should scan arguments for completeness.
-
-##### `phi_`
-- Operands could be load results → handled by step 6 in `PromoteAlloca` (re-scan phi operands with replacement map).
-- The phi result itself is a NEW variable introduced during promotion.
-- **Verdict**: Does not affect alloca promotability.
-
-##### `value_select_ii_` through `variable_select_vv_`
-- Condition and value operands could be load results → handled by `ReplaceAllUses`.
-- **Verdict**: Does not affect alloca promotability.
-
-##### `builtin_memset_`
-- **pointer_ = A**: The alloca is being bulk-initialized by memset. This is an aggregate operation (used for array/struct zero-init). **Prohibited** — implies the alloca is not a simple scalar.
-- **Verdict**: Prohibited.
-
-##### `builtin_memcpy_`
-- **pointer_ = A** (source): The alloca's content is being copied out — implies aggregate usage. **Prohibited.**
-- **destination_ = A**: The alloca is the target of a bulk copy — aggregate usage. **Prohibited** (but the current `IsPromotable` does not check `destination_` — a known gap; in practice memcpy is only used on arrays/structs which are already excluded by the scalar-only check).
-- **Verdict**: Prohibited.
-
----
-
-#### Summary of promotability criteria
-
-| Role of alloca `A` in instruction | Permitted? | Notes |
-|---|---|---|
-| `pointer_` of `load_` | Yes | Canonical scalar load |
-| `pointer_` of `variable_store_` | Yes | Canonical scalar store (definition) |
-| `pointer_` of `value_store_` | **No** (conservative) | Constants require instruction-type rewrite on replacement |
-| `pointer_` of `ptr_load_` | **No** (conservative) | Pointer-typed alloca; could be relaxed |
-| `pointer_` of `ptr_store_` | **No** | Address semantics differ from scalar store |
-| `result_id_` of `ptr_store_` | **No** | Address of alloca escapes |
-| `pointer_` of `get_element_ptr_*` | **No** | Aggregate indexing — not a scalar |
-| `result_id_` of `get_element_ptr_*` | **No** | Derived pointer — address escapes |
-| `pointer_` of `builtin_memset_` | **No** | Bulk aggregate operation |
-| `pointer_` / `destination_` of `builtin_memcpy_` | **No** | Bulk aggregate operation |
-| Call argument (as pointer) | **No** | Address escapes to callee |
-| `condition_id_`, `operand_*_id_`, call argument (as scalar), `index_` in GEP-by-variable | N/A | These are load results, not the alloca itself. Handled by `ReplaceAllUses` |
-
-**Current implementation**: Promotes allocas that only appear as `pointer_` in `load_` and `variable_store_`, have at least one `variable_store_`, and have zero `value_store_`. All other usage patterns result in the alloca staying on the stack.
-
-### Step 1.2 — Build def-use chains per promotable alloca
-
-For each promotable alloca with result_id `A`:
-- Collect all **stores** to `A` (instructions where `pointer_ == A`): record `{block_id, instruction_index, stored_value_id_or_constant}`
-- Collect all **loads** from `A` (instructions where `pointer_ == A`): record `{block_id, instruction_index, load_result_id}`
-
-### Step 1.3 — Insert phi nodes at iterated dominance frontiers
-
-For allocas with **multiple reaching definitions** across different blocks:
-- Compute the **dominance frontier** for each basic block containing a store
-- Use the standard SSA construction algorithm (Cytron et al.): iteratively place phi nodes at the dominance frontier of blocks that define the variable, until a fixed point
-- Insert `phi_` IR instructions into those blocks (the IR already supports phi instructions — `IRBlock::AddPhi`)
-
-### Step 1.4 — Rename uses
-
-Walk the dominator tree, maintaining a stack of current reaching definitions for each promotable alloca:
-- When visiting a store: push the stored value, continue
-- When visiting a load: replace the load's uses with the current top-of-stack value
-- When visiting a phi: the phi itself becomes the new definition for this block
-- After visiting a block: pop definitions pushed in this block
-
-### Step 1.5 — Cleanup
-
-- Remove the promoted alloca from `alloca_instructions_`
-- Remove the now-dead `load_` and `store_` instructions from their blocks
-- The phi instructions inserted in step 1.3 remain — they are already handled by the existing `PhiToMove()` pass in codegen
-
-**New file**: `IR/include/mem2reg.h`, `IR/src/mem2reg.cpp`  
-**Integration point**: Called from `codegen_test.cpp` (and eventually `FrontEndRunner`) after IR generation, before `CodeGenerator` construction.
+**Implementation**: `IR/include/mem2reg.h`, `IR/src/mem2reg.cpp`  
+**Integration**: called from test harness (`codegen_test.cpp` /
+`mem2reg_test.cpp`) right after IR generation and before
+`CodeGenerator`.
 
 ---
 
