@@ -760,7 +760,8 @@ void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
       if (inst.result_id_ == old_id) inst.result_id_ = new_id;
       break;
     }
-    case variable_store_: {
+    case variable_store_:
+    case ptr_store_: {
       if (inst.result_id_ == old_id) inst.result_id_ = new_id;
       break;
     }
@@ -983,7 +984,8 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
       break;
     }
     // --- Store ---
-    case variable_store_: {
+    case variable_store_:
+    case ptr_store_: {
       if (inst.result_id_ == old_id) {
         inst.instruction_type_ = value_store_;
         inst.result_id_ = const_val;
