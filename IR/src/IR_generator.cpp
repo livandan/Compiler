@@ -928,8 +928,10 @@ void IRVisitor::Visit(Expression *expression_ptr) {
                   exit_if_block_id);
               functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddPhi(
                   expression_ptr->IR_ID_, expression_ptr->integrated_type_,
-                  if_block_value, if_end_block,
-                  expression_ptr->children_.back()->IR_ID_, else_end_block, 0b00);
+                  if_block_value, if_end_block, false);
+              functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddPhi(
+                  expression_ptr->IR_ID_, expression_ptr->integrated_type_,
+                  expression_ptr->children_.back()->IR_ID_, else_end_block, false);
               // functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddSelect(0b000,
               //     expression_ptr->IR_ID_, expression_ptr->children_[2]->IR_ID_,
               //     expression_ptr->integrated_type_, if_block_value,
@@ -1659,7 +1661,9 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
                 merged_label);
             function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, if_true_end_block, false_block_ans_id, if_false_end_block, 0b00);
+                true_block_ans_id, if_true_end_block, false);
+            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+                false_block_ans_id, if_false_end_block, false);
             // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
             //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
             //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
@@ -1753,7 +1757,9 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
                 merged_label);
             function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, if_true_end_block, false_block_ans_id, if_false_end_block, 0b00);
+                true_block_ans_id, if_true_end_block, false);
+            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
+                false_block_ans_id, if_false_end_block, false);
             // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
             //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
             //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
@@ -2572,34 +2578,6 @@ void IRVisitor::Print(std::ofstream &file, const IRInstruction &instruction) {
       }
       break;
     }
-    case phi_: {
-      file << "%var." << instruction.result_id_ << " = phi ";
-      OutputType(file, instruction.result_type_);
-      // For pointer-typed phis, an undef operand is encoded as literal 0
-      // (set by mem2reg). Emit it as `null` rather than integer 0 to satisfy
-      // LLVM's type checker on `phi ptr`.
-      const bool is_ptr_phi = instruction.result_type_ &&
-          instruction.result_type_->basic_type == pointer_type;
-      if ((instruction.function_name_ & 0b10) != 0) { // the first value is literal value
-        if (is_ptr_phi && instruction.operand_1_id_ == 0) {
-          file << " [ null, %label_" << instruction.if_true_ << " ], ";
-        } else {
-          file << " [ " << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
-        }
-      } else {
-        file << " [ %var." << instruction.operand_1_id_ << ", %label_" << instruction.if_true_ << " ], ";
-      }
-      if ((instruction.function_name_ & 0b01) != 0) { // the second value is literal value
-        if (is_ptr_phi && instruction.operand_2_id_ == 0) {
-          file << "[ null, %label_" << instruction.if_false_ << " ]";
-        } else {
-          file << "[ " << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
-        }
-      } else {
-        file << "[ %var." << instruction.operand_2_id_ << ", %label_" << instruction.if_false_ << " ]";
-      }
-      break;
-    }
     case value_select_ii_: {
       file << "%var." << instruction.result_id_ << " = select i1 ";
       if (instruction.condition_id_ == 0) {
@@ -2723,6 +2701,36 @@ void IRVisitor::Print(std::ofstream &file, const IRInstruction &instruction) {
   file << '\n';
 }
 
+void IRVisitor::PrintPhi(std::ofstream &file, const PhiInstruction &instruction) {
+  file << "%var." << instruction.result_id << " = phi ";
+  OutputType(file, instruction.type);
+  // For pointer-typed phis, an undef operand is encoded as literal 0
+  // (set by mem2reg). Emit it as `null` rather than integer 0 to satisfy
+  // LLVM's type checker on `phi ptr`.
+  const bool is_ptr_phi = instruction.type && instruction.type->basic_type == pointer_type;
+  if (instruction.conditions[0].is_const) { // the first value is literal value
+    if (is_ptr_phi && instruction.conditions[0].value == 0) {
+      file << " [ null, %label_" << instruction.conditions[0].from_block_id << " ]";
+    } else {
+      file << " [ " << instruction.conditions[0].value << ", %label_" << instruction.conditions[0].from_block_id << " ]";
+    }
+  } else {
+    file << " [ %var." << instruction.conditions[0].var_id << ", %label_" << instruction.conditions[0].from_block_id << " ]";
+  }
+  for (int i = 1; i < instruction.conditions.size(); ++i) {
+    if (instruction.conditions[i].is_const) { // is literal value
+      if (is_ptr_phi && instruction.conditions[i].value == 0) {
+        file << ", [ null, %label_" << instruction.conditions[i].from_block_id << " ]";
+      } else {
+        file << ", [ " << instruction.conditions[i].value << ", %label_" << instruction.conditions[i].from_block_id << " ]";
+      }
+    } else {
+      file << ", [ %var." << instruction.conditions[i].var_id << ", %label_" << instruction.conditions[i].from_block_id << " ]";
+    }
+  }
+  file << '\n';
+}
+
 void IRVisitor::Output(std::ofstream &file) {
   // output the builtin function declarations
   std::ifstream builtin_functions("../RCompiler-Testcases/IR-1/builtin/builtin.ll");
@@ -2781,6 +2789,9 @@ void IRVisitor::Output(std::ofstream &file) {
     // print blocks
     for (const auto &[block_label, block] : functions_[i].blocks_) {
       file << "label_" << block_label << ":\n";
+      for (const auto &phi_instruction : block.phi_instructions_) {
+        PrintPhi(file, phi_instruction);
+      }
       for (const auto &instruction : block.instructions_) {
         Print(file, instruction);
       }

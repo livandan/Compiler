@@ -89,29 +89,20 @@ void CodeGenerator::PhiToMove() {
   for (int i = 0; i < IR_functions_.size(); ++i) {
     std::map<BlockJumping, AssignmentGraph> assign_relations;
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
-      for (const auto &instruction : block.instructions_) {
-        if (instruction.instruction_type_ == phi_) {
-          if (instruction.function_name_ & 0b10) { // value0 is literal value
-            RISCV_functions_[i].blocks_[instruction.if_true_].PushMove(instruction.result_type_,
-                true, instruction.operand_1_id_, instruction.result_id_);
+      for (const auto &instruction : block.phi_instructions_) {
+        const int dest_var_id = instruction.result_id;
+        const auto &type = instruction.type;
+        for (const auto &condition : instruction.conditions) {
+          if (condition.is_const) { // is literal value
+            RISCV_functions_[i].blocks_[condition.from_block_id].PushMove(type,
+                true, condition.value, dest_var_id);
           } else {
-            if (!assign_relations.contains({instruction.if_true_, block_id})) {
+            if (!assign_relations.contains({condition.from_block_id, block_id})) {
               assign_relations.insert(std::pair<BlockJumping, AssignmentGraph>(
-                  {instruction.if_true_, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
+                  {condition.from_block_id, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
             }
-            assign_relations[{instruction.if_true_, block_id}].AddEdge(instruction.operand_1_id_,
-                instruction.result_id_, instruction.result_type_);
-          }
-          if (instruction.function_name_ & 0b01) { // value1 is literal value
-            RISCV_functions_[i].blocks_[instruction.if_false_].PushMove(instruction.result_type_,
-                true, instruction.operand_2_id_, instruction.result_id_);
-          } else {
-            if (!assign_relations.contains({instruction.if_false_, block_id})) {
-              assign_relations.insert(std::pair<BlockJumping, AssignmentGraph>(
-                  {instruction.if_false_, block_id}, AssignmentGraph(IR_functions_[i].var_id_ << 1)));
-            }
-            assign_relations[{instruction.if_false_, block_id}].AddEdge(instruction.operand_2_id_,
-                instruction.result_id_, instruction.result_type_);
+            assign_relations[{condition.from_block_id, block_id}].AddEdge(condition.var_id,
+                condition.from_block_id, type);
           }
         }
       }
@@ -1574,7 +1565,8 @@ void CodeGenerator::Generate() {
             }
             break;
           }
-          case phi_: { // already transformed into move instructions
+          case phi_: {
+            CodegenThrow("Unexpected phi instruction in block.instructions");
             break;
           }
           case value_select_ii_: {

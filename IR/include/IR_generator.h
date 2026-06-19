@@ -67,8 +67,26 @@ struct IRInstruction {
       function_name_(function_name) {}
 };
 
+struct PhiCondition {
+  int from_block_id;
+  bool is_const;
+  int value;
+  int var_id;
+  PhiCondition(const int label, const bool is_const, const int value, const int var_id)
+      : from_block_id(label), is_const(is_const), value(value), var_id(var_id) {}
+};
+
+struct PhiInstruction {
+  int result_id;
+  std::shared_ptr<IntegratedType> type;
+  std::vector<PhiCondition> conditions;
+  PhiInstruction(const int result_id, const std::shared_ptr<IntegratedType> &type)
+      : result_id(result_id), type(type) {}
+};
+
 struct IRBlock {
   std::vector<IRInstruction> instructions_;
+  std::vector<PhiInstruction> phi_instructions_;
   void AddTwoVarBinaryOperation(const std::shared_ptr<IntegratedType> &result_type,
       const BinaryOperator binary_operator, const int result_id, const int operand_1_id,
       const int operand_2_id) {
@@ -248,11 +266,35 @@ struct IRBlock {
   } /* is_value varies from 0b000 to 0b111,
   the three bits represent the condition / first value / second value is literal value */
   void AddPhi(const int result_id, const std::shared_ptr<IntegratedType> &type,
-      const int value0, const int label0, const int value1, const int label1, const int is_value) {
-    instructions_.push_back(IRInstruction(phi_, result_id, add_, type,
-        value0, value1, 0, label0, label1,
-        0, 0, equal_, is_value));
-  } /* is_value varies from 0b00 to 0b11, representing the value0 / value1 is literal value. */
+      const int value, const int label, const bool is_value) {
+    int target_inst_id = -1;
+    for (int i = 0; i < phi_instructions_.size(); ++i) {
+      if (phi_instructions_[i].result_id == result_id) {
+        target_inst_id = i;
+        break;
+      }
+    }
+    if (target_inst_id == -1) {
+      auto phi_instruction = PhiInstruction(result_id, type);
+      if (is_value) { // value0 is const value
+        phi_instruction.conditions.push_back(PhiCondition(label, true, value, -1));
+      } else {
+        phi_instruction.conditions.push_back(PhiCondition(label, false, 0, value));
+      }
+      phi_instructions_.push_back(phi_instruction);
+    } else {
+      for (const auto &condition : phi_instructions_[target_inst_id].conditions) {
+        if (condition.from_block_id != -1 && condition.from_block_id == label) {
+          return;
+        }
+      }
+      if (is_value) {
+        phi_instructions_[target_inst_id].conditions.push_back(PhiCondition(label, true, value, -1));
+      } else {
+        phi_instructions_[target_inst_id].conditions.push_back(PhiCondition(label, false, 0, value));
+      }
+    }
+  }
   void AddBuiltinMemset(const int size, const bool is_all_1, const int dest_ptr) {
     instructions_.push_back(IRInstruction(builtin_memset_, size, add_, nullptr,
         (is_all_1 ? 1 : 0), 0, 0, 0, 0, 0, dest_ptr,
@@ -351,6 +393,7 @@ private:
   [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);
   void Print(std::ofstream &file, const IRInstruction &instruction);
+  void PrintPhi(std::ofstream &file, const PhiInstruction &instruction);
   friend class Mem2Reg;
   std::vector<IRFunctionNode> functions_;
   std::vector<IRStructNode> structs_;

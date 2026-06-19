@@ -285,6 +285,13 @@ void Mem2Reg::ComputeDominanceFrontier() {
 
 bool Mem2Reg::IsPromotable(const int alloca_id) const {
   for (const auto &[block_id, block] : func_->blocks_) {
+    for (const auto &inst : block.phi_instructions_) {
+      for (const auto &condition : inst.conditions) {
+        if (!condition.is_const && condition.var_id == alloca_id) {
+          return false;
+        }
+      }
+    }
     for (const auto &inst : block.instructions_) {
       switch (inst.instruction_type_) {
         case variable_ret_:
@@ -323,15 +330,15 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
           }
           break;
         }
-        case phi_: {
-          if ((inst.function_name_ & 0b10) == 0 && inst.operand_1_id_ == alloca_id) {
-            return false;
-          }
-          if ((inst.function_name_ & 0b01) == 0 && inst.operand_2_id_ == alloca_id) {
-            return false;
-          }
-          break;
-        }
+        // case phi_: {
+        //   if ((inst.function_name_ & 0b10) == 0 && inst.operand_1_id_ == alloca_id) {
+        //     return false;
+        //   }
+        //   if ((inst.function_name_ & 0b01) == 0 && inst.operand_2_id_ == alloca_id) {
+        //     return false;
+        //   }
+        //   break;
+        // }
         case value_select_ii_: {
           if (inst.condition_id_ == 0 && inst.operand_2_id_ == alloca_id) {
             return false;
@@ -532,10 +539,11 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
         std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
                   << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
         // Insert phi with sentinels -1 for unfilled operands
-        func_->blocks_[y].instructions_.insert(
-            func_->blocks_[y].instructions_.begin(),
-            IRInstruction(phi_, phi_result_id, add_, alloca_type, 0, 0,
-                          0, -1, -1, 0, 0, equal_, 0));
+        func_->blocks_[y].AddPhi(phi_result_id, alloca_type, -1, -1, false);
+        // func_->blocks_[y].instructions_.insert(
+        //     func_->blocks_[y].instructions_.begin(),
+        //     IRInstruction(phi_, phi_result_id, add_, alloca_type, 0, 0,
+        //                   0, -1, -1, 0, 0, equal_, 0));
         phi_blocks.insert(y);
         worklist.push_back(y);
       }
@@ -552,10 +560,9 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
     auto &block_insts = func_->blocks_[block_id].instructions_;
 
     // Process phi instructions in this block — their results are new defs
-    for (auto &inst : block_insts) {
-      if (inst.instruction_type_ == phi_ &&
-          phi_result_ids.contains(inst.result_id_)) {
-        reaching_stack.push(ReachingDef::Var(inst.result_id_));
+    for (auto &inst : func_->blocks_[block_id].phi_instructions_) {
+      if (phi_result_ids.contains(inst.result_id)) {
+        reaching_stack.push(ReachingDef::Var(inst.result_id));
         push_count++;
       }
     }
@@ -620,55 +627,45 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
   // --- Step 4: Fill phi operands using block_exit_defs ---
   for (int block_id : phi_blocks) {
-    auto &insts = func_->blocks_[block_id].instructions_;
     auto preds = std::vector(predecessors_[block_id].begin(), predecessors_[block_id].end());
 
-    for (auto &inst : insts) {
-      if (inst.instruction_type_ == phi_ &&
-          phi_result_ids.contains(inst.result_id_)) {
+    for (auto &inst : func_->blocks_[block_id].phi_instructions_) {
+      if (phi_result_ids.contains(inst.result_id)) {
         std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
-                  << inst.result_id_ << " at block " << block_id
+                  << inst.result_id << " at block " << block_id
                   << " (preds=";
         for (int p : preds) std::cerr << " " << p;
         std::cerr << ")\n";
-        if (!preds.empty()) {
-          int p0 = preds[0];
-          inst.if_true_ = p0;
-          ReachingDef def0 = block_exit_defs.contains(p0)
-              ? block_exit_defs[p0] : ReachingDef::Undef();
-          if (def0.valid && !def0.is_constant) {
-            inst.operand_1_id_ = def0.var_id;
-            inst.function_name_ &= ~0b10; // operand1 is variable
-            std::cerr << "[m2r]     op1 from pred " << p0 << ": var " << def0.var_id << "\n";
-          } else if (def0.valid) {
-            inst.operand_1_id_ = def0.const_value;
-            inst.function_name_ |= 0b10;  // operand1 is literal
-            std::cerr << "[m2r]     op1 from pred " << p0 << ": const " << def0.const_value << "\n";
-          } else {
-            // Undef path — represent as literal 0 (null/zero) rather than
-            // leaving the default, which would otherwise be misread as var.0.
-            inst.operand_1_id_ = 0;
-            inst.function_name_ |= 0b10;
-            std::cerr << "[m2r]     op1 from pred " << p0 << ": UNDEF -> literal 0\n";
-          }
+        if (preds.size() != inst.conditions.size()) {
+          Mem2RegThrow("Mismatched pred & phi conditions size!");
         }
-        if (preds.size() >= 2) {
-          int p1 = preds[1];
-          inst.if_false_ = p1;
-          ReachingDef def1 = block_exit_defs.contains(p1)
-              ? block_exit_defs[p1] : ReachingDef::Undef();
-          if (def1.valid && !def1.is_constant) {
-            inst.operand_2_id_ = def1.var_id;
-            inst.function_name_ &= ~0b01; // operand2 is variable
-            std::cerr << "[m2r]     op2 from pred " << p1 << ": var " << def1.var_id << "\n";
-          } else if (def1.valid) {
-            inst.operand_2_id_ = def1.const_value;
-            inst.function_name_ |= 0b01;  // operand2 is literal
-            std::cerr << "[m2r]     op2 from pred " << p1 << ": const " << def1.const_value << "\n";
+        for (const auto p : preds) {
+          int i = 0;
+          for (; i < inst.conditions.size(); ++i) {
+            if (inst.conditions[i].from_block_id == -1) {
+              break;
+            }
+          }
+          if (i == inst.conditions.size()) {
+            Mem2RegThrow("No undecided condition to be complete!");
+          }
+          inst.conditions[i].from_block_id = p;
+          ReachingDef def = block_exit_defs.contains(p) ? block_exit_defs[p] : ReachingDef::Undef();
+          if (def.valid && !def.is_constant) {
+            inst.conditions[i].var_id = def.var_id;
+            inst.conditions[i].is_const = false;
+            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": var " << def.var_id << "\n";
+          } else if (def.valid) {
+            inst.conditions[i].value = def.const_value;
+            inst.conditions[i].is_const = true;
+            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": const " << def.const_value << "\n";
           } else {
-            inst.operand_2_id_ = 0;
-            inst.function_name_ |= 0b01;
-            std::cerr << "[m2r]     op2 from pred " << p1 << ": UNDEF -> literal 0\n";
+            // Undef path — represent as %var.-1 rather than
+            // leaving the default, which would otherwise be misread as var.0.
+            inst.conditions[i].value = 0;
+            inst.conditions[i].var_id = -1;
+            inst.conditions[i].is_const = false;
+            std::cerr << "[m2r]     condition " << i << " from pred " << p << ": UNDEF -> %var.-1\n";
           }
         }
         break;
@@ -685,31 +682,41 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
   // --- Step 6: Re-scan phis to apply the replacement map ---
   for (int block_id : phi_blocks) {
-    for (auto &inst : func_->blocks_[block_id].instructions_) {
-      if (inst.instruction_type_ == phi_ &&
-          phi_result_ids.count(inst.result_id_)) {
-        // operand 1
-        if (!(inst.function_name_ & 0b10) &&
-            replacement_map.count(inst.operand_1_id_)) {
-          const ReachingDef &def = replacement_map[inst.operand_1_id_];
-          if (!def.is_constant) {
-            inst.operand_1_id_ = def.var_id;
-          } else {
-            inst.operand_1_id_ = def.const_value;
-            inst.function_name_ |= 0b10;
+    for (auto &inst : func_->blocks_[block_id].phi_instructions_) {
+      if (phi_result_ids.contains(inst.result_id)) {
+        for (auto &condition : inst.conditions) {
+          if (!condition.is_const && replacement_map.contains(condition.var_id)) {
+            const ReachingDef &def = replacement_map[condition.var_id];
+            if (!def.is_constant) {
+              condition.var_id = def.var_id;
+            } else {
+              condition.value = def.const_value;
+              condition.is_const = true;
+            }
           }
         }
-        // operand 2
-        if (!(inst.function_name_ & 0b01) &&
-            replacement_map.count(inst.operand_2_id_)) {
-          const ReachingDef &def = replacement_map[inst.operand_2_id_];
-          if (!def.is_constant) {
-            inst.operand_2_id_ = def.var_id;
-          } else {
-            inst.operand_2_id_ = def.const_value;
-            inst.function_name_ |= 0b01;
-          }
-        }
+        // // operand 1
+        // if (!(inst.function_name_ & 0b10) &&
+        //     replacement_map.count(inst.operand_1_id_)) {
+        //   const ReachingDef &def = replacement_map[inst.operand_1_id_];
+        //   if (!def.is_constant) {
+        //     inst.operand_1_id_ = def.var_id;
+        //   } else {
+        //     inst.operand_1_id_ = def.const_value;
+        //     inst.function_name_ |= 0b10;
+        //   }
+        // }
+        // // operand 2
+        // if (!(inst.function_name_ & 0b01) &&
+        //     replacement_map.count(inst.operand_2_id_)) {
+        //   const ReachingDef &def = replacement_map[inst.operand_2_id_];
+        //   if (!def.is_constant) {
+        //     inst.operand_2_id_ = def.var_id;
+        //   } else {
+        //     inst.operand_2_id_ = def.const_value;
+        //     inst.function_name_ |= 0b01;
+        //   }
+        // }
       }
     }
   }
@@ -720,7 +727,9 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
 // Forward declarations for helper functions used by ReplaceAllUses
 static void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id);
+static void ReplacePhiVarWithVar(PhiInstruction &inst, int old_id, int new_id);
 static void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val);
+static void ReplacePhiVarWithConst(PhiInstruction &inst, int old_id, int const_val);
 
 // ============================================================================
 // Replace all uses of old_id with new_def (variable or constant)
@@ -728,6 +737,15 @@ static void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val);
 
 void Mem2Reg::ReplaceAllUses(const int old_id, const ReachingDef &new_def) const {
   for (auto &[block_id, block] : func_->blocks_) {
+    for (auto &inst : block.phi_instructions_) {
+      if (!new_def.is_constant) {
+        int new_id = new_def.var_id;
+        ReplacePhiVarWithVar(inst, old_id, new_id);
+      } else {
+        int const_val = new_def.const_value;
+        ReplacePhiVarWithConst(inst, old_id, const_val);
+      }
+    }
     for (auto &inst : block.instructions_) {
       if (!new_def.is_constant) {
         // --- Variable replacement: simple ID substitution ---
@@ -815,13 +833,13 @@ void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
       }
       break;
     }
-    case phi_: {
-      if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id)
-        inst.operand_1_id_ = new_id;
-      if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id)
-        inst.operand_2_id_ = new_id;
-      break;
-    }
+    // case phi_: {
+    //   if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id)
+    //     inst.operand_1_id_ = new_id;
+    //   if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id)
+    //     inst.operand_2_id_ = new_id;
+    //   break;
+    // }
     case variable_select_ii_: {
       if (inst.operand_1_id_ == old_id) inst.operand_1_id_ = new_id;
       if (inst.operand_2_id_ == old_id) inst.operand_2_id_ = new_id;
@@ -870,6 +888,17 @@ void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id) {
     default:
       break;
   }
+}
+void ReplacePhiVarWithVar(PhiInstruction &inst, int old_id, int new_id) {
+  for (auto &condition : inst.conditions) {
+    if (!condition.is_const && condition.var_id == old_id) {
+      condition.var_id = new_id;
+    }
+  }
+  // if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id)
+  //   inst.operand_1_id_ = new_id;
+  // if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id)
+  //   inst.operand_2_id_ = new_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,17 +1055,17 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
       break;
     }
     // --- Phi ---
-    case phi_: {
-      if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id) {
-        inst.operand_1_id_ = const_val;
-        inst.function_name_ |= 0b10;
-      }
-      if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id) {
-        inst.operand_2_id_ = const_val;
-        inst.function_name_ |= 0b01;
-      }
-      break;
-    }
+    // case phi_: {
+    //   if (!(inst.function_name_ & 0b10) && inst.operand_1_id_ == old_id) {
+    //     inst.operand_1_id_ = const_val;
+    //     inst.function_name_ |= 0b10;
+    //   }
+    //   if (!(inst.function_name_ & 0b01) && inst.operand_2_id_ == old_id) {
+    //     inst.operand_2_id_ = const_val;
+    //     inst.function_name_ |= 0b01;
+    //   }
+    //   break;
+    // }
     // --- Select: replace variable operand with constant ---
     case value_select_ii_: {
       if (inst.condition_id_ != 0 && inst.operand_1_id_ == old_id) {
@@ -1172,6 +1201,14 @@ void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val) {
     default:;
   }
 }
+void ReplacePhiVarWithConst(PhiInstruction &inst, int old_id, int const_val) {
+  for (auto &condition : inst.conditions) {
+    if (!condition.is_const && condition.var_id == old_id) {
+      condition.is_const = true;
+      condition.value = const_val;
+    }
+  }
+}
 
 // ============================================================================
 // Remove dead load/store instructions (those marked unknown_)
@@ -1199,90 +1236,89 @@ void Mem2Reg::RemoveDeadPhis() const {
     // Collect the set of phi result ids in this function.
     std::set<int> phi_results;
     for (const auto &[block_id, block] : func_->blocks_) {
-      for (const auto &inst : block.instructions_) {
-        if (inst.instruction_type_ == phi_) {
-          phi_results.insert(inst.result_id_);
-        }
+      for (const auto &inst : block.phi_instructions_) {
+        phi_results.insert(inst.result_id);
       }
     }
     // Collect the set of phi result ids that are *referenced* by some other
     // instruction. A phi references another phi if one of its variable operands
     // equals that phi's result id.
     std::set<int> referenced;
-    auto consider = [&](const IRInstruction &inst, int var_id, bool is_var) {
+    auto consider = [&](int var_id, bool is_var) {
       // Only count variable references; literals are not variable ids.
       if (is_var && var_id != 0) referenced.insert(var_id);
     };
     for (const auto &[block_id, block] : func_->blocks_) {
+      for (const auto &inst : block.phi_instructions_) {
+        for (const auto &condition : inst.conditions) {
+          consider(condition.var_id, !condition.is_const);
+        }
+      }
       for (const auto &inst : block.instructions_) {
         // Skip phi itself for the operand check below — we look at uses FROM
         // other instructions (and FROM phis at different positions).
         switch (inst.instruction_type_) {
-          case phi_:
-            consider(inst, inst.operand_1_id_, !(inst.function_name_ & 0b10));
-            consider(inst, inst.operand_2_id_, !(inst.function_name_ & 0b01));
-            break;
           case two_var_binary_operation_:
           case two_var_icmp_:
-            consider(inst, inst.operand_1_id_, true);
-            consider(inst, inst.operand_2_id_, true);
+            consider(inst.operand_1_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case var_const_binary_operation_:
           case const_var_binary_operation_:
           case var_const_icmp_:
           case const_var_icmp_:
-            consider(inst, inst.operand_1_id_, true);
-            consider(inst, inst.operand_2_id_, true);
+            consider(inst.operand_1_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case conditional_br_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case variable_ret_:
           case variable_store_:
           case ptr_store_:
-            consider(inst, inst.result_id_, true);
+            consider(inst.result_id_, true);
             break;
           case get_element_ptr_by_variable_:
-            consider(inst, inst.index_, true);
+            consider(inst.index_, true);
             break;
           case non_void_call_:
           case void_call_:
           case builtin_call_:
             for (const auto &arg : inst.function_call_arguments_) {
-              consider(inst, arg.value_, arg.is_variable_);
+              consider(arg.value_, arg.is_variable_);
             }
             break;
           case value_select_ii_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case value_select_iv_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case value_select_vi_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case value_select_vv_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case variable_select_ii_:
-            consider(inst, inst.condition_id_, true);
-            consider(inst, inst.operand_1_id_, true);
-            consider(inst, inst.operand_2_id_, true);
+            consider(inst.condition_id_, true);
+            consider(inst.operand_1_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case variable_select_iv_:
-            consider(inst, inst.condition_id_, true);
-            consider(inst, inst.operand_1_id_, true);
+            consider(inst.condition_id_, true);
+            consider(inst.operand_1_id_, true);
             break;
           case variable_select_vi_:
-            consider(inst, inst.condition_id_, true);
-            consider(inst, inst.operand_2_id_, true);
+            consider(inst.condition_id_, true);
+            consider(inst.operand_2_id_, true);
             break;
           case variable_select_vv_:
-            consider(inst, inst.condition_id_, true);
+            consider(inst.condition_id_, true);
             break;
           case builtin_memcpy_:
-            consider(inst, inst.destination_, true);
-            consider(inst, inst.pointer_, true);
+            consider(inst.destination_, true);
+            consider(inst.pointer_, true);
             break;
           default:;
         }
@@ -1290,18 +1326,16 @@ void Mem2Reg::RemoveDeadPhis() const {
     }
     // Remove phis whose result is unreferenced.
     for (auto &[block_id, block] : func_->blocks_) {
-      std::vector<IRInstruction> remaining;
-      for (const auto &inst : block.instructions_) {
-        if (inst.instruction_type_ == phi_ &&
-            phi_results.contains(inst.result_id_) &&
-            !referenced.contains(inst.result_id_)) {
+      std::vector<PhiInstruction> remaining;
+      for (const auto &inst : block.phi_instructions_) {
+        if (phi_results.contains(inst.result_id) &&
+            !referenced.contains(inst.result_id)) {
           changed = true;
-          // Drop this dead phi.
           continue;
         }
         remaining.push_back(inst);
       }
-      block.instructions_ = std::move(remaining);
+      block.phi_instructions_ = std::move(remaining);
     }
   }
 }
