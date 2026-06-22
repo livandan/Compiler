@@ -52,7 +52,8 @@ add_executable(codegen_tests test/codegen_test.cpp
         semantic/src/scope.cpp semantic/src/value_type.cpp
         semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
         IR/src/mem2reg.cpp
-        codegen/src/code_generator.cpp)
+        codegen/src/code_generator.cpp
+        codegen/src/register_allocator.cpp)
 
 target_link_libraries(codegen_tests GTest::gtest GTest::gtest_main pthread)
 
@@ -69,7 +70,8 @@ add_executable(mem2reg_tests test/mem2reg_test.cpp
         semantic/src/scope.cpp semantic/src/value_type.cpp
         semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
         IR/src/mem2reg.cpp
-        codegen/src/code_generator.cpp)
+        codegen/src/code_generator.cpp
+        codegen/src/register_allocator.cpp)
 
 target_link_libraries(mem2reg_tests GTest::gtest GTest::gtest_main pthread)
 

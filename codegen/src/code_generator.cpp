@@ -1,4 +1,5 @@
 #include "code_generator.h"
+#include "register_allocator.h"
 #include "fstream"
 #include "item.h"
 #include <set>
@@ -292,6 +293,11 @@ void CodeGenerator::Generate() {
   PhiToMove();
   for (int i = 0; i < IR_functions_.size(); ++i) {
     MemAlloc(i);
+  }
+  // Register allocation: promote scalars from stack to registers.
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    RegisterAllocator reg_alloc(IR_functions_[i], RISCV_functions_[i]);
+    reg_alloc.Run();
   }
   for (int i = 0; i < IR_functions_.size(); ++i) {
     // bool busy_registers[32] = {false};
@@ -638,14 +644,12 @@ void CodeGenerator::Generate() {
           case load_: {
             const auto [load_size, need_alignment] = GetSize(instruction.result_type_);
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              CodegenThrow("Unexpectedly load into a register.");
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
               int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-              if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
+              if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
                 r_block.PushMemory_I(r_lw_, 5, src_register, 2);
                 src_register = 5;
               }
-              // src_register keeps the real address that the pointer points to
               if (load_size == 1) {
                 r_block.PushMemory_I(r_lbu_, result_reg, 0, src_register);
               } else if (load_size == 4 && need_alignment) {
@@ -707,7 +711,6 @@ void CodeGenerator::Generate() {
             }
             // src_register keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              CodegenThrow("Unexpectedly load data into register.");
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushMemory_I(r_lw_, result_reg, 0, src_register);
             } else {
@@ -838,7 +841,8 @@ void CodeGenerator::Generate() {
               pointer_reg = 5;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              r_block.PushArithmetic_I(r_addi_, instruction.result_id_, pointer_reg, offset);
+              int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_I(r_addi_, result_reg, pointer_reg, offset);
             } else {
               r_block.PushArithmetic_I(r_addi_, 5, pointer_reg, offset);
               r_block.PushMemory_S(r_sw_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -874,7 +878,8 @@ void CodeGenerator::Generate() {
               pointer_reg = 6;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              r_block.PushArithmetic_R(r_add_, instruction.result_id_, pointer_reg, 5);
+              int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg, pointer_reg, 5);
             } else {
               // result is on stack; we need a scratch for the add result.
               // reg 5 holds the offset, reg 6 holds the pointer (or it's the home reg).
