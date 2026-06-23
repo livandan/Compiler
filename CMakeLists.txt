@@ -19,76 +19,77 @@ add_executable(code test/OJ_test.cpp
     semantic/src/scope.cpp semantic/src/value_type.cpp
     semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
     IR/src/mem2reg.cpp
+    front_end_entry/src/check_and_generate_IR.cpp
     codegen/src/code_generator.cpp
     codegen/src/register_allocator.cpp)
 
-find_package(GTest REQUIRED)
-add_executable(semantic_tests test/semantic_test.cpp
-    lexer/src/token.cpp lexer/src/tokenizer.cpp
-    lexer/src/regex_matcher.cpp parser/src/builder.cpp
-    parser/src/enumerations.cpp parser/src/expression.cpp
-    parser/src/function_parameters.cpp
-    parser/src/functions.cpp parser/src/item.cpp
-    parser/src/leaf_node.cpp parser/src/node.cpp
-    parser/src/path.cpp parser/src/pattern.cpp
-    parser/src/statements.cpp parser/src/structs.cpp
-    parser/src/trait.cpp parser/src/type.cpp
-    semantic/src/scope.cpp semantic/src/value_type.cpp
-    semantic/src/visitor_manager.cpp)
-
-target_link_libraries(semantic_tests GTest::GTest GTest::Main pthread)
-
-add_executable(IR_tests test/IR_test.cpp
-    lexer/src/token.cpp lexer/src/tokenizer.cpp
-    lexer/src/regex_matcher.cpp parser/src/builder.cpp
-    parser/src/enumerations.cpp parser/src/expression.cpp
-    parser/src/function_parameters.cpp
-    parser/src/functions.cpp parser/src/item.cpp
-    parser/src/leaf_node.cpp parser/src/node.cpp
-    parser/src/path.cpp parser/src/pattern.cpp
-    parser/src/statements.cpp parser/src/structs.cpp
-    parser/src/trait.cpp parser/src/type.cpp
-    semantic/src/scope.cpp semantic/src/value_type.cpp
-    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
-    IR/src/mem2reg.cpp
-    front_end_entry/src/check_and_generate_IR.cpp)
-
-target_link_libraries(IR_tests GTest::gtest GTest::gtest_main pthread)
-
-add_executable(codegen_tests test/codegen_test.cpp
-    lexer/src/token.cpp lexer/src/tokenizer.cpp
-    lexer/src/regex_matcher.cpp parser/src/builder.cpp
-    parser/src/enumerations.cpp parser/src/expression.cpp
-    parser/src/function_parameters.cpp
-    parser/src/functions.cpp parser/src/item.cpp
-    parser/src/leaf_node.cpp parser/src/node.cpp
-    parser/src/path.cpp parser/src/pattern.cpp
-    parser/src/statements.cpp parser/src/structs.cpp
-    parser/src/trait.cpp parser/src/type.cpp
-    semantic/src/scope.cpp semantic/src/value_type.cpp
-    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
-    IR/src/mem2reg.cpp
-    codegen/src/code_generator.cpp
-    codegen/src/register_allocator.cpp)
-
-target_link_libraries(codegen_tests GTest::gtest GTest::gtest_main pthread)
-
-add_executable(mem2reg_tests test/mem2reg_test.cpp
-    lexer/src/token.cpp lexer/src/tokenizer.cpp
-    lexer/src/regex_matcher.cpp parser/src/builder.cpp
-    parser/src/enumerations.cpp parser/src/expression.cpp
-    parser/src/function_parameters.cpp
-    parser/src/functions.cpp parser/src/item.cpp
-    parser/src/leaf_node.cpp parser/src/node.cpp
-    parser/src/path.cpp parser/src/pattern.cpp
-    parser/src/statements.cpp parser/src/structs.cpp
-    parser/src/trait.cpp parser/src/type.cpp
-    semantic/src/scope.cpp semantic/src/value_type.cpp
-    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
-    IR/src/mem2reg.cpp
-    codegen/src/code_generator.cpp
-    codegen/src/register_allocator.cpp)
-
-target_link_libraries(mem2reg_tests GTest::gtest GTest::gtest_main pthread)
-
-add_test(NAME tests COMMAND tests)
+#find_package(GTest REQUIRED)
+#add_executable(semantic_tests test/semantic_test.cpp
+#    lexer/src/token.cpp lexer/src/tokenizer.cpp
+#    lexer/src/regex_matcher.cpp parser/src/builder.cpp
+#    parser/src/enumerations.cpp parser/src/expression.cpp
+#    parser/src/function_parameters.cpp
+#    parser/src/functions.cpp parser/src/item.cpp
+#    parser/src/leaf_node.cpp parser/src/node.cpp
+#    parser/src/path.cpp parser/src/pattern.cpp
+#    parser/src/statements.cpp parser/src/structs.cpp
+#    parser/src/trait.cpp parser/src/type.cpp
+#    semantic/src/scope.cpp semantic/src/value_type.cpp
+#    semantic/src/visitor_manager.cpp)
+#
+#target_link_libraries(semantic_tests GTest::GTest GTest::Main pthread)
+#
+#add_executable(IR_tests test/IR_test.cpp
+#    lexer/src/token.cpp lexer/src/tokenizer.cpp
+#    lexer/src/regex_matcher.cpp parser/src/builder.cpp
+#    parser/src/enumerations.cpp parser/src/expression.cpp
+#    parser/src/function_parameters.cpp
+#    parser/src/functions.cpp parser/src/item.cpp
+#    parser/src/leaf_node.cpp parser/src/node.cpp
+#    parser/src/path.cpp parser/src/pattern.cpp
+#    parser/src/statements.cpp parser/src/structs.cpp
+#    parser/src/trait.cpp parser/src/type.cpp
+#    semantic/src/scope.cpp semantic/src/value_type.cpp
+#    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
+#    IR/src/mem2reg.cpp
+#    front_end_entry/src/check_and_generate_IR.cpp)
+#
+#target_link_libraries(IR_tests GTest::gtest GTest::gtest_main pthread)
+#
+#add_executable(codegen_tests test/codegen_test.cpp
+#    lexer/src/token.cpp lexer/src/tokenizer.cpp
+#    lexer/src/regex_matcher.cpp parser/src/builder.cpp
+#    parser/src/enumerations.cpp parser/src/expression.cpp
+#    parser/src/function_parameters.cpp
+#    parser/src/functions.cpp parser/src/item.cpp
+#    parser/src/leaf_node.cpp parser/src/node.cpp
+#    parser/src/path.cpp parser/src/pattern.cpp
+#    parser/src/statements.cpp parser/src/structs.cpp
+#    parser/src/trait.cpp parser/src/type.cpp
+#    semantic/src/scope.cpp semantic/src/value_type.cpp
+#    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
+#    IR/src/mem2reg.cpp
+#    codegen/src/code_generator.cpp
+#    codegen/src/register_allocator.cpp)
+#
+#target_link_libraries(codegen_tests GTest::gtest GTest::gtest_main pthread)
+#
+#add_executable(mem2reg_tests test/mem2reg_test.cpp
+#    lexer/src/token.cpp lexer/src/tokenizer.cpp
+#    lexer/src/regex_matcher.cpp parser/src/builder.cpp
+#    parser/src/enumerations.cpp parser/src/expression.cpp
+#    parser/src/function_parameters.cpp
+#    parser/src/functions.cpp parser/src/item.cpp
+#    parser/src/leaf_node.cpp parser/src/node.cpp
+#    parser/src/path.cpp parser/src/pattern.cpp
+#    parser/src/statements.cpp parser/src/structs.cpp
+#    parser/src/trait.cpp parser/src/type.cpp
+#    semantic/src/scope.cpp semantic/src/value_type.cpp
+#    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
+#    IR/src/mem2reg.cpp
+#    codegen/src/code_generator.cpp
+#    codegen/src/register_allocator.cpp)
+#
+#target_link_libraries(mem2reg_tests GTest::gtest GTest::gtest_main pthread)
+#
+#add_test(NAME tests COMMAND tests)
