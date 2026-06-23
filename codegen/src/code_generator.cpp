@@ -26,15 +26,13 @@ void CodegenThrow(const std::string &err_info) {
 
 RISCVInstructionType CodeGenerator::GetLoadInst(const std::shared_ptr<IntegratedType> &type) {
   if (type->basic_type == bool_type) return r_lbu_;
-  if (type->basic_type == pointer_type || type->basic_type == isize_type
-      || type->basic_type == usize_type) return r_ld_;
+  if (type->basic_type == pointer_type) return r_ld_;
   return r_lw_;
 }
 
 RISCVInstructionType CodeGenerator::GetStoreInst(const std::shared_ptr<IntegratedType> &type) {
   if (type->basic_type == bool_type) return r_sb_;
-  if (type->basic_type == pointer_type || type->basic_type == isize_type
-      || type->basic_type == usize_type) return r_sd_;
+  if (type->basic_type == pointer_type) return r_sd_;
   return r_sw_;
 }
 
@@ -45,11 +43,11 @@ std::pair<int, bool> CodeGenerator::GetSize(const std::shared_ptr<IntegratedType
     }
     case i32_type:
     case u32_type:
+    case isize_type:
+    case usize_type:
     case enumeration_type: {
       return {4, true};
     }
-    case isize_type:
-    case usize_type:
     case pointer_type: {
       return {8, true};
     }
@@ -93,6 +91,40 @@ std::pair<int, bool> CodeGenerator::GetSize(const std::shared_ptr<IntegratedType
     }
   }
   return {0, false};
+}
+
+int CodeGenerator::GetAlignment(const std::shared_ptr<IntegratedType> &type) const {
+  switch (type->basic_type) {
+    case bool_type: {
+      return 1;
+    }
+    case i32_type:
+    case u32_type:
+    case isize_type:
+    case usize_type:
+    case enumeration_type: {
+      return 4;
+    }
+    case pointer_type: {
+      return 8;
+    }
+    case array_type: {
+      return GetAlignment(type->element_type);
+    }
+    case struct_type: {
+      int max_align = 1;
+      auto item_info_map = dynamic_cast<Struct *>(type->struct_node)->field_items_;
+      for (const auto &[name, item] : item_info_map) {
+        int a = GetAlignment(item.node->integrated_type_);
+        if (a > max_align) max_align = a;
+      }
+      return max_align;
+    }
+    default: {
+      CodegenThrow("Invalid type to get alignment.");
+    }
+  }
+  return 4;
 }
 
 std::pair<bool, int> CodeGenerator::GetParamPassPos(const int function_id, const int param_id) const {
@@ -153,7 +185,7 @@ void CodeGenerator::MemAlloc(const int func_id) {
     space += 8;
     space = (space + 7) / 8 * 8;
     RISCV_functions_[func_id].location_[instruction.result_id_] = {false, space};
-    alloca_var_ids_.insert(instruction.result_id_);
+    alloca_var_ids_[func_id].insert(instruction.result_id_);
     space += GetSize(instruction.result_type_).first;
   }
   for (const auto &[block_id, block] : IR_functions_[func_id].blocks_) {
@@ -241,8 +273,8 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
   const auto [src_in_reg, src_location] = RISCV_functions_[func_id].location_[var_src];
   auto [type_size, need_alignment] = GetSize(type);
   // Alloca result vars store a pointer (8 bytes), not the element type size
-  if (alloca_var_ids_.count(var_src)) type_size = 8;
-  if (alloca_var_ids_.count(var_dest)) type_size = 8;
+  if (alloca_var_ids_[func_id].count(var_src)) type_size = 8;
+  if (alloca_var_ids_[func_id].count(var_dest)) type_size = 8;
   if (type_size == 1) {
     int src_data_reg = src_location;
     if (!src_in_reg) {
@@ -326,6 +358,7 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
 
 void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
+  alloca_var_ids_.resize(IR_functions_.size());
   PhiToMove();
   for (int i = 0; i < IR_functions_.size(); ++i) {
     MemAlloc(i);
@@ -656,7 +689,7 @@ void CodeGenerator::Generate() {
             } else if (instruction.result_type_->is_int) {
               r_block.PushMemory_I(r_lw_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             } else if (instruction.result_type_->basic_type == pointer_type) {
-              r_block.PushMemory_I(r_lw_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+              r_block.PushMemory_I(r_ld_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             } else if (instruction.result_type_->basic_type == bool_type) {
               r_block.PushMemory_I(r_lbu_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             } else {
@@ -676,6 +709,7 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
               }
             }
+            r_block.PushLi(10, 0);
             r_block.PushReturn(stack_space);
             break;
           }
@@ -761,10 +795,10 @@ void CodeGenerator::Generate() {
             // src_register keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushMemory_I(r_lw_, result_reg, 0, src_register);
+              r_block.PushMemory_I(r_ld_, result_reg, 0, src_register);
             } else {
               const auto result_address = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushMemory_I(r_lw_, 5, 0, src_register);
+              r_block.PushMemory_I(r_ld_, 5, 0, src_register);
               r_block.PushMemory_S(r_sd_, 5, result_address, 2);
             }
             break;
@@ -855,8 +889,10 @@ void CodeGenerator::Generate() {
             r_block.PushLi(6, instruction.result_id_); // reg6 keeps the value that need to be stored
             if (store_size == 1) {
               r_block.PushMemory_S(r_sb_, 6, 0, dest_reg);
-            } else { // store_size == 4
+            } else if (store_size == 4) {
               r_block.PushMemory_S(r_sw_, 6, 0, dest_reg);
+            } else {
+              r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
             }
             break;
           }
@@ -953,23 +989,11 @@ void CodeGenerator::Generate() {
             int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-              } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 5, op1_reg, 2);
-              } else {
-                CodegenThrow("Invalid icmp operator type.");
-              }
+              r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, op1_reg, 2);
               op1_reg = 5;
             }
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-              } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 6, op2_reg, 2);
-              } else {
-                CodegenThrow("Invalid icmp operator type.");
-              }
+              r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, op2_reg, 2);
               op2_reg = 6;
             }
             switch (instruction.icmp_condition_) {
@@ -1076,13 +1100,7 @@ void CodeGenerator::Generate() {
           case var_const_icmp_: {
             int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
-              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(r_lw_, 5, op1_reg, 2);
-              } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 5, op1_reg, 2);
-              } else {
-                CodegenThrow("Invalid icmp operator type.");
-              }
+              r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, op1_reg, 2);
               op1_reg = 5;
             }
             switch (instruction.icmp_condition_) {
@@ -1197,13 +1215,7 @@ void CodeGenerator::Generate() {
           case const_var_icmp_: {
             int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
-              if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(r_lw_, 6, op2_reg, 2);
-              } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 6, op2_reg, 2);
-              } else {
-                CodegenThrow("Invalid icmp operator type.");
-              }
+              r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, op2_reg, 2);
               op2_reg = 6;
             }
             switch (instruction.icmp_condition_) {
@@ -1412,7 +1424,7 @@ void CodeGenerator::Generate() {
                   if (arguments[j].type_->is_int) {
                     r_block.PushMemory_I(r_lw_, reg_id, var_address_offset, 2);
                   } else if (arguments[j].type_->basic_type == pointer_type) {
-                    r_block.PushMemory_I(r_lw_, reg_id, var_address_offset, 2);
+                    r_block.PushMemory_I(r_ld_, reg_id, var_address_offset, 2);
                   } else if (arguments[j].type_->basic_type == bool_type) {
                     r_block.PushMemory_I(r_lb_, reg_id, var_address_offset, 2);
                   } else {
@@ -1546,7 +1558,7 @@ void CodeGenerator::Generate() {
                   if (arguments[j].type_->is_int) {
                     r_block.PushMemory_I(r_lw_, reg_id, var_address_offset, 2);
                   } else if (arguments[j].type_->basic_type == pointer_type) {
-                    r_block.PushMemory_I(r_lw_, reg_id, var_address_offset, 2);
+                    r_block.PushMemory_I(r_ld_, reg_id, var_address_offset, 2);
                   } else if (arguments[j].type_->basic_type == bool_type) {
                     r_block.PushMemory_I(r_lb_, reg_id, var_address_offset, 2);
                   } else {
@@ -1717,7 +1729,7 @@ void CodeGenerator::Generate() {
             }
             int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
-              r_block.PushMemory_I(r_lw_, 5, dest_register, 2);
+              r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
               dest_register = 5;
             }
             r_block.PushArithmetic_R(r_add_, 10, dest_register, 0);
@@ -1739,12 +1751,12 @@ void CodeGenerator::Generate() {
             }
             int dest_register = RISCV_functions_[i].location_[instruction.destination_].second;
             if (!RISCV_functions_[i].location_[instruction.destination_].first) {
-              r_block.PushMemory_I(r_lw_, 5, dest_register, 2);
+              r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
               dest_register = 5;
             }
             int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
-              r_block.PushMemory_I(r_lw_, 6, src_register, 2);
+              r_block.PushMemory_I(r_ld_, 6, src_register, 2);
               src_register = 6;
             }
             if (src_register == 10) {

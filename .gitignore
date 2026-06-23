@@ -5,7 +5,9 @@ RCompiler-Spec
 .vscode
 cmake-build-debug
 .idea
-RCompiler-Testcases
+RCompiler-Testcases/IR-1/src
+RCompiler-Testcases/semantic-1
+RCompiler-Testcases/semantic-2
 REIMU
 .github
 codegen/codegen.md

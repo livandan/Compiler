@@ -459,6 +459,7 @@ private:
   void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
+  [[nodiscard]] int GetAlignment(const std::shared_ptr<IntegratedType> &type) const;
   static RISCVInstructionType GetLoadInst(const std::shared_ptr<IntegratedType> &type);
   static RISCVInstructionType GetStoreInst(const std::shared_ptr<IntegratedType> &type);
   void PrintReg(std::ofstream &file, int reg) const;
@@ -474,7 +475,7 @@ private:
   const std::vector<IRStructNode> &IR_structs_;
   std::vector<RISCVFunctionNode> RISCV_functions_;
   const int main_func_id_;
-  std::set<int> alloca_var_ids_;  // vars whose stack slot holds a pointer (alloca results)
+  std::vector<std::set<int>> alloca_var_ids_;  // [func_id] -> vars whose stack slot holds a pointer (alloca results)
 };
 
 #endif

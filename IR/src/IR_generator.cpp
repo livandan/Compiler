@@ -25,9 +25,11 @@ std::pair<int, bool> IRVisitor::GetTypeSize(const std::shared_ptr<IntegratedType
     case u32_type:
     case isize_type:
     case usize_type:
-    case enumeration_type:
-    case pointer_type: {
+    case enumeration_type: {
       return {4, true};
+    }
+    case pointer_type: {
+      return {8, true};
     }
     case array_type: {
       const auto element_size = GetTypeSize(type->element_type);
