@@ -20,7 +20,7 @@ const std::map<int, saver> register_saver = {
 };
 
 void CodegenThrow(const std::string &err_info) {
-  std::cerr << "[Codegen Error] " << err_info << '\n';
+  // std::cerr << "[Codegen Error] " << err_info << '\n';
   throw "";
 }
 
@@ -1358,8 +1358,10 @@ void CodeGenerator::Generate() {
               modified_reg.insert(reg_id);
             }
             r_block.PushCall(false, instruction.function_name_);
+            int result_reg = -1;
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              r_block.PushArithmetic_R(r_add_, RISCV_functions_[i].location_[instruction.result_id_].second, 10, 0);
+              result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg, 10, 0);
             } else {
               const auto [result_size, need_alignment] = GetSize(instruction.result_type_);
               if (result_size == 1) {
@@ -1371,7 +1373,7 @@ void CodeGenerator::Generate() {
               }
             }
             for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
+              if (register_saver.at(x) == caller_save && x != result_reg) {
                 r_block.PushMemory_I(r_lw_, x, RegSavedLocation(i, x), 2);
               }
             }
@@ -1552,15 +1554,16 @@ void CodeGenerator::Generate() {
                   }
                 }
                 r_block.PushCall(true, 5);
+                int result_reg = -1;
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-                  const int result_var_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
-                  r_block.PushArithmetic_R(r_add_, result_var_reg, 10, 0);
+                  result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+                  r_block.PushArithmetic_R(r_add_, result_reg, 10, 0);
                 } else {
                   const int result_var_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
                   r_block.PushMemory_S(r_sw_, 10, result_var_offset, 2);
                 }
                 for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
+                  if (register_saver.at(x) == caller_save && x != result_reg) {
                     r_block.PushMemory_I(r_lw_, x, RegSavedLocation(i, x), 2);
                   }
                 }
@@ -1621,6 +1624,8 @@ void CodeGenerator::Generate() {
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               r_block.PushArithmetic_R(r_add_, RISCV_functions_[i].location_[instruction.result_id_].second, src_reg, 0);
+            } else if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
+              r_block.PushMemory_S(r_sw_, src_reg, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             } else {
               r_block.PushMemory_S(r_sb_, src_reg, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             }
@@ -2203,12 +2208,12 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
       }
       builtin_fn.close();
     } else {
-      std::cerr << "Cannot open output file!\n";
+      // std::cerr << "Cannot open output file!\n";
       builtin_fn.close();
       return;
     }
   } else {
-    std::cerr << "Cannot open builtin functions file!\n";
+    // std::cerr << "Cannot open builtin functions file!\n";
     return;
   }
   output_file << "\n";
@@ -2258,7 +2263,7 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
     }
     builtin_str.close();
   } else {
-    std::cerr << "Cannot open builtin string file!\n";
+    CodegenThrow("Cannot open builtin string file!\n");
   }
   output_file.close();
 }

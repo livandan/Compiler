@@ -24,20 +24,6 @@ void RegisterAllocator::Run() {
   ComputeLiveness();
   BuildInterferenceGraph();
   ColorGraph();
-
-  // FIXME: UpdateLocationMap is disabled because the location_ map shares
-  // keys between parameter indices and var_ids.  When a var_id collides
-  // with a param index, setting location_[var] = {true, reg} can overwrite
-  // a parameter's register assignment.  The pre-existing codebase uses the
-  // same map for both purposes.  The fix is either to use disjoint key
-  // spaces (e.g. negative keys for params) or to detect and avoid
-  // collisions in UpdateLocationMap.
-  //
-  // For now the allocator runs liveness + interference + coloring as a
-  // warmup — the debug conflict check in AssignColors confirms that no
-  // two interfering nodes share a register.  Only the final write-back is
-  // skipped so the baseline 47/50 pass rate is preserved.
-  //
   UpdateLocationMap();
 }
 
@@ -298,6 +284,10 @@ void RegisterAllocator::ComputeLiveness() {
           if (inst.condition_id_ == 0) {
             uses.insert(inst.operand_2_id_);
           }
+          defs.insert(inst.result_id_);
+          break;
+        }
+        case value_select_vv_: {
           defs.insert(inst.result_id_);
           break;
         }
@@ -874,17 +864,17 @@ void RegisterAllocator::AssignColors() {
     for (int v : neighbors) {
       if (!node_color.count(v) || node_color.at(v) < 0) continue;
       if (cu == node_color.at(v)) {
-        if (bad < 5) {
-          std::cerr << "[RegAlloc CONFLICT] nodes " << u << " and " << v
-                    << " both assigned reg " << cu << std::endl;
-        }
+        // if (bad < 5) {
+        //   std::cerr << "[RegAlloc CONFLICT] nodes " << u << " and " << v
+        //             << " both assigned reg " << cu << std::endl;
+        // }
         ++bad;
       }
     }
   }
-  if (bad > 0) {
-    std::cerr << "[RegAlloc CONFLICT] total conflicting pairs: " << bad << std::endl;
-  }
+  // if (bad > 0) {
+  //   std::cerr << "[RegAlloc CONFLICT] total conflicting pairs: " << bad << std::endl;
+  // }
 }
 
 // ============================================================================
@@ -901,7 +891,7 @@ void RegisterAllocator::UpdateLocationMap() {
       if (reg >= 0) {
         riscv_func_.location_[var] = {true, reg};
         ++promoted;
-        std::cerr << "[RegAlloc] var " << var << " -> reg " << reg << std::endl;
+        // std::cerr << "[RegAlloc] var " << var << " -> reg " << reg << std::endl;
       } else if (reg == -1) {
         if (riscv_func_.location_.count(var)) {
           riscv_func_.location_[var].first = false;
@@ -912,9 +902,9 @@ void RegisterAllocator::UpdateLocationMap() {
       }
     }
   }
-  if (promoted > 0) {
-    std::cerr << "[RegAlloc] promoted " << promoted << " vars to registers" << std::endl;
-  }
+  // if (promoted > 0) {
+  //   std::cerr << "[RegAlloc] promoted " << promoted << " vars to registers" << std::endl;
+  // }
 
   // Resolve coalesced variables.
   for (const auto &[var, rep] : coalesced_rep_) {
