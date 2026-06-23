@@ -10,7 +10,14 @@ enum RISCVInstructionType {
   r_sh_, r_sw_, r_beq_, r_bge_, r_bgeu_, r_blt_, r_bltu_, r_bne_, r_jal_,
   r_jalr_, r_auipc_, r_lui_, r_ebreak_, r_ecall_, r_mul_, r_div_, r_divu_,
   r_rem_, r_remu_, r_exit_, r_beqz_, r_bnez_, r_j_, r_jal_ra_, r_jr_,
-  r_la_, r_li_, r_mv_, r_neg_, r_nop_, r_not_, r_ret_, r_call_
+  r_la_, r_li_, r_mv_, r_neg_, r_nop_, r_not_, r_ret_, r_call_,
+  // RV64 word (32-bit) arithmetic — sign-extend result to 64 bits
+  r_addw_, r_subw_, r_addiw_,
+  r_sllw_, r_srlw_, r_sraw_,
+  r_slliw_, r_srliw_, r_sraiw_,
+  r_mulw_, r_divw_, r_divuw_, r_remw_, r_remuw_,
+  // RV64 64-bit memory operations
+  r_ld_, r_sd_
 };
 
 struct RISCVInstruction {
@@ -42,7 +49,8 @@ struct RISCVBlock {
   // registers).
   std::vector<RISCVInstruction> deferred_load_;
   void PushArithmetic_R(const RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
-    if (type < 1 || type > 10) {
+    if ((type < 1 || type > 10) && type != r_addw_ && type != r_subw_
+        && type != r_sllw_ && type != r_srlw_ && type != r_sraw_) {
       CodegenThrow("Incorrectly use PushArithmetic_R(...).");
     }
     instructions_.push_back(RISCVInstruction(type, rd, rs1, rs2, -1, -1));
@@ -172,13 +180,71 @@ struct RISCVBlock {
         }
         break;
       }
+      case r_addiw_: {
+        if (imm >= -2048 && imm <= 2047) {
+          instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
+        } else {
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_addw_, rd, rs1, tmp_reg, -1, -1));
+        }
+        break;
+      }
+      case r_slliw_: {
+        if (imm < 0) {
+          CodegenThrow("Invalid slliw.");
+        } else if (imm <= 15) {
+          instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
+        } else {
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_sllw_, rd, rs1, tmp_reg, -1, -1));
+        }
+        break;
+      }
+      case r_srliw_: {
+        if (imm < 0) {
+          CodegenThrow("Invalid srliw.");
+        } else if (imm <= 15) {
+          instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
+        } else {
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_srlw_, rd, rs1, tmp_reg, -1, -1));
+        }
+        break;
+      }
+      case r_sraiw_: {
+        if (imm < 0) {
+          CodegenThrow("Invalid sraiw.");
+        } else if (imm <= 15) {
+          instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
+        } else {
+          int tmp_reg = 31;
+          if (rs1 == tmp_reg) {
+            tmp_reg = 5;
+          }
+          instructions_.push_back(RISCVInstruction(r_li_, tmp_reg, -1, -1, imm, -1));
+          instructions_.push_back(RISCVInstruction(r_sraw_, rd, rs1, tmp_reg, -1, -1));
+        }
+        break;
+      }
       default: {
         CodegenThrow("Incorrectly use PushArithmetic_I(...).");
       }
     }
   }
   void PushMemory_I(const RISCVInstructionType type, const int rd, const int imm, const int rs1) {
-    if (type < 20 || type > 24) {
+    if ((type < 20 || type > 24) && type != r_ld_) {
       CodegenThrow("Incorrectly use PushMemory_I(...).");
     }
     if (imm >= -2048 && imm <= 2047) {
@@ -194,7 +260,7 @@ struct RISCVBlock {
     }
   }
   void PushMemory_S(const RISCVInstructionType type, const int rs2, const int imm, const int rs1) {
-    if (type < 25 || type > 27) {
+    if ((type < 25 || type > 27) && type != r_sd_) {
       CodegenThrow("Incorrectly use PushMemory_S(...).");
     }
     if (imm >= -2048 && imm <= 2047) {
@@ -220,7 +286,8 @@ struct RISCVBlock {
     jump_blocks_.push_back(RISCVInstruction(r_j_, -1, -1, -1, -1, label));
   }
   void PushExtended(const  RISCVInstructionType type, const int rd, const int rs1, const int rs2) {
-    if (type < 40 || type > 44) {
+    if ((type < 40 || type > 44) && type != r_mulw_ && type != r_divw_
+        && type != r_divuw_ && type != r_remw_ && type != r_remuw_) {
       CodegenThrow("Incorrectly use PushExtended(...).");
     }
     instructions_.push_back(RISCVInstruction(type, rd, rs1, rs2, -1, -1));
@@ -392,6 +459,8 @@ private:
   void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
+  static RISCVInstructionType GetLoadInst(const std::shared_ptr<IntegratedType> &type);
+  static RISCVInstructionType GetStoreInst(const std::shared_ptr<IntegratedType> &type);
   void PrintReg(std::ofstream &file, int reg) const;
   void PrintLabel(std::ofstream &file, int label, int func_id) const;
   void PrintJumpLabel(std::ofstream &file, int block_label, int jump_label, int func_id) const;
@@ -405,6 +474,7 @@ private:
   const std::vector<IRStructNode> &IR_structs_;
   std::vector<RISCVFunctionNode> RISCV_functions_;
   const int main_func_id_;
+  std::set<int> alloca_var_ids_;  // vars whose stack slot holds a pointer (alloca results)
 };
 
 #endif

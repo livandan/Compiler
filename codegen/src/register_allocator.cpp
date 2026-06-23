@@ -109,6 +109,7 @@ void RegisterAllocator::ClassifyVariables() {
           case builtin_call_:
             if (IsScalarType(inst.result_type_)) {
               allocatable_vars_.insert(result_id);
+              var_size_[result_id] = (inst.result_type_->basic_type == pointer_type) ? 8 : 4;
             } else {
               stack_bound_vars_.insert(result_id);
             }
@@ -896,8 +897,12 @@ void RegisterAllocator::UpdateLocationMap() {
         if (riscv_func_.location_.count(var)) {
           riscv_func_.location_[var].first = false;
         } else {
+          int size = var_size_.count(var) ? var_size_[var] : 4;
+          if (size == 8 && riscv_func_.stack_space_ % 8 != 0) {
+            riscv_func_.stack_space_ = (riscv_func_.stack_space_ + 7) / 8 * 8;
+          }
           riscv_func_.location_[var] = {false, riscv_func_.stack_space_};
-          riscv_func_.stack_space_ += 4;
+          riscv_func_.stack_space_ += size;
         }
       }
     }

@@ -61,6 +61,7 @@ private:
 
   // Variables that could be in registers (scalar, not stack-bound)
   std::set<int> allocatable_vars_;
+  std::map<int, int> var_size_;  // var_id -> size in bytes (4 for int, 8 for pointer)
 
   // Variables that must stay on stack (alloca'd, non-scalar)
   std::set<int> stack_bound_vars_;
