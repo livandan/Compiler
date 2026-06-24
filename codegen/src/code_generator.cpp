@@ -248,6 +248,13 @@ void CodeGenerator::MemAlloc(const int func_id) {
       }
     }
   }
+  // Reserve 128 bytes at the bottom of the frame (sp+0..127) for the
+  // TempCallerSaveSlot used during nested memcpy calls. Because the
+  // intermediate offsets are flipped (final = total - intermediate), this
+  // reservation must be added AFTER all variables are allocated so the
+  // smallest final offset (for the variable with the largest intermediate)
+  // is still >= 128.
+  space += 128;
   space = (space + 15) / 16 * 16;  // RV64 ABI: 16-byte stack alignment
   for (const auto [var_id, location] : RISCV_functions_[func_id].location_) {
     if (!location.first) {

@@ -431,7 +431,9 @@ public:
         if (to_be_stored == -1) {
           CodegenThrow("Assignment graph cycle could not be resolved.");
         }
-        blocks[block_jump.from].PushMove(edges_[heads_[to_be_stored]].type, false, to_be_stored, tmp_var_id++);
+        const int new_tmp = tmp_var_id++;
+        blocks[block_jump.from].PushMove(edges_[heads_[to_be_stored]].type, false, to_be_stored, new_tmp);
+        tmp_store_[to_be_stored] = new_tmp;
         status_[to_be_stored] = 2;
       }
     }
