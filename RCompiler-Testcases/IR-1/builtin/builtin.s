@@ -94,4 +94,4 @@ builtin_memcpy:
     .zero    5
 .LC2:
     .string    "%d\n"
-    .ident    "GCC: (SiFive GCC 8.3.0-2020.04.1) 8.3.0"
+    .ident    "livandan's compiler 1.0"
