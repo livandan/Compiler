@@ -19,7 +19,7 @@ add_executable(code test/OJ_test.cpp
     semantic/src/scope.cpp semantic/src/value_type.cpp
     semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
     IR/src/mem2reg.cpp
-    front_end_entry/src/check_and_generate_IR.cpp
+    front_end_entry/src/check_and_generate_RV64.cpp
     codegen/src/code_generator.cpp
     codegen/src/register_allocator.cpp)
 
@@ -52,7 +52,7 @@ add_executable(code test/OJ_test.cpp
 #    semantic/src/scope.cpp semantic/src/value_type.cpp
 #    semantic/src/visitor_manager.cpp IR/src/IR_generator.cpp
 #    IR/src/mem2reg.cpp
-#    front_end_entry/src/check_and_generate_IR.cpp)
+#    front_end_entry/src/check_and_generate_RV64.cpp)
 #
 #target_link_libraries(IR_tests GTest::gtest GTest::gtest_main pthread)
 #
