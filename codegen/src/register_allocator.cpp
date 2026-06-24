@@ -567,14 +567,9 @@ void RegisterAllocator::BuildInterferenceGraph() {
 // ============================================================================
 
 int RegisterAllocator::GetDegree(int node) const {
-  if (!interference_.count(node)) return 0;
-  int deg = 0;
-  for (int neighbor : interference_.at(node)) {
-    if (worklist_.count(neighbor)) {
-      ++deg;
-    }
-  }
-  return deg;
+  auto it = current_degree_.find(node);
+  if (it == current_degree_.end()) return 0;
+  return it->second;
 }
 
 int RegisterAllocator::GetSignificantDegree(int node, int k) const {
@@ -597,6 +592,20 @@ void RegisterAllocator::ColorGraph() {
   }
   select_stack_.clear();
   is_spilled_.clear();
+
+  // Initialize cached degrees: number of interference neighbors that are
+  // currently in worklist_. Updated incrementally as nodes leave worklist_.
+  current_degree_.clear();
+  for (int v : worklist_) {
+    int deg = 0;
+    auto it = interference_.find(v);
+    if (it != interference_.end()) {
+      for (int neighbor : it->second) {
+        if (worklist_.count(neighbor)) ++deg;
+      }
+    }
+    current_degree_[v] = deg;
+  }
 
   while (!worklist_.empty()) {
     // ---- SIMPLIFY ----
@@ -640,6 +649,19 @@ void RegisterAllocator::Simplify() {
       select_stack_.push_back(node);
       is_spilled_[node] = false;
       worklist_.erase(node);
+      // Decrement cached degree of each neighbor that is still in worklist_.
+      auto it = interference_.find(node);
+      if (it != interference_.end()) {
+        for (int neighbor : it->second) {
+          if (worklist_.count(neighbor)) {
+            auto dit = current_degree_.find(neighbor);
+            if (dit != current_degree_.end() && dit->second > 0) {
+              --dit->second;
+            }
+          }
+        }
+      }
+      current_degree_.erase(node);
       // Also remove this node from move_related_ (it's no longer in worklist).
       move_related_.erase(node);
       changed = true;
@@ -778,6 +800,19 @@ void RegisterAllocator::SelectSpill() {
   select_stack_.push_back(spill_node);
   is_spilled_[spill_node] = true;
   worklist_.erase(spill_node);
+  // Decrement cached degree of each neighbor that is still in worklist_.
+  auto it = interference_.find(spill_node);
+  if (it != interference_.end()) {
+    for (int neighbor : it->second) {
+      if (worklist_.count(neighbor)) {
+        auto dit = current_degree_.find(neighbor);
+        if (dit != current_degree_.end() && dit->second > 0) {
+          --dit->second;
+        }
+      }
+    }
+  }
+  current_degree_.erase(spill_node);
   move_related_.erase(spill_node);
 }
 

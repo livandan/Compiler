@@ -46,7 +46,7 @@
 
 echo "============================= Codegen Tests Begins ============================="
 
-code_gen_success_count=0
+IR_1_success_count=0
 
 for INDEX in {1..50}; do
   clang --target=riscv64-linux-gnu -fno-pic -static -O0 "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf"
@@ -56,7 +56,7 @@ for INDEX in {1..50}; do
       diff "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.out" -Z
       if [ $? -eq 0 ]; then
         echo "!!!!!!!!!!!!!! ${INDEX} success!"
-        ((code_gen_success_count++))
+        ((IR_1_success_count++))
       else
         echo "********************************************************************************** ${INDEX} failed in diff"
       fi
@@ -70,4 +70,4 @@ done
 
 #echo "IR generating tests: ${IR_success_count} success out of 50"
 
-echo "codegen tests: ${code_gen_success_count} success out of 50"
+echo "IR-1 tests: ${IR_1_success_count} success out of 50"

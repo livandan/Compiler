@@ -74,6 +74,9 @@ private:
   std::set<int> worklist_;          // nodes not yet processed
   std::vector<int> select_stack_;   // removed nodes, in order
   std::map<int, bool> is_spilled_;  // node -> marked for spilling?
+  // Cached degree of each node within the *current* worklist. Updated
+  // incrementally as nodes leave the worklist so GetDegree is O(1).
+  std::map<int, int> current_degree_;
 
   // Move-related nodes that still have move edges
   std::set<int> move_related_;      // nodes with at least one move edge
