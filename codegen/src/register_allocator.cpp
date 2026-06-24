@@ -520,6 +520,27 @@ void RegisterAllocator::BuildInterferenceGraph() {
     // For each phi, the result is defined here. It interferes with everything
     // in currently_live (which should approximate live_in), EXCEPT its own
     // source operands (to allow coalescing).
+    //
+    // First, collect all phi result ids in this block so we can make them
+    // mutually interfere — two phi results defined at the same block start
+    // must never share a register, otherwise the move instructions that
+    // resolve them can overwrite each other (the second move clobbers the
+    // first one's destination).
+    std::set<int> block_phi_results;
+    for (const auto &phi : block.phi_instructions_) {
+      if (allocatable_vars_.count(phi.result_id)) {
+        block_phi_results.insert(phi.result_id);
+      }
+    }
+    for (int r1 : block_phi_results) {
+      for (int r2 : block_phi_results) {
+        if (r1 != r2) {
+          interference_[r1].insert(r2);
+          interference_[r2].insert(r1);
+        }
+      }
+    }
+
     for (const auto &phi : block.phi_instructions_) {
       int result_id = phi.result_id;
       if (!allocatable_vars_.count(result_id)) continue;
@@ -557,6 +578,43 @@ void RegisterAllocator::BuildInterferenceGraph() {
         move_edges_[dest].insert(src);
         move_related_.insert(src);
         move_related_.insert(dest);
+        // Force interference between move source and destination so the
+        // register allocator never puts them in the same physical register.
+        // Without this, a phi source and its result can land in the same reg
+        // (their live ranges don't overlap in the standard sense), turning
+        // the move into a no-op and leaving the loop variable unchanged.
+        interference_[src].insert(dest);
+        interference_[dest].insert(src);
+      }
+    }
+    // Add cross-interference between moves in the same block:
+    // the destination of one move must not share a register with the source
+    // of another move, because all phi moves at a block boundary execute
+    // simultaneously (parallel copy). Without this, the first move can
+    // overwrite a register that the second move still needs to read from.
+    for (size_t i = 0; i < r_block.move_instructions_.size(); ++i) {
+      const auto &mv_i = r_block.move_instructions_[i];
+      if (mv_i.src_is_value_) continue;
+      for (size_t j = i + 1; j < r_block.move_instructions_.size(); ++j) {
+        const auto &mv_j = r_block.move_instructions_[j];
+        if (mv_j.src_is_value_) continue;
+        int si = mv_i.src_, di = mv_i.dest_;
+        int sj = mv_j.src_, dj = mv_j.dest_;
+        // dest of i interferes with src of j, and vice versa
+        if (allocatable_vars_.count(di) && allocatable_vars_.count(sj)) {
+          interference_[di].insert(sj);
+          interference_[sj].insert(di);
+        }
+        if (allocatable_vars_.count(dj) && allocatable_vars_.count(si)) {
+          interference_[dj].insert(si);
+          interference_[si].insert(dj);
+        }
+        // Also make all destinations mutually interfere (two phi results
+        // defined at the same block start must never share a register).
+        if (allocatable_vars_.count(di) && allocatable_vars_.count(dj)) {
+          interference_[di].insert(dj);
+          interference_[dj].insert(di);
+        }
       }
     }
   }

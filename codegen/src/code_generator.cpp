@@ -20,7 +20,7 @@ const std::map<int, saver> register_saver = {
 };
 
 void CodegenThrow(const std::string &err_info) {
-  std::cerr << "[Codegen Error] " << err_info << '\n';
+  // std::cerr << "[Codegen Error] " << err_info << '\n';
   throw "";
 }
 
@@ -842,7 +842,7 @@ void CodeGenerator::Generate() {
                   dest_reg = 5;
                 }
                 // dest_reg keeps the real address that the pointer points to
-                r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sw_, 6, 0, dest_reg);
               } else if (store_size == 8) {
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
