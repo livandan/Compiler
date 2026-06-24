@@ -1,248 +1,97 @@
-	.file	"builtin.c"
-	.text
-	.section	.rodata
-.LC0:
-	.string	"%s"
-	.text
-	.globl	print
-	.type	print, @function
+    .file    "builtin.c"
+    .option nopic
+    .attribute arch, "rv64i2p0_m2p0_a2p0_f2p0_d2p0_c2p0"
+    .attribute unaligned_access, 0
+    .attribute stack_align, 16
+    .text
+    .align    1
+    .globl    print
+    .type    print, @function
 print:
-.LFB0:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movq	%rdi, -8(%rbp)
-	movq	-8(%rbp), %rax
-	movq	%rax, %rsi
-	leaq	.LC0(%rip), %rax
-	movq	%rax, %rdi
-	movl	$0, %eax
-	call	printf@PLT
-	nop
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE0:
-	.size	print, .-print
-	.globl	println
-	.type	println, @function
+    mv    a1,a0
+    lui    a0,%hi(.LC0)
+    addi    a0,a0,%lo(.LC0)
+    tail    printf
+    .size    print, .-print
+    .align    1
+    .globl    println
+    .type    println, @function
 println:
-.LFB1:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movq	%rdi, -8(%rbp)
-	movq	-8(%rbp), %rax
-	movq	%rax, %rdi
-	call	puts@PLT
-	nop
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE1:
-	.size	println, .-println
-	.section	.rodata
-.LC1:
-	.string	"%d"
-	.text
-	.globl	printInt
-	.type	printInt, @function
+    tail    puts
+    .size    println, .-println
+    .align    1
+    .globl    printInt
+    .type    printInt, @function
 printInt:
-.LFB2:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movl	%edi, -4(%rbp)
-	movl	-4(%rbp), %eax
-	movl	%eax, %esi
-	leaq	.LC1(%rip), %rax
-	movq	%rax, %rdi
-	movl	$0, %eax
-	call	printf@PLT
-	nop
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE2:
-	.size	printInt, .-printInt
-	.section	.rodata
-.LC2:
-	.string	"%d\n"
-	.text
-	.globl	printlnInt
-	.type	printlnInt, @function
+    mv    a1,a0
+    lui    a0,%hi(.LC1)
+    addi    a0,a0,%lo(.LC1)
+    tail    printf
+    .size    printInt, .-printInt
+    .align    1
+    .globl    printlnInt
+    .type    printlnInt, @function
 printlnInt:
-.LFB3:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movl	%edi, -4(%rbp)
-	movl	-4(%rbp), %eax
-	movl	%eax, %esi
-	leaq	.LC2(%rip), %rax
-	movq	%rax, %rdi
-	movl	$0, %eax
-	call	printf@PLT
-	nop
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE3:
-	.size	printlnInt, .-printlnInt
-	.globl	getString
-	.type	getString, @function
+    mv    a1,a0
+    lui    a0,%hi(.LC2)
+    addi    a0,a0,%lo(.LC2)
+    tail    printf
+    .size    printlnInt, .-printlnInt
+    .align    1
+    .globl    getString
+    .type    getString, @function
 getString:
-.LFB4:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movl	$256, %edi
-	call	malloc@PLT
-	movq	%rax, -8(%rbp)
-	movq	-8(%rbp), %rax
-	movq	%rax, %rsi
-	leaq	.LC0(%rip), %rax
-	movq	%rax, %rdi
-	movl	$0, %eax
-	call	scanf@PLT
-	movq	-8(%rbp), %rax
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE4:
-	.size	getString, .-getString
-	.globl	getInt
-	.type	getInt, @function
+    addi    sp,sp,-16
+    li    a0,256
+    sd    ra,8(sp)
+    sd    s0,0(sp)
+    call    malloc
+    mv    s0,a0
+    mv    a1,a0
+    lui    a0,%hi(.LC0)
+    addi    a0,a0,%lo(.LC0)
+    call    scanf
+    mv    a0,s0
+    ld    ra,8(sp)
+    ld    s0,0(sp)
+    addi    sp,sp,16
+    jr    ra
+    .size    getString, .-getString
+    .align    1
+    .globl    getInt
+    .type    getInt, @function
 getInt:
-.LFB5:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movq	%fs:40, %rax
-	movq	%rax, -8(%rbp)
-	xorl	%eax, %eax
-	leaq	-12(%rbp), %rax
-	movq	%rax, %rsi
-	leaq	.LC1(%rip), %rax
-	movq	%rax, %rdi
-	movl	$0, %eax
-	call	scanf@PLT
-	movl	-12(%rbp), %eax
-	movq	-8(%rbp), %rdx
-	subq	%fs:40, %rdx
-	je	.L9
-	call	__stack_chk_fail@PLT
-.L9:
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE5:
-	.size	getInt, .-getInt
-	.globl	builtin_memset
-	.type	builtin_memset, @function
+    addi    sp,sp,-32
+    lui    a0,%hi(.LC1)
+    addi    a1,sp,12
+    addi    a0,a0,%lo(.LC1)
+    sd    ra,24(sp)
+    call    scanf
+    ld    ra,24(sp)
+    lw    a0,12(sp)
+    addi    sp,sp,32
+    jr    ra
+    .size    getInt, .-getInt
+    .align    1
+    .globl    builtin_memset
+    .type    builtin_memset, @function
 builtin_memset:
-.LFB6:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$16, %rsp
-	movq	%rdi, -8(%rbp)
-	movl	%esi, -12(%rbp)
-	movl	%edx, -16(%rbp)
-	movl	-16(%rbp), %edx
-	movl	-12(%rbp), %ecx
-	movq	-8(%rbp), %rax
-	movl	%ecx, %esi
-	movq	%rax, %rdi
-	call	memset@PLT
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE6:
-	.size	builtin_memset, .-builtin_memset
-	.globl	builtin_memcpy
-	.type	builtin_memcpy, @function
+    tail    memset
+    .size    builtin_memset, .-builtin_memset
+    .align    1
+    .globl    builtin_memcpy
+    .type    builtin_memcpy, @function
 builtin_memcpy:
-.LFB7:
-	.cfi_startproc
-	endbr64
-	pushq	%rbp
-	.cfi_def_cfa_offset 16
-	.cfi_offset 6, -16
-	movq	%rsp, %rbp
-	.cfi_def_cfa_register 6
-	subq	$32, %rsp
-	movq	%rdi, -8(%rbp)
-	movq	%rsi, -16(%rbp)
-	movl	%edx, -20(%rbp)
-	movl	-20(%rbp), %edx
-	movq	-16(%rbp), %rcx
-	movq	-8(%rbp), %rax
-	movq	%rcx, %rsi
-	movq	%rax, %rdi
-	call	memcpy@PLT
-	leave
-	.cfi_def_cfa 7, 8
-	ret
-	.cfi_endproc
-.LFE7:
-	.size	builtin_memcpy, .-builtin_memcpy
-	.ident	"GCC: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
-	.section	.note.GNU-stack,"",@progbits
-	.section	.note.gnu.property,"a"
-	.align 8
-	.long	1f - 0f
-	.long	4f - 1f
-	.long	5
-0:
-	.string	"GNU"
-1:
-	.align 8
-	.long	0xc0000002
-	.long	3f - 2f
-2:
-	.long	0x3
-3:
-	.align 8
-4:
+    tail    memcpy
+    .size    builtin_memcpy, .-builtin_memcpy
+    .section    .rodata.str1.8,"aMS",@progbits,1
+    .align    3
+.LC0:
+    .string    "%s"
+    .zero    5
+.LC1:
+    .string    "%d"
+    .zero    5
+.LC2:
+    .string    "%d\n"
+    .ident    "GCC: (SiFive GCC 8.3.0-2020.04.1) 8.3.0"
