@@ -1,8 +1,9 @@
-#include "check_and_generate_IR.h"
+#include "check_and_generate_RV64.h"
 #include "classes.h"
 #include "tokenizer.h"
 #include "builder.h"
 #include <fstream>
+#include "code_generator.h"
 
 void FrontEndRunner::Run(const std::string &output_file_name) {
   std::vector<Token> tokens;
@@ -28,6 +29,17 @@ void FrontEndRunner::Run(const std::string &output_file_name) {
   std::ofstream output_file(output_file_name);
   if (output_file.is_open()) {
     IR_generator_.Output(output_file);
+  } else {
+    std::cerr << "[Error] Cannot open " << output_file_name << "!\n";
+  }
+  CodeGenerator RISCV_generator(IR_generator_.GetIRFunctions(),
+      IR_generator_.GetIRStructs(), IR_generator_.GetMainFuncID());
+  RISCV_generator.Generate();
+
+  std::ofstream RISCV_output_file(output_file_name);
+  if (RISCV_output_file.is_open()) {
+    RISCV_generator.Output(RISCV_output_file);
+    RISCV_output_file.close();
   } else {
     std::cerr << "[Error] Cannot open " << output_file_name << "!\n";
   }
