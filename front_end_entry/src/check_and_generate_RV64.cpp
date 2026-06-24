@@ -4,6 +4,7 @@
 #include "builder.h"
 #include <fstream>
 #include "code_generator.h"
+#include "mem2reg.h"
 
 void FrontEndRunner::Run(const std::string &output_file_name) {
   std::vector<Token> tokens;
@@ -26,12 +27,8 @@ void FrontEndRunner::Run(const std::string &output_file_name) {
     // Pass semantic check, but the IR generating is not implemented
     exit(0);
   }
-  std::ofstream output_file(output_file_name);
-  if (output_file.is_open()) {
-    IR_generator_.Output(output_file);
-  } else {
-    std::cerr << "[Error] Cannot open " << output_file_name << "!\n";
-  }
+  Mem2Reg mem2reg(IR_generator_);
+  mem2reg.Run();
   CodeGenerator RISCV_generator(IR_generator_.GetIRFunctions(),
       IR_generator_.GetIRStructs(), IR_generator_.GetMainFuncID());
   RISCV_generator.Generate();

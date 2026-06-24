@@ -298,8 +298,8 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case variable_store_:
         case ptr_store_: {
           if (inst.result_id_ == alloca_id) {
-            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: result_id matches in "
-                      << static_cast<int>(inst.instruction_type_) << " at block " << block_id << "\n";
+            // std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: result_id matches in "
+            //           << static_cast<int>(inst.instruction_type_) << " at block " << block_id << "\n";
             return false;
           }
           break;
@@ -308,14 +308,14 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case get_element_ptr_by_variable_:
         case builtin_memset_: {
           if (inst.pointer_ == alloca_id) {
-            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: pointer matches in gep/memset\n";
+            // std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: pointer matches in gep/memset\n";
             return false;
           }
           break;
         }
         case builtin_memcpy_: {
           if (inst.destination_ == alloca_id || inst.pointer_ == alloca_id) {
-            std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: used in memcpy\n";
+            // std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: used in memcpy\n";
             return false;
           }
           break;
@@ -324,7 +324,7 @@ bool Mem2Reg::IsPromotable(const int alloca_id) const {
         case void_call_: {
           for (const auto &argument : inst.function_call_arguments_) {
             if (argument.is_variable_ && argument.value_ == alloca_id) {
-              std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: passed to call as variable arg\n";
+              // std::cerr << "[m2r] alloca " << alloca_id << " NOT promotable: passed to call as variable arg\n";
               return false;
             }
           }
@@ -396,7 +396,7 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
   current_alloca_id_ = alloca_id;
   stores_of_alloca_.clear();
   loads_of_alloca_.clear();
-  std::cerr << "[m2r] PromoteAlloca: alloca_id=" << alloca_id << "\n";
+  // std::cerr << "[m2r] PromoteAlloca: alloca_id=" << alloca_id << "\n";
 
   // --- Step 1: Collect stores and loads ---
   // Gather all blocks that contain a store (definition) to this alloca.
@@ -496,8 +496,8 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
       // never read (the true dead-phi case).
       int phi_result_id = func_->var_id_++;
       phi_result_ids.insert(phi_result_id);
-      std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
-                << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
+      // std::cerr << "[m2r]   alloca " << alloca_id << ": inserting phi result="
+      //           << phi_result_id << " at block " << y << " (DF of block " << x << ")\n";
       // Insert phi with one placeholder condition; Step 4 will rebuild the
       // conditions vector to have exactly one entry per predecessor of Y.
       func_->blocks_[y].AddPhi(phi_result_id, alloca_type, -1, -1, false);
@@ -559,16 +559,16 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
     // Record the reaching definition at the end of this block
     block_exit_defs[block_id] = reaching_stack.top();
-    std::cerr << "[m2r]     rename_dfs visited block " << block_id
-              << ": exit_def.valid=" << reaching_stack.top().valid
-              << (reaching_stack.top().valid ? (reaching_stack.top().is_constant
-                  ? (", const=" + std::to_string(reaching_stack.top().const_value))
-                  : (", var=" + std::to_string(reaching_stack.top().var_id))) : "")
-              << "\n";
+    // std::cerr << "[m2r]     rename_dfs visited block " << block_id
+    //           << ": exit_def.valid=" << reaching_stack.top().valid
+    //           << (reaching_stack.top().valid ? (reaching_stack.top().is_constant
+    //               ? (", const=" + std::to_string(reaching_stack.top().const_value))
+    //               : (", var=" + std::to_string(reaching_stack.top().var_id))) : "")
+    //           << "\n";
 
     // Recurse into dominator tree children
     for (int child : dom_children_[block_id]) {
-      std::cerr << "[m2r]       block " << block_id << " -> child " << child << "\n";
+      // std::cerr << "[m2r]       block " << block_id << " -> child " << child << "\n";
       rename_dfs(child);
     }
 
@@ -591,21 +591,21 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
 
     for (auto &inst : func_->blocks_[block_id].phi_instructions_) {
       if (!phi_result_ids.contains(inst.result_id)) continue;
-      std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
-                << inst.result_id << " at block " << block_id
-                << " (preds=";
-      for (int p : preds) std::cerr << " " << p;
-      std::cerr << ")\n";
+      // std::cerr << "[m2r]   alloca " << alloca_id << ": filling phi result="
+      //           << inst.result_id << " at block " << block_id
+      //           << " (preds=";
+      // for (int p : preds) std::cerr << " " << p;
+      // std::cerr << ")\n";
       std::vector<PhiCondition> rebuilt;
       rebuilt.reserve(preds.size());
       for (const int p : preds) {
         ReachingDef def = block_exit_defs.contains(p) ? block_exit_defs[p] : ReachingDef::Undef();
         if (def.valid && !def.is_constant) {
           rebuilt.emplace_back(p, false, 0, def.var_id);
-          std::cerr << "[m2r]     condition from pred " << p << ": var " << def.var_id << "\n";
+          // std::cerr << "[m2r]     condition from pred " << p << ": var " << def.var_id << "\n";
         } else if (def.valid) {
           rebuilt.emplace_back(p, true, def.const_value, -1);
-          std::cerr << "[m2r]     condition from pred " << p << ": const " << def.const_value << "\n";
+          // std::cerr << "[m2r]     condition from pred " << p << ": const " << def.const_value << "\n";
         } else {
           // Undef path. The predecessor has no reaching def for this alloca
           // (e.g., it's the entry block with no prior store, or it sits above
@@ -617,7 +617,7 @@ bool Mem2Reg::PromoteAlloca(int alloca_id) {
           // AssignmentGraph::AddEdge(var_id, ...), and a sentinel var_id of
           // -1 would index out of bounds.
           rebuilt.emplace_back(p, true, 0, -1);
-          std::cerr << "[m2r]     condition from pred " << p << ": UNDEF -> const 0\n";
+          // std::cerr << "[m2r]     condition from pred " << p << ": UNDEF -> const 0\n";
         }
       }
       inst.conditions = std::move(rebuilt);

@@ -2368,18 +2368,6 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
 }
 
 void CodeGenerator::Output(std::ofstream &output_file) const {
-  std::ifstream builtin_s("../RCompiler-Testcases/IR-1/builtin/builtin.s");
-  std::string line_in_file;
-  if (builtin_s.is_open()) {
-    while (std::getline(builtin_s, line_in_file)) {
-      std::cerr << line_in_file << '\n';
-    }
-    builtin_s.close();
-  } else {
-    return;
-  }
-  output_file << "\n";
-
   for (int i = 0, current_func_id = 8; i < RISCV_functions_.size(); ++i, ++current_func_id) {
     output_file << "	.globl	";
     if (i == main_func_id_) {
@@ -2418,6 +2406,4 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
           << "\n                                        # -- End function\n";
     }
   }
-
-  output_file.close();
 }
