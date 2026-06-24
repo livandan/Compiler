@@ -49,7 +49,7 @@ echo "============================= Codegen Tests Begins =======================
 IR_1_success_count=0
 
 for INDEX in {1..50}; do
-  clang --target=riscv64-linux-gnu -fno-pic -static -O0 "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf"
+  riscv64-linux-gnu-gcc -march=rv64gc -mabi=lp64d -static "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf"
   if [ $? -eq 0 ]; then
     qemu-riscv64 "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf" < "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" > "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out"
     if [ $? -eq 0 ]; then
