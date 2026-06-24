@@ -165,7 +165,7 @@ void CodeGenerator::PhiToMove() {
 
 void CodeGenerator::MemAlloc(const int func_id) {
   int &space = RISCV_functions_[func_id].stack_space_;
-  space = 224; // 28 * 8 bytes for register saving
+  space = 352; // 28 * 8 for outer save + 128 for temp save area during nested memcpy calls
   int used_register = 0; // a-registers
   for (int i = 0; i < IR_functions_[func_id].parameter_types_.size(); ++i) {
     if (used_register == 8 || IR_functions_[func_id].parameter_types_[i]->basic_type == array_type
@@ -265,6 +265,15 @@ int CodeGenerator::RegSavedLocation(const int func_id, const int reg_id) const {
     CodegenThrow("x0, x2, x3 and x4 have no saving space in the stack.");
   }
   return stack_space - 8 * (reg_id - 3);
+}
+
+// Temp save area at sp+[0..127] for protecting outer save during nested call setup.
+// Maps caller-saved register to a slot in this 128-byte area (16 regs × 8 bytes).
+static int TempCallerSaveSlot(int reg_id) {
+  static const int order[] = {1,5,6,7,10,11,12,13,14,15,16,17,28,29,30,31};
+  for (int i = 0; i < 16; ++i)
+    if (order[i] == reg_id) return i * 8;
+  return -1;
 }
 
 void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
@@ -1374,6 +1383,14 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_I(r_lw_, 5, var_address_offset, 2);
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
+                      // Protect outer save: copy from RegSavedLocation to temp area
+                      for (int x = 0; x < 32; ++x) {
+                        if (register_saver.at(x) == caller_save) {
+                          r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(i, x), 2);
+                          r_block.PushMemory_S(r_sd_, 31, TempCallerSaveSlot(x), 2);
+                        }
+                      }
+                      // Inner save (will overwrite RegSavedLocation)
                       for (int x = 0; x < 32; ++x) {
                         if (register_saver.at(x) == caller_save) {
                           r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
@@ -1383,9 +1400,17 @@ void CodeGenerator::Generate() {
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
+                      // Inner restore
                       for (int x = 0; x < 32; ++x) {
                         if (register_saver.at(x) == caller_save) {
                           r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
+                        }
+                      }
+                      // Restore outer save from temp back to RegSavedLocation
+                      for (int x = 0; x < 32; ++x) {
+                        if (register_saver.at(x) == caller_save) {
+                          r_block.PushMemory_I(r_ld_, 31, TempCallerSaveSlot(x), 2);
+                          r_block.PushMemory_S(r_sd_, 31, RegSavedLocation(i, x), 2);
                         }
                       }
                     }
@@ -1508,6 +1533,14 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_I(r_lw_, 5, var_address_offset, 2);
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
+                      // Protect outer save: copy from RegSavedLocation to temp area
+                      for (int x = 0; x < 32; ++x) {
+                        if (register_saver.at(x) == caller_save) {
+                          r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(i, x), 2);
+                          r_block.PushMemory_S(r_sd_, 31, TempCallerSaveSlot(x), 2);
+                        }
+                      }
+                      // Inner save
                       for (int x = 0; x < 32; ++x) {
                         if (register_saver.at(x) == caller_save) {
                           r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
@@ -1517,9 +1550,17 @@ void CodeGenerator::Generate() {
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
+                      // Inner restore
                       for (int x = 0; x < 32; ++x) {
                         if (register_saver.at(x) == caller_save) {
                           r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
+                        }
+                      }
+                      // Restore outer save from temp back to RegSavedLocation
+                      for (int x = 0; x < 32; ++x) {
+                        if (register_saver.at(x) == caller_save) {
+                          r_block.PushMemory_I(r_ld_, 31, TempCallerSaveSlot(x), 2);
+                          r_block.PushMemory_S(r_sd_, 31, RegSavedLocation(i, x), 2);
                         }
                       }
                     }
@@ -2368,6 +2409,9 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
 }
 
 void CodeGenerator::Output(std::ofstream &output_file) const {
+  // Switch back to .text section — builtin.s may have switched to .rodata
+  // for string constants, and all generated code must be in .text (executable).
+  output_file << "	.text\n";
   for (int i = 0, current_func_id = 8; i < RISCV_functions_.size(); ++i, ++current_func_id) {
     output_file << "	.globl	";
     if (i == main_func_id_) {
