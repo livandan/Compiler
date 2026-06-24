@@ -409,6 +409,55 @@ void RegisterAllocator::BuildInterferenceGraph() {
         }
       }
     }
+    // Phi-induced moves at the end of this block use their sources. Those
+    // sources are live at end-of-block (after regular instructions, before
+    // the moves), so they must interfere with any variable defined in this
+    // block. Without this, a phi source defined-in-block (e.g. an SSA phi
+    // result) and a sibling phi source computed by a regular instruction
+    // can be coalesced into the same register, corrupting one of the moves.
+    if (riscv_func_.blocks_.count(block_id)) {
+      for (const auto &mv : riscv_func_.blocks_.at(block_id).move_instructions_) {
+        if (!mv.src_is_value_ && allocatable_vars_.count(mv.src_)) {
+          currently_live.insert(mv.src_);
+        }
+      }
+    }
+    // The conditional-branch condition is loaded AFTER phi moves run (the
+    // "deferred load" pattern in code_generator.cpp). So the condition
+    // variable is live across the phi moves: any phi-move destination must
+    // interfere with the condition, or the move clobbers it. Treat the
+    // condition as live at end-of-block here so phi-move dests (and anything
+    // else defined in the block) get the right interference.
+    if (!block.instructions_.empty()) {
+      const auto &last = block.instructions_.back();
+      if (last.instruction_type_ == conditional_br_ &&
+          last.condition_id_ > 0 &&
+          allocatable_vars_.count(last.condition_id_)) {
+        currently_live.insert(last.condition_id_);
+      }
+    }
+    // Phi-move destinations are written at end-of-block. They must interfere
+    // with everything alive at that point (sources of other moves, the
+    // conditional condition still pending the deferred load, and anything
+    // else passing through in live_out). Account for that here — the
+    // per-instruction backward walk below only handles defs from regular
+    // instructions, never the phi-move dests themselves.
+    // Exception: a move's destination does NOT interfere with its own source
+    // (coalescing src and dest is fine: same register means the move is a
+    // no-op, which preserves semantics for a single move).
+    if (riscv_func_.blocks_.count(block_id)) {
+      for (const auto &mv : riscv_func_.blocks_.at(block_id).move_instructions_) {
+        int dest = mv.dest_;
+        if (!allocatable_vars_.count(dest)) continue;
+        int own_src = (!mv.src_is_value_) ? mv.src_ : -1;
+        for (int live : currently_live) {
+          if (live != dest && live != own_src) {
+            interference_[dest].insert(live);
+            interference_[live].insert(dest);
+          }
+        }
+      }
+    }
 
     // Walk instructions from bottom to top.
     for (auto inst_it = block.instructions_.rbegin();
@@ -592,26 +641,34 @@ void RegisterAllocator::BuildInterferenceGraph() {
     // of another move, because all phi moves at a block boundary execute
     // simultaneously (parallel copy). Without this, the first move can
     // overwrite a register that the second move still needs to read from.
+    // Constant moves (src_is_value_) participate as destinations only; their
+    // destination must also interfere with other moves' sources to avoid the
+    // li that materializes the constant clobbering a source still to be read.
     for (size_t i = 0; i < r_block.move_instructions_.size(); ++i) {
       const auto &mv_i = r_block.move_instructions_[i];
-      if (mv_i.src_is_value_) continue;
       for (size_t j = i + 1; j < r_block.move_instructions_.size(); ++j) {
         const auto &mv_j = r_block.move_instructions_[j];
-        if (mv_j.src_is_value_) continue;
-        int si = mv_i.src_, di = mv_i.dest_;
-        int sj = mv_j.src_, dj = mv_j.dest_;
-        // dest of i interferes with src of j, and vice versa
-        if (allocatable_vars_.count(di) && allocatable_vars_.count(sj)) {
-          interference_[di].insert(sj);
-          interference_[sj].insert(di);
+        int di = mv_i.dest_;
+        int dj = mv_j.dest_;
+        // dest of i interferes with src of j (if j is a var move).
+        if (!mv_j.src_is_value_) {
+          int sj = mv_j.src_;
+          if (allocatable_vars_.count(di) && allocatable_vars_.count(sj) && di != sj) {
+            interference_[di].insert(sj);
+            interference_[sj].insert(di);
+          }
         }
-        if (allocatable_vars_.count(dj) && allocatable_vars_.count(si)) {
-          interference_[dj].insert(si);
-          interference_[si].insert(dj);
+        // dest of j interferes with src of i (if i is a var move).
+        if (!mv_i.src_is_value_) {
+          int si = mv_i.src_;
+          if (allocatable_vars_.count(dj) && allocatable_vars_.count(si) && dj != si) {
+            interference_[dj].insert(si);
+            interference_[si].insert(dj);
+          }
         }
         // Also make all destinations mutually interfere (two phi results
         // defined at the same block start must never share a register).
-        if (allocatable_vars_.count(di) && allocatable_vars_.count(dj)) {
+        if (allocatable_vars_.count(di) && allocatable_vars_.count(dj) && di != dj) {
           interference_[di].insert(dj);
           interference_[dj].insert(di);
         }
