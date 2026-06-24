@@ -21,24 +21,24 @@ void FrontEndRunner::Run(const std::string &output_file_name) {
   }
   try {
     IR_generator_.Visit(syntax_tree);
+    Mem2Reg mem2reg(IR_generator_);
+    mem2reg.Run();
+    CodeGenerator RISCV_generator(IR_generator_.GetIRFunctions(),
+        IR_generator_.GetIRStructs(), IR_generator_.GetMainFuncID());
+    RISCV_generator.Generate();
+
+    std::ofstream RISCV_output_file(output_file_name);
+    if (RISCV_output_file.is_open()) {
+      RISCV_generator.Output(RISCV_output_file);
+      RISCV_output_file.close();
+    } else {
+      std::cerr << "[Error] Cannot open " << output_file_name << "!\n";
+    }
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;
-    // Pass semantic check, but the IR generating is not implemented
+    // Pass semantic check, but the RV64 generating is not implemented
     exit(0);
-  }
-  Mem2Reg mem2reg(IR_generator_);
-  mem2reg.Run();
-  CodeGenerator RISCV_generator(IR_generator_.GetIRFunctions(),
-      IR_generator_.GetIRStructs(), IR_generator_.GetMainFuncID());
-  RISCV_generator.Generate();
-
-  std::ofstream RISCV_output_file(output_file_name);
-  if (RISCV_output_file.is_open()) {
-    RISCV_generator.Output(RISCV_output_file);
-    RISCV_output_file.close();
-  } else {
-    std::cerr << "[Error] Cannot open " << output_file_name << "!\n";
   }
   delete syntax_tree;
 }
