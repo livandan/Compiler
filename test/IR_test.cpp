@@ -1,5 +1,5 @@
 #include "classes.h"
-#include "check_and_generate_IR.h"
+#include "check_and_generate_RV64.h"
 #include <fstream>
 #include <gtest/gtest.h>
 

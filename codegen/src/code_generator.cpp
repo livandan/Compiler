@@ -2368,22 +2368,14 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
 }
 
 void CodeGenerator::Output(std::ofstream &output_file) const {
-  std::ifstream builtin_fn("../RCompiler-Testcases/IR-1/builtin/builtin_fn.txt");
-  std::ifstream builtin_str("../RCompiler-Testcases/IR-1/builtin/builtin_str.txt");
+  std::ifstream builtin_s("../RCompiler-Testcases/IR-1/builtin/builtin.s");
   std::string line_in_file;
-  if (builtin_fn.is_open()) {
-    if (output_file.is_open()) {
-      while (std::getline(builtin_fn, line_in_file)) {
-        output_file << line_in_file << '\n';
-      }
-      builtin_fn.close();
-    } else {
-      // std::cerr << "Cannot open output file!\n";
-      builtin_fn.close();
-      return;
+  if (builtin_s.is_open()) {
+    while (std::getline(builtin_s, line_in_file)) {
+      std::cerr << line_in_file << '\n';
     }
+    builtin_s.close();
   } else {
-    // std::cerr << "Cannot open builtin functions file!\n";
     return;
   }
   output_file << "\n";
@@ -2427,13 +2419,5 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
     }
   }
 
-  if (builtin_str.is_open()) {
-    while (std::getline(builtin_str, line_in_file)) {
-      output_file << line_in_file << '\n';
-    }
-    builtin_str.close();
-  } else {
-    CodegenThrow("Cannot open builtin string file!\n");
-  }
   output_file.close();
 }

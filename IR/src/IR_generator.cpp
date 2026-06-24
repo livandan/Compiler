@@ -2734,18 +2734,6 @@ void IRVisitor::PrintPhi(std::ofstream &file, const PhiInstruction &instruction)
 }
 
 void IRVisitor::Output(std::ofstream &file) {
-  // output the builtin function declarations
-  std::ifstream builtin_functions("../RCompiler-Testcases/IR-1/builtin/builtin.ll");
-  std::string line_in_file;
-  if (builtin_functions.is_open()) {
-    while (std::getline(builtin_functions, line_in_file)) {
-      file << line_in_file << '\n';
-    }
-    builtin_functions.close();
-  } else {
-    std::cerr << "Cannot open builtin functions file!\n";
-  }
-  file << "\n";
   // output struct definitions
   for (int i = 0; i < structs_.size(); ++i) {
     file << "%struct." << i << " = type { ";
