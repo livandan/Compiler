@@ -8,6 +8,8 @@ cmake-build-debug
 RCompiler-Testcases/IR-1/src
 RCompiler-Testcases/semantic-1
 RCompiler-Testcases/semantic-2
+RCompiler-Testcases/working_space/**
+!RCompiler-Testcases/working_space/debugging_my.s
 REIMU
 .github
 codegen/codegen.md
@@ -16,3 +18,4 @@ testcases.zip
 RV32toRV64.md
 build
 optimize.md
+.claude

@@ -19,6 +19,11 @@ const std::map<int, saver> register_saver = {
   {30, caller_save}, {31, caller_save}
 };
 
+static bool IsCallerSavedReg(int reg) {
+  const auto it = register_saver.find(reg);
+  return it != register_saver.end() && it->second == caller_save;
+}
+
 void CodegenThrow(const std::string &err_info) {
   // std::cerr << "[Codegen Error] " << err_info << '\n';
   throw "";
@@ -296,9 +301,16 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     if (!src_in_reg) {
       r_block.PushMemory_I(r_lbu_, 5, src_location, 2);
       src_data_reg = 5;
+    } else if (registers_saved_[func_id] && IsCallerSavedReg(src_location)) {
+      r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(func_id, src_location), 2);
+      r_block.PushArithmetic_I(r_andi_, 5, 5, 0xff);  // extract low byte
+      src_data_reg = 5;
     }
     if (dest_in_reg) {
       r_block.PushArithmetic_R(r_add_, dest_location, src_data_reg, 0);
+      if (registers_saved_[func_id] && IsCallerSavedReg(dest_location)) {
+        r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
+      }
     } else {
       r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
       r_block.PushMemory_S(r_sb_, 5, dest_location, 2);
@@ -308,9 +320,15 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     if (!src_in_reg) {
       r_block.PushMemory_I(r_lw_, 5, src_location, 2);
       src_data_reg = 5;
+    } else if (registers_saved_[func_id] && IsCallerSavedReg(src_location)) {
+      r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(func_id, src_location), 2);
+      src_data_reg = 5;
     }
     if (dest_in_reg) {
       r_block.PushArithmetic_R(r_add_, dest_location, src_data_reg, 0);
+      if (registers_saved_[func_id] && IsCallerSavedReg(dest_location)) {
+        r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
+      }
     } else {
       r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
       r_block.PushMemory_S(CodeGenerator::GetStoreInst(type), 5, dest_location, 2);
@@ -320,9 +338,15 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     if (!src_in_reg) {
       r_block.PushMemory_I(r_ld_, 5, src_location, 2);
       src_data_reg = 5;
+    } else if (registers_saved_[func_id] && IsCallerSavedReg(src_location)) {
+      r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(func_id, src_location), 2);
+      src_data_reg = 5;
     }
     if (dest_in_reg) {
       r_block.PushArithmetic_R(r_add_, dest_location, src_data_reg, 0);
+      if (registers_saved_[func_id] && IsCallerSavedReg(dest_location)) {
+        r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
+      }
     } else {
       r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
       r_block.PushMemory_S(r_sd_, 5, dest_location, 2);
@@ -343,7 +367,11 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
     const int value_src, const std::shared_ptr<IntegratedType> &type) {
   if (type->is_int) {
     if (RISCV_functions_[func_id].location_[var_dest].first) {
-      r_block.PushLi(RISCV_functions_[func_id].location_[var_dest].second, value_src);
+      const int dest_reg = RISCV_functions_[func_id].location_[var_dest].second;
+      r_block.PushLi(dest_reg, value_src);
+      if (registers_saved_[func_id] && IsCallerSavedReg(dest_reg)) {
+        r_block.PushMemory_S(r_sd_, dest_reg, RegSavedLocation(func_id, dest_reg), 2);
+      }
     } else {
       r_block.PushLi(5, value_src);
       if (type->basic_type == pointer_type) {
@@ -354,7 +382,11 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
     }
   } else if (type->basic_type == bool_type) {
     if (RISCV_functions_[func_id].location_[var_dest].first) {
-      r_block.PushLi(RISCV_functions_[func_id].location_[var_dest].second, value_src);
+      const int dest_reg = RISCV_functions_[func_id].location_[var_dest].second;
+      r_block.PushLi(dest_reg, value_src);
+      if (registers_saved_[func_id] && IsCallerSavedReg(dest_reg)) {
+        r_block.PushMemory_S(r_sd_, dest_reg, RegSavedLocation(func_id, dest_reg), 2);
+      }
     } else {
       r_block.PushLi(5, value_src);
       r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[func_id].location_[var_dest].second, 2);
@@ -388,17 +420,33 @@ void CodeGenerator::AnalyzeUsedRegisters() {
 }
 
 void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block) {
+  if (registers_saved_[func_id]) return;  // already saved, idempotent
   for (int reg : used_caller_regs_[func_id]) {
     r_block.PushMemory_S(r_sd_, reg, RegSavedLocation(func_id, reg), 2);
   }
+  registers_saved_[func_id] = true;
 }
 
 void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg) {
-  for (int reg : used_caller_regs_[func_id]) {
-    if (reg != exclude_reg) {
-      r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+  // Deferred: don't restore immediately.  registers_saved_ stays true so
+  // subsequent SaveCallerRegs calls are no-ops.  Actual restores happen at
+  // FlushSavedRegisters on block exit.
+  // If exclude_reg has a fresh value (e.g. return value just stored),
+  // write-through to its save slot so the slot stays consistent.
+  if (exclude_reg != -1) {
+    const auto it = register_saver.find(exclude_reg);
+    if (it != register_saver.end() && it->second == caller_save) {
+      r_block.PushMemory_S(r_sd_, exclude_reg, RegSavedLocation(func_id, exclude_reg), 2);
     }
   }
+}
+
+void CodeGenerator::FlushSavedRegisters(int func_id, RISCVBlock &r_block) {
+  if (!registers_saved_[func_id]) return;
+  for (int reg : used_caller_regs_[func_id]) {
+    r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+  registers_saved_[func_id] = false;
 }
 
 void CodeGenerator::SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block) {
@@ -441,6 +489,7 @@ void CodeGenerator::Generate() {
   }
   // Determine which registers actually hold variables after RA.
   AnalyzeUsedRegisters();
+  registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
     // bool busy_registers[32] = {false};
     const int stack_space = RISCV_functions_[i].stack_space_;
@@ -457,6 +506,7 @@ void CodeGenerator::Generate() {
       // reg31 keeps the real address of the data
       bb0.PushMemory_S(r_sd_, 31, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
     }
+    FlushSavedRegisters(i, bb0);
     bb0.PushJ(IR_functions_[i].blocks_.begin()->first);
     // blocks
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
@@ -468,22 +518,28 @@ void CodeGenerator::Generate() {
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, first_var_register, 2);
               } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+                r_block.PushMemory_I(r_lbu_, 5, first_var_register, 2);
               } else {
                 CodegenThrow("Invalid binary operator type.");
               }
               first_var_register = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(first_var_register)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, first_var_register), 2);
+              first_var_register = 5;
             }
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, second_var_register, 2);
               } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+                r_block.PushMemory_I(r_lbu_, 6, second_var_register, 2);
               } else {
                 CodegenThrow("Invalid binary operator type.");
               }
+              second_var_register = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(second_var_register)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, second_var_register), 2);
               second_var_register = 6;
             }
             switch (instruction.operator_) {
@@ -540,6 +596,9 @@ void CodeGenerator::Generate() {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
+                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+              }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
@@ -557,12 +616,15 @@ void CodeGenerator::Generate() {
             constexpr int second_var_register = 6;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, first_var_register, 2);
               } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 5, RISCV_functions_[i].location_[instruction.operand_1_id_].second, 2);
+                r_block.PushMemory_I(r_lbu_, 5, first_var_register, 2);
               } else {
                 CodegenThrow("Invalid binary operator type.");
               }
+              first_var_register = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(first_var_register)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, first_var_register), 2);
               first_var_register = 5;
             }
             r_block.PushLi(second_var_register, instruction.operand_2_id_);
@@ -620,6 +682,9 @@ void CodeGenerator::Generate() {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
+                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+              }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
@@ -637,12 +702,15 @@ void CodeGenerator::Generate() {
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
-                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+                r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, second_var_register, 2);
               } else if (instruction.result_type_->basic_type == bool_type) {
-                r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.operand_2_id_].second, 2);
+                r_block.PushMemory_I(r_lbu_, 6, second_var_register, 2);
               } else {
                 CodegenThrow("Invalid binary operator type.");
               }
+              second_var_register = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(second_var_register)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, second_var_register), 2);
               second_var_register = 6;
             }
             r_block.PushLi(first_var_register, instruction.operand_1_id_);
@@ -700,6 +768,9 @@ void CodeGenerator::Generate() {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
+                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+              }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
@@ -723,10 +794,12 @@ void CodeGenerator::Generate() {
             // We therefore stash the load + branch on a separate
             // "deferred terminator" stream that the post-block pass emits
             // after the moves.
+            FlushSavedRegisters(i, r_block);
             bool cond_in_reg = RISCV_functions_[i].location_[instruction.condition_id_].first;
             int cond_home = RISCV_functions_[i].location_[instruction.condition_id_].second;
             if (cond_in_reg) {
-              // mv t0, cond_home — defer it so it runs after the moves.
+              // If condition is in a caller-saved register, we just flushed
+              // so the hardware register is valid.  Use it directly.
               r_block.deferred_load_.push_back(
                   RISCVInstruction(r_add_, 5, cond_home, 0, -1, -1));
             } else {
@@ -739,16 +812,19 @@ void CodeGenerator::Generate() {
             break;
           }
           case unconditional_br_: {
+            FlushSavedRegisters(i, r_block);
             r_block.PushJ(instruction.destination_);
             break;
           }
           case value_ret_: {
+            FlushSavedRegisters(i, r_block);
             RestoreCalleeRegs(i, r_block);
             r_block.PushLi(10, instruction.result_id_);
             r_block.PushReturn(stack_space);
             break;
           }
           case variable_ret_: {
+            FlushSavedRegisters(i, r_block);
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               r_block.PushArithmetic_I(r_addi_, 10, RISCV_functions_[i].location_[instruction.result_id_].second, 0);
             } else if (instruction.result_type_->is_int) {
@@ -765,6 +841,7 @@ void CodeGenerator::Generate() {
             break;
           }
           case void_ret_: {
+            FlushSavedRegisters(i, r_block);
             RestoreCalleeRegs(i, r_block);
             r_block.PushLi(10, 0);
             r_block.PushReturn(stack_space);
@@ -778,6 +855,9 @@ void CodeGenerator::Generate() {
               if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
                 r_block.PushMemory_I(r_ld_, 5, src_register, 2);
                 src_register = 5;
+              } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
+                src_register = 5;
               }
               if (load_size == 1) {
                 r_block.PushMemory_I(r_lbu_, result_reg, 0, src_register);
@@ -788,6 +868,9 @@ void CodeGenerator::Generate() {
               } else {
                 CodegenThrow("Unexpectedly loaded strange data into register.");
               }
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+              }
             } else {
               const auto result_address_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               // move data from the space that starts from *pointer to that starts from result address
@@ -795,6 +878,9 @@ void CodeGenerator::Generate() {
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
+                  src_register = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
                   src_register = 5;
                 }
                 // src_register keeps the real address that the pointer points to
@@ -805,6 +891,9 @@ void CodeGenerator::Generate() {
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
                   src_register = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
+                  src_register = 5;
                 }
                 // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 5, 0, src_register);
@@ -813,6 +902,9 @@ void CodeGenerator::Generate() {
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
+                  src_register = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
                   src_register = 5;
                 }
                 // src_register keeps the real address that the pointer points to
@@ -823,6 +915,9 @@ void CodeGenerator::Generate() {
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
+                  src_register = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
                   src_register = 5;
                 }
                 // src_register keeps the real address that the pointer points to
@@ -840,11 +935,17 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
               r_block.PushMemory_I(r_ld_, 5, src_register, 2);
               src_register = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
+              src_register = 5;
             }
             // src_register keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushMemory_I(r_ld_, result_reg, 0, src_register);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+              }
             } else {
               const auto result_address = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushMemory_I(r_ld_, 5, 0, src_register);
@@ -860,18 +961,26 @@ void CodeGenerator::Generate() {
               if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                 r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
                 dest_reg = 5;
+              } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+                dest_reg = 5;
+              }
+              int data_reg = src_reg;
+              if (registers_saved_[i] && IsCallerSavedReg(src_reg)) {
+                r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, src_reg), 2);
+                data_reg = 6;
               }
               // dest_reg keeps the real address that the pointer points to
               if (store_size == 1) {
-                r_block.PushMemory_S(r_sb_, src_reg, 0, dest_reg);
+                r_block.PushMemory_S(r_sb_, data_reg, 0, dest_reg);
               } else if (store_size == 4 && need_alignment) {
-                r_block.PushMemory_S(r_sw_, src_reg, 0, dest_reg);
+                r_block.PushMemory_S(r_sw_, data_reg, 0, dest_reg);
               } else if (store_size == 8) {
-                r_block.PushMemory_S(r_sd_, src_reg, 0, dest_reg);
+                r_block.PushMemory_S(r_sd_, data_reg, 0, dest_reg);
               } else {
                 for (int b = 0; b < store_size; ++b) {
-                  r_block.PushMemory_S(r_sb_, src_reg, b, dest_reg);
-                  r_block.PushArithmetic_I(r_srliw_, src_reg, src_reg, 8);
+                  r_block.PushMemory_S(r_sb_, data_reg, b, dest_reg);
+                  r_block.PushArithmetic_I(r_srliw_, data_reg, data_reg, 8);
                 }
               }
             } else { // the data to be stored is in the memory
@@ -879,6 +988,9 @@ void CodeGenerator::Generate() {
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
                   dest_reg = 5;
                 }
                 // dest_reg keeps the real address that the pointer points to
@@ -889,6 +1001,9 @@ void CodeGenerator::Generate() {
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
                   dest_reg = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+                  dest_reg = 5;
                 }
                 // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -897,6 +1012,9 @@ void CodeGenerator::Generate() {
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
                   dest_reg = 5;
                 }
                 // dest_reg keeps the real address that the pointer points to
@@ -907,6 +1025,9 @@ void CodeGenerator::Generate() {
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
+                  dest_reg = 5;
+                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
                   dest_reg = 5;
                 }
                 // dest_reg keeps the real address that the pointer points to
@@ -925,6 +1046,9 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
               r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
               dest_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+              dest_reg = 5;
             }
             // dest_reg keeps the real address that the pointer points to
             r_block.PushLi(6, instruction.result_id_); // reg6 keeps the value that need to be stored
@@ -942,11 +1066,19 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
               r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
               dest_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+              dest_reg = 5;
             }
             // dest_reg keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) { // the data to be stored is already in a src_reg
               const auto src_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushMemory_S(r_sd_, src_reg, 0, dest_reg);
+              int data_reg = src_reg;
+              if (registers_saved_[i] && IsCallerSavedReg(src_reg)) {
+                r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, src_reg), 2);
+                data_reg = 6;
+              }
+              r_block.PushMemory_S(r_sd_, data_reg, 0, dest_reg);
             } else { // the data to be stored is in the memory
               r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
               r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
@@ -976,6 +1108,9 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               r_block.PushMemory_I(r_ld_, 5, pointer_reg, 2);
               pointer_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(pointer_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, pointer_reg), 2);
+              pointer_reg = 5;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
@@ -994,8 +1129,12 @@ void CodeGenerator::Generate() {
             int index_var_reg = RISCV_functions_[i].location_[instruction.index_].second;
             const bool index_in_reg = RISCV_functions_[i].location_[instruction.index_].first;
             if (index_in_reg) {
-              // Copy from the home register into t0 (=5) without modifying the home reg.
-              r_block.PushArithmetic_R(r_add_, 5, index_var_reg, 0);
+              if (registers_saved_[i] && IsCallerSavedReg(index_var_reg)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, index_var_reg), 2);
+              } else {
+                // Copy from the home register into t0 (=5) without modifying the home reg.
+                r_block.PushArithmetic_R(r_add_, 5, index_var_reg, 0);
+              }
             } else {
               r_block.PushMemory_I(r_lw_, 5, index_var_reg, 2);
             }
@@ -1012,6 +1151,9 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               // pointer is on stack; load into reg 6 (reg 6 is now free, element_size no longer needed)
               r_block.PushMemory_I(r_ld_, 6, pointer_reg, 2);
+              pointer_reg = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(pointer_reg)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, pointer_reg), 2);
               pointer_reg = 6;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1032,9 +1174,15 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, op1_reg, 2);
               op1_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(op1_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, op1_reg), 2);
+              op1_reg = 5;
             }
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, op2_reg, 2);
+              op2_reg = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(op2_reg)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, op2_reg), 2);
               op2_reg = 6;
             }
             switch (instruction.icmp_condition_) {
@@ -1042,6 +1190,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 == %op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1052,6 +1203,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 != %op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1061,6 +1215,9 @@ void CodeGenerator::Generate() {
               case unsigned_greater_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1071,6 +1228,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg); // reg5 <- 1 iff %op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1080,6 +1240,9 @@ void CodeGenerator::Generate() {
               case unsigned_less_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1090,6 +1253,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg); // reg5 <- 1 iff %op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1099,6 +1265,9 @@ void CodeGenerator::Generate() {
               case signed_greater_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1109,6 +1278,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg); // reg5 <- 1 iff %op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1118,6 +1290,9 @@ void CodeGenerator::Generate() {
               case signed_less_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1128,6 +1303,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg); // reg5 <- 1 iff %op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1143,12 +1321,18 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, op1_reg, 2);
               op1_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(op1_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, op1_reg), 2);
+              op1_reg = 5;
             }
             switch (instruction.icmp_condition_) {
               case equal_: {
                 r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 == op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1159,6 +1343,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 != op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1170,6 +1357,9 @@ void CodeGenerator::Generate() {
                 r_block.PushLi(op2_reg, instruction.operand_2_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1180,6 +1370,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_sltiu_, 5, op1_reg, instruction.operand_2_id_); // reg5 <- 1 iff %op1 < op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1189,6 +1382,9 @@ void CodeGenerator::Generate() {
               case unsigned_less_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, instruction.operand_2_id_);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_sltiu_, 5, op1_reg, instruction.operand_2_id_);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1201,6 +1397,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_sltu_, 5, op2_reg, op1_reg); // reg5 <- 1 iff op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1212,6 +1411,9 @@ void CodeGenerator::Generate() {
                 r_block.PushLi(op2_reg, instruction.operand_2_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, op1_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1222,6 +1424,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_slti_, 5, op1_reg, instruction.operand_2_id_); // reg5 <- 1 iff %op1 < op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1231,6 +1436,9 @@ void CodeGenerator::Generate() {
               case signed_less_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_slti_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, instruction.operand_2_id_);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_slti_, 5, op1_reg, instruction.operand_2_id_);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1243,6 +1451,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_slt_, 5, op2_reg, op1_reg); // reg5 <- 1 iff op2 < %op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1258,12 +1469,18 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, op2_reg, 2);
               op2_reg = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(op2_reg)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, op2_reg), 2);
+              op2_reg = 6;
             }
             switch (instruction.icmp_condition_) {
               case equal_: {
                 r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 == %op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1274,6 +1491,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 != %op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1283,6 +1503,9 @@ void CodeGenerator::Generate() {
               case unsigned_greater_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, instruction.operand_1_id_);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_sltiu_, 5, op2_reg, instruction.operand_1_id_);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1295,6 +1518,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg); // reg5 <- 1 iff op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1306,6 +1532,9 @@ void CodeGenerator::Generate() {
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_sltu_, 5, op1_reg, op2_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1316,6 +1545,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_sltiu_, 5, op2_reg, instruction.operand_1_id_); // reg5 <- 1 iff %op2 < op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1325,6 +1557,9 @@ void CodeGenerator::Generate() {
               case signed_greater_than_: {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_slti_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, instruction.operand_1_id_);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_slti_, 5, op2_reg, instruction.operand_1_id_);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1337,6 +1572,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg); // reg5 <- 1 iff op1 < %op2
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1348,6 +1586,9 @@ void CodeGenerator::Generate() {
                 r_block.PushLi(op1_reg, instruction.operand_1_id_);
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_slt_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, op2_reg);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_R(r_slt_, 5, op1_reg, op2_reg);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1358,6 +1599,9 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_slti_, 5, op2_reg, instruction.operand_1_id_); // reg5 <- 1 iff %op2 < op1
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_xori_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                  }
                 } else {
                   r_block.PushArithmetic_I(r_xori_, 5, 5, 1);
                   r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1372,6 +1616,12 @@ void CodeGenerator::Generate() {
             SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> modified_reg;
+            // All caller-saved registers that hold variables may have been
+            // clobbered by an earlier function call in this block (e.g. a
+            // builtin memset/memcpy).  Force a reload from the save slot.
+            for (int reg : used_caller_regs_[i]) {
+              modified_reg.insert(reg);
+            }
             for (int j = 0; j < arguments.size(); ++j) {
               const auto [passed_by_reg, neg_offset] = GetParamPassPos(instruction.function_name_, j);
               if (!passed_by_reg) {
@@ -1379,7 +1629,7 @@ void CodeGenerator::Generate() {
                   const int var_id = arguments[j].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
                     const int var_reg = RISCV_functions_[i].location_[var_id].second;
-                    if (modified_reg.contains(var_reg)) {
+                    if (modified_reg.contains(var_reg) || (registers_saved_[i] && IsCallerSavedReg(var_reg))) {
                       r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, var_reg), 2);
                       if (arguments[j].type_->is_int) {
                         r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
@@ -1496,6 +1746,12 @@ void CodeGenerator::Generate() {
             SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> modified_reg;
+            // All caller-saved registers that hold variables may have been
+            // clobbered by an earlier function call in this block (e.g. a
+            // builtin memset/memcpy).  Force a reload from the save slot.
+            for (int reg : used_caller_regs_[i]) {
+              modified_reg.insert(reg);
+            }
             for (int j = 0; j < arguments.size(); ++j) {
               const auto [passed_by_reg, neg_offset] = GetParamPassPos(instruction.function_name_, j);
               if (!passed_by_reg) {
@@ -1503,7 +1759,7 @@ void CodeGenerator::Generate() {
                   const int var_id = arguments[j].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
                     const int var_reg = RISCV_functions_[i].location_[var_id].second;
-                    if (modified_reg.contains(var_reg)) {
+                    if (modified_reg.contains(var_reg) || (registers_saved_[i] && IsCallerSavedReg(var_reg))) {
                       r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, var_reg), 2);
                       if (arguments[j].type_->is_int) {
                         r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
@@ -1609,7 +1865,11 @@ void CodeGenerator::Generate() {
                   const int var_id = arguments[0].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
                     const int var_reg = RISCV_functions_[i].location_[var_id].second;
-                    r_block.PushArithmetic_R(r_add_, 10, var_reg, 0);
+                    if (registers_saved_[i] && IsCallerSavedReg(var_reg)) {
+                      r_block.PushMemory_I(r_ld_, 10, RegSavedLocation(i, var_reg), 2);
+                    } else {
+                      r_block.PushArithmetic_R(r_add_, 10, var_reg, 0);
+                    }
                   } else {
                     const int var_offset = RISCV_functions_[i].location_[var_id].second;
                     // %var must be an int
@@ -1629,7 +1889,11 @@ void CodeGenerator::Generate() {
                   const int var_id = arguments[0].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
                     const int var_reg = RISCV_functions_[i].location_[var_id].second;
-                    r_block.PushArithmetic_R(r_add_, 10, var_reg, 0);
+                    if (registers_saved_[i] && IsCallerSavedReg(var_reg)) {
+                      r_block.PushMemory_I(r_ld_, 10, RegSavedLocation(i, var_reg), 2);
+                    } else {
+                      r_block.PushArithmetic_R(r_add_, 10, var_reg, 0);
+                    }
                   } else {
                     const int var_offset = RISCV_functions_[i].location_[var_id].second;
                     // %var must be an int
@@ -1649,6 +1913,9 @@ void CodeGenerator::Generate() {
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
                   r_block.PushArithmetic_R(r_add_, result_reg, 10, 0);
+                  if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                    r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+                  }
                 } else {
                   const int result_var_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
                   r_block.PushMemory_S(CodeGenerator::GetStoreInst(instruction.result_type_), 10, result_var_offset, 2);
@@ -1708,9 +1975,16 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.condition_id_].first) {
               r_block.PushMemory_I(r_lbu_, 5, src_reg, 2);
               src_reg = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(src_reg)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_reg), 2);
+              src_reg = 5;
             }
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              r_block.PushArithmetic_R(r_add_, RISCV_functions_[i].location_[instruction.result_id_].second, src_reg, 0);
+              const int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
+              r_block.PushArithmetic_R(r_add_, result_reg, src_reg, 0);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+              }
             } else if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
               r_block.PushMemory_S(CodeGenerator::GetStoreInst(instruction.result_type_), src_reg, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
             } else {
@@ -1723,6 +1997,9 @@ void CodeGenerator::Generate() {
             int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
+              dest_register = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(dest_register)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_register), 2);
               dest_register = 5;
             }
             r_block.PushArithmetic_R(r_add_, 10, dest_register, 0);
@@ -1738,10 +2015,16 @@ void CodeGenerator::Generate() {
             if (!RISCV_functions_[i].location_[instruction.destination_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
               dest_register = 5;
+            } else if (registers_saved_[i] && IsCallerSavedReg(dest_register)) {
+              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_register), 2);
+              dest_register = 5;
             }
             int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               r_block.PushMemory_I(r_ld_, 6, src_register, 2);
+              src_register = 6;
+            } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+              r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, src_register), 2);
               src_register = 6;
             }
             if (src_register == 10) {

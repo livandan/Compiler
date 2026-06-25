@@ -106,10 +106,10 @@ static void RunMem2RegOn(const std::string &base) {
 //   RunMem2RegOn(file);
 // }
 
-// TEST(CodegenTestSingle, debugging_test) {
-//   const std::string file = "working_space/debugging";
-//   RunMem2RegOn(file);
-// }
+TEST(CodegenTestSingle, debugging_test) {
+  const std::string file = "working_space/debugging";
+  RunMem2RegOn(file);
+}
 
 TEST(CodegenTest, test_all) {
   for (int i = 1; i <= 50; ++i) {

@@ -474,6 +474,7 @@ private:
   void RestoreCallerRegsFromTemp(int func_id, RISCVBlock &r_block);
   void SaveCalleeRegs(int func_id, RISCVBlock &r_block);
   void RestoreCalleeRegs(int func_id, RISCVBlock &r_block);
+  void FlushSavedRegisters(int func_id, RISCVBlock &r_block);
   // Returns the set of caller-saved registers (excluding ra) that are actually
   // assigned to variables after register allocation.  Call sites always save
   // ra+x1 regardless.
@@ -497,6 +498,7 @@ private:
   // Computed by AnalyzeUsedRegisters() after RA runs.
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
   std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
+  std::vector<bool> registers_saved_;  // per-function: caller-saved regs are currently in save slots
 };
 
 #endif
