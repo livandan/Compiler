@@ -464,6 +464,21 @@ private:
   [[nodiscard]] int GetAlignment(const std::shared_ptr<IntegratedType> &type) const;
   static RISCVInstructionType GetLoadInst(const std::shared_ptr<IntegratedType> &type);
   static RISCVInstructionType GetStoreInst(const std::shared_ptr<IntegratedType> &type);
+
+  // Register save/restore helpers — use post-allocation info to save only
+  // registers that actually hold live values instead of the whole ABI set.
+  void AnalyzeUsedRegisters();
+  void SaveCallerRegs(int func_id, RISCVBlock &r_block);
+  void RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg = -1);
+  void SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block);
+  void RestoreCallerRegsFromTemp(int func_id, RISCVBlock &r_block);
+  void SaveCalleeRegs(int func_id, RISCVBlock &r_block);
+  void RestoreCalleeRegs(int func_id, RISCVBlock &r_block);
+  // Returns the set of caller-saved registers (excluding ra) that are actually
+  // assigned to variables after register allocation.  Call sites always save
+  // ra+x1 regardless.
+  [[nodiscard]] const std::set<int> &GetUsedCallerRegs(int func_id) const { return used_caller_regs_[func_id]; }
+  [[nodiscard]] const std::set<int> &GetUsedCalleeRegs(int func_id) const { return used_callee_regs_[func_id]; }
   void PrintReg(std::ofstream &file, int reg) const;
   void PrintLabel(std::ofstream &file, int label, int func_id) const;
   void PrintJumpLabel(std::ofstream &file, int block_label, int jump_label, int func_id) const;
@@ -478,6 +493,10 @@ private:
   std::vector<RISCVFunctionNode> RISCV_functions_;
   const int main_func_id_;
   std::vector<std::set<int>> alloca_var_ids_;  // [func_id] -> vars whose stack slot holds a pointer (alloca results)
+  // Registers that actually hold variables after register allocation.
+  // Computed by AnalyzeUsedRegisters() after RA runs.
+  std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
+  std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
 };
 
 #endif

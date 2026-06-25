@@ -331,20 +331,12 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     if (src_in_reg || dest_in_reg) {
       CodegenThrow("Unexpected type in the register!");
     }
-    for (int x = 0; x < 32; ++x) {
-      if (register_saver.at(x) == caller_save) {
-        r_block.PushMemory_S(r_sd_, x, RegSavedLocation(func_id, x), 2);
-      }
-    }
+    SaveCallerRegs(func_id, r_block);
     r_block.PushArithmetic_I(r_addi_, 11, 2, src_location);
     r_block.PushArithmetic_I(r_addi_, 10, 2, dest_location);
     r_block.PushLi(12, type_size);
     r_block.PushCall(true, 7);
-    for (int x = 0; x < 32; ++x) {
-      if (register_saver.at(x) == caller_save) {
-        r_block.PushMemory_I(r_ld_, x, RegSavedLocation(func_id, x), 2);
-      }
-    }
+    RestoreCallerRegs(func_id, r_block);
   }
 }
 void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
@@ -372,6 +364,69 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
   }
 }
 
+void CodeGenerator::AnalyzeUsedRegisters() {
+  used_callee_regs_.resize(IR_functions_.size());
+  used_caller_regs_.resize(IR_functions_.size());
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    for (const auto &[var_id, loc] : RISCV_functions_[i].location_) {
+      if (loc.first) {  // variable is in a register
+        const int reg = loc.second;
+        const auto it = register_saver.find(reg);
+        if (it != register_saver.end()) {
+          if (it->second == callee_save) {
+            used_callee_regs_[i].insert(reg);
+          } else if (it->second == caller_save) {
+            used_caller_regs_[i].insert(reg);
+          }
+        }
+      }
+    }
+    // x1 (ra) is always live across calls — the `call` instruction overwrites it.
+    // It is not allocatable so it will never appear in location_.  Add it unconditionally.
+    used_caller_regs_[i].insert(1);
+  }
+}
+
+void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block) {
+  for (int reg : used_caller_regs_[func_id]) {
+    r_block.PushMemory_S(r_sd_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
+void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg) {
+  for (int reg : used_caller_regs_[func_id]) {
+    if (reg != exclude_reg) {
+      r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+    }
+  }
+}
+
+void CodeGenerator::SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block) {
+  for (int reg : used_caller_regs_[func_id]) {
+    r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(func_id, reg), 2);
+    r_block.PushMemory_S(r_sd_, 31, TempCallerSaveSlot(reg), 2);
+  }
+}
+
+void CodeGenerator::RestoreCallerRegsFromTemp(int func_id, RISCVBlock &r_block) {
+  for (int reg : used_caller_regs_[func_id]) {
+    r_block.PushMemory_I(r_ld_, 31, TempCallerSaveSlot(reg), 2);
+    r_block.PushMemory_S(r_sd_, 31, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
+void CodeGenerator::SaveCalleeRegs(int func_id, RISCVBlock &r_block) {
+  for (int reg : used_callee_regs_[func_id]) {
+    r_block.PushMemory_S(r_sd_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
+void CodeGenerator::RestoreCalleeRegs(int func_id, RISCVBlock &r_block) {
+  for (int reg : used_callee_regs_[func_id]) {
+    r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
 void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
   alloca_var_ids_.resize(IR_functions_.size());
@@ -384,6 +439,8 @@ void CodeGenerator::Generate() {
     RegisterAllocator reg_alloc(IR_functions_[i], RISCV_functions_[i]);
     reg_alloc.Run();
   }
+  // Determine which registers actually hold variables after RA.
+  AnalyzeUsedRegisters();
   for (int i = 0; i < IR_functions_.size(); ++i) {
     // bool busy_registers[32] = {false};
     const int stack_space = RISCV_functions_[i].stack_space_;
@@ -391,11 +448,7 @@ void CodeGenerator::Generate() {
     auto &bb0 = RISCV_functions_[i].alloca_block_;
     // move sp & store registers
     bb0.PushArithmetic_I(r_addi_, 2, 2, -stack_space);
-    for (int x = 0; x < 32; ++x) {
-      if (register_saver.at(x) == callee_save) {
-        bb0.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-      }
-    }
+    SaveCalleeRegs(i, bb0);
     for (const auto &instruction : IR_functions_[i].alloca_instructions_) {
       const int allocated_start_addr_offset = RISCV_functions_[i].location_[instruction.result_id_].second
           - GetSize(instruction.result_type_).first;
@@ -690,11 +743,7 @@ void CodeGenerator::Generate() {
             break;
           }
           case value_ret_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == callee_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCalleeRegs(i, r_block);
             r_block.PushLi(10, instruction.result_id_);
             r_block.PushReturn(stack_space);
             break;
@@ -711,20 +760,12 @@ void CodeGenerator::Generate() {
             } else {
               CodegenThrow("Invalid result type to be passed in register a0.");
             }
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == callee_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCalleeRegs(i, r_block);
             r_block.PushReturn(stack_space);
             break;
           }
           case void_ret_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == callee_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCalleeRegs(i, r_block);
             r_block.PushLi(10, 0);
             r_block.PushReturn(stack_space);
             break;
@@ -778,11 +819,7 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sd_, 5, result_address_offset, 2);
               } else {
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                SaveCallerRegs(i, r_block);
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
@@ -793,11 +830,7 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_addi_, 10, 2, result_address_offset);
                 r_block.PushLi(12, load_size);
                 r_block.PushCall(true, 7);
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                RestoreCallerRegs(i, r_block);
               }
             }
             break;
@@ -870,11 +903,7 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
               } else {
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                SaveCallerRegs(i, r_block);
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
@@ -885,11 +914,7 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_addi_, 11, 2, RISCV_functions_[i].location_[instruction.result_id_].second);
                 r_block.PushLi(12, store_size);
                 r_block.PushCall(true, 7);
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                RestoreCallerRegs(i, r_block);
               }
             }
             break;
@@ -1344,11 +1369,7 @@ void CodeGenerator::Generate() {
             break;
           }
           case non_void_call_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> modified_reg;
             for (int j = 0; j < arguments.size(); ++j) {
@@ -1391,35 +1412,17 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
                       // Protect outer save: copy from RegSavedLocation to temp area
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(i, x), 2);
-                          r_block.PushMemory_S(r_sd_, 31, TempCallerSaveSlot(x), 2);
-                        }
-                      }
+                      SaveCallerRegsToTemp(i, r_block);
                       // Inner save (will overwrite RegSavedLocation)
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      SaveCallerRegs(i, r_block);
                       r_block.PushArithmetic_I(r_addi_, 10, 2, neg_offset);
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
                       // Inner restore
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      RestoreCallerRegs(i, r_block);
                       // Restore outer save from temp back to RegSavedLocation
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, 31, TempCallerSaveSlot(x), 2);
-                          r_block.PushMemory_S(r_sd_, 31, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      RestoreCallerRegsFromTemp(i, r_block);
                     }
                   }
                 } else {
@@ -1486,19 +1489,11 @@ void CodeGenerator::Generate() {
                 CodegenThrow("Invalid return type in non_void_call.");
               }
             }
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save && x != result_reg) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCallerRegs(i, r_block, result_reg);
             break;
           }
           case void_call_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> modified_reg;
             for (int j = 0; j < arguments.size(); ++j) {
@@ -1541,35 +1536,17 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
                       // Protect outer save: copy from RegSavedLocation to temp area
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(i, x), 2);
-                          r_block.PushMemory_S(r_sd_, 31, TempCallerSaveSlot(x), 2);
-                        }
-                      }
+                      SaveCallerRegsToTemp(i, r_block);
                       // Inner save
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      SaveCallerRegs(i, r_block);
                       r_block.PushArithmetic_I(r_addi_, 10, 2, neg_offset);
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
                       // Inner restore
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      RestoreCallerRegs(i, r_block);
                       // Restore outer save from temp back to RegSavedLocation
-                      for (int x = 0; x < 32; ++x) {
-                        if (register_saver.at(x) == caller_save) {
-                          r_block.PushMemory_I(r_ld_, 31, TempCallerSaveSlot(x), 2);
-                          r_block.PushMemory_S(r_sd_, 31, RegSavedLocation(i, x), 2);
-                        }
-                      }
+                      RestoreCallerRegsFromTemp(i, r_block);
                     }
                   }
                 } else {
@@ -1620,21 +1597,13 @@ void CodeGenerator::Generate() {
               modified_reg.insert(reg_id);
             }
             r_block.PushCall(false, instruction.function_name_);
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCallerRegs(i, r_block);
             break;
           }
           case builtin_call_: {
             switch (instruction.function_name_) {
               case 0: { // printInt
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                SaveCallerRegs(i, r_block);
                 const auto &arguments = instruction.function_call_arguments_;
                 if (arguments[0].is_variable_) {
                   const int var_id = arguments[0].value_;
@@ -1650,19 +1619,11 @@ void CodeGenerator::Generate() {
                   r_block.PushLi(10, arguments[0].value_);
                 }
                 r_block.PushCall(true, 2);
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                RestoreCallerRegs(i, r_block);
                 break;
               }
               case 1: { // printlnInt
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                SaveCallerRegs(i, r_block);
                 const auto &arguments = instruction.function_call_arguments_;
                 if (arguments[0].is_variable_) {
                   const int var_id = arguments[0].value_;
@@ -1678,19 +1639,11 @@ void CodeGenerator::Generate() {
                   r_block.PushLi(10, arguments[0].value_);
                 }
                 r_block.PushCall(true, 3);
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                RestoreCallerRegs(i, r_block);
                 break;
               }
               case 2: { // getInt
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save) {
-                    r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                SaveCallerRegs(i, r_block);
                 r_block.PushCall(true, 5);
                 int result_reg = -1;
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -1700,11 +1653,7 @@ void CodeGenerator::Generate() {
                   const int result_var_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
                   r_block.PushMemory_S(CodeGenerator::GetStoreInst(instruction.result_type_), 10, result_var_offset, 2);
                 }
-                for (int x = 0; x < 32; ++x) {
-                  if (register_saver.at(x) == caller_save && x != result_reg) {
-                    r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-                  }
-                }
+                RestoreCallerRegs(i, r_block, result_reg);
                 break;
               }
               default:;
@@ -1770,11 +1719,7 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memset_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            SaveCallerRegs(i, r_block);
             int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
@@ -1784,19 +1729,11 @@ void CodeGenerator::Generate() {
             r_block.PushLi(11, instruction.operand_1_id_ == 0 ? 0 : -1);
             r_block.PushLi(12, instruction.result_id_);
             r_block.PushCall(true, 6); // call memset
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCallerRegs(i, r_block);
             break;
           }
           case builtin_memcpy_: {
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            SaveCallerRegs(i, r_block);
             int dest_register = RISCV_functions_[i].location_[instruction.destination_].second;
             if (!RISCV_functions_[i].location_[instruction.destination_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
@@ -1815,11 +1752,7 @@ void CodeGenerator::Generate() {
             r_block.PushArithmetic_R(r_add_, 11, src_register, 0);
             r_block.PushLi(12, instruction.result_id_);
             r_block.PushCall(true, 7); // call memcpy
-            for (int x = 0; x < 32; ++x) {
-              if (register_saver.at(x) == caller_save) {
-                r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);
-              }
-            }
+            RestoreCallerRegs(i, r_block);
             break;
           }
           default:;
