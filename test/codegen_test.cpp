@@ -100,16 +100,16 @@ static void RunMem2RegOn(const std::string &base) {
   delete syntax_tree;
 }
 
-TEST(CodegenTestSingle, sementic2_single_test) {
-  std::string test_id = "1";
-  const std::string file = "semantic-2/src/comprehensive" + test_id + "/comprehensive" + test_id;
-  RunMem2RegOn(file);
-}
+// TEST(CodegenTestSingle, sementic2_single_test) {
+//   std::string test_id = "1";
+//   const std::string file = "semantic-2/src/comprehensive" + test_id + "/comprehensive" + test_id;
+//   RunMem2RegOn(file);
+// }
 
-TEST(CodegenTestSingle, debugging_test) {
-  const std::string file = "working_space/debugging";
-  RunMem2RegOn(file);
-}
+// TEST(CodegenTestSingle, debugging_test) {
+//   const std::string file = "working_space/debugging";
+//   RunMem2RegOn(file);
+// }
 
 TEST(CodegenTest, test_all) {
   for (int i = 1; i <= 50; ++i) {

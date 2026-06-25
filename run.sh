@@ -44,14 +44,22 @@
 #  echo "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed in generating elf"
 #fi
 
-echo "============================= Codegen Tests Begins ============================="
+echo "============================= Build and run ... ============================="
+
+cmake --build cmake-build-debug
+./cmake-build-debug/codegen_tests
+
+echo "============================= Check assembly ... ============================"
+
+# Use unlimited stack to avoid stack overflow from large test cases
+ulimit -s unlimited
 
 IR_1_success_count=0
 
 for INDEX in {1..50}; do
   riscv64-linux-gnu-gcc -march=rv64gc -mabi=lp64d -static "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.s" -o "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf"
   if [ $? -eq 0 ]; then
-    qemu-riscv64 "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf" < "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" > "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out"
+    timeout 20s qemu-riscv64 "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my.elf" < "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.in" > "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out"
     if [ $? -eq 0 ]; then
       diff "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}_my_output.out" "RCompiler-Testcases/IR-1/src/comprehensive${INDEX}/comprehensive${INDEX}.out" -Z
       if [ $? -eq 0 ]; then

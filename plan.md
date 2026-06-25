@@ -1,272 +1,307 @@
-# Plan: RV32 → RV64 Migration
+# Compiler Optimization Plan
 
-## Overview
+Ranked by significance × ease-of-achievement for **this compiler** specifically.
+Each entry is tagged: **Impact** (code-size reduction), **Difficulty** (engineering effort),
+and **Category** (where the change goes: codegen asm → register allocator → IR).
 
-Migrate the compiler target from RV32 to RV64, and switch from the `reimu` simulator to `qemu-riscv64` for testing.
-
-## Key Principles
-
-Per `RV32toRV64.md`:
-- **Integer operations**: Use `*w` variants (e.g., `addw`, `mulw`) — operate on lower 32 bits, sign-extend result to 64 bits
-- **Pointer operations**: Keep non-`w` variants (`add`, `addi`) — full 64-bit operations
-- **Register saves**: Use `sd`/`ld` (8 bytes per register instead of 4)
-- **Pointer memory**: Use `sd`/`ld` (8 bytes, 64-bit pointers)
-- **Integer memory**: Keep `sw`/`lw` (4 bytes, sign-extended in registers)
-- **Comparisons/branches/bitwise ops**: No change (work correctly on 64-bit registers with sign-extended values)
-- **`isize`/`usize`**: Keep as 4 bytes (data guarantee: results stay in 32-bit range)
+Key findings from current ASM output (comprehensive21: 13,102 lines, 117 calls):
+- **1,756** a0-a7 save/restores (13.4% of file) — full spill around every call
+- **2,647** `li t6,<large>` patterns (20.2%) — materializing large stack offsets
+- **579** redundant `add x,y,x0` (4.4%) — should be `mv`
+- **670** t-reg save/restores around calls
 
 ---
 
-## Step 1: Add new RISC-V instruction types
+## Phase 1: Low-Hanging Fruit (High Impact / Low Difficulty)
 
-**File**: `codegen/include/code_generator.h`
+### 1.1 Call-Save Consolidation — Deferred + Per-Register Lazy Save/Restore
+- **Impact**: ★★★★★ (13.4% of comprehensive21; 60%+ of per-call overhead eliminated)
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Assembly Code Generation (`code_generator.cpp`)
+- **What**: Currently every `call` is wrapped in save-all/restore-all of a0-a7, t3-t5, ra.
+  Instead: mark a-regs as "dirty" after a call, restore lazily on next use, flush remaining
+  dirty regs only at block exits (branch/jump/return). Between back-to-back calls,
+  skip the intermediate restore+save entirely.
+- **Est. savings**: comprehensive21: 13,102 → ~11,400 (−13%); comprehensive1: 4,945 → ~4,100 (−17%)
+- **Reference**: optimize.md "Call-Save Consolidation" Phase 2-3
 
-Add new entries to the `RISCVInstructionType` enum:
-- `r_addw_`, `r_subw_`, `r_addiw_` — integer add/sub with word truncation
-- `r_sllw_`, `r_srlw_`, `r_sraw_` — integer shifts (word)
-- `r_slliw_`, `r_srliw_`, `r_sraiw_` — integer immediate shifts (word)
-- `r_mulw_`, `r_divw_`, `r_divuw_`, `r_remw_`, `r_remuw_` — integer mul/div/rem (word)
-- `r_ld_`, `r_sd_` — load/store doubleword (64-bit for pointers and register saves)
+### 1.2 Peephole: Compare Instruction Optimization
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: `==`/`!=` → `sub`+`sltiu`/`sltu` (2 insns instead of 3-4). `==0` → `sltiu` (1 insn).
+  `!=0` → `sltu x0`. `==0`/`!=0` checks fire BEFORE `VariableToReg`.
+- **Reference**: optimize.md "Compare" + "Compare peephole ordering"
 
-Update validation ranges in helper methods:
-- `PushArithmetic_R`: expand range from `<= 10` to include `r_addw_` through `r_sraw_`
-- `PushArithmetic_I`: add cases for `r_addiw_`, `r_slliw_`, `r_srliw_`, `r_sraiw_` (same logic as existing, just with new mnemonics)
-- `PushExtended`: expand range to include `r_mulw_` through `r_remuw_`
-- `PushMemory_I`: expand range to include `r_ld_`
-- `PushMemory_S`: expand range to include `r_sd_`
+### 1.3 Peephole: Immediate Folding in Arithmetic
+- **Impact**: ★★★★☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: When one operand of `+`/`-`/`&`/`|`/`^` fits in 12-bit signed immediate,
+  fold into `addi`/`andi`/`ori`/`xori` instead of `li`+`op`. Commutative `+` also
+  folds `c + x` when constant is operand1.
+- **Reference**: optimize.md "Immediate folding" + "Commutative operand1"
 
----
-
-## Step 2: Update type sizing for 64-bit pointers
-
-**File**: `codegen/src/code_generator.cpp`, function `GetSize()`
-
-```cpp
-case pointer_type: {
-  return {8, true};  // was {4, true} — pointers are now 64-bit
-}
-```
-
-`isize_type` and `usize_type` remain `{4, true}`.
-
----
-
-## Step 3: Update stack frame layout
-
-**File**: `codegen/src/code_generator.cpp`
-
-### 3a. `MemAlloc()` — register save area size
-```cpp
-space = 224;  // was 112 — 28 registers × 8 bytes each
-```
-
-### 3b. `MemAlloc()` — stack alignment
-```cpp
-space = (space + 7) / 8 * 8;  // was (space + 3) / 4 * 4 — align to 8 bytes
-```
-
-### 3c. `RegSavedLocation()` — register save offsets
-```cpp
-int CodeGenerator::RegSavedLocation(const int func_id, const int reg_id) const {
-  const int stack_space = RISCV_functions_[func_id].stack_space_;
-  if (reg_id == 1) {
-    return stack_space - 8;  // was -4
-  }
-  if (reg_id <= 4) {
-    CodegenThrow(...);
-  }
-  return stack_space - 8 * (reg_id - 3);  // was 4 * (reg_id - 3)
-}
-```
-
-### 3d. Pointer variables on stack
-
-Since `GetSize(pointer_type)` now returns `{8, true}`, all pointer-typed alloca/load/call results automatically get 8 bytes of stack space. The existing `MemAlloc` logic handles this via `GetSize()`.
+### 1.4 Redundant Jump Elimination
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: Elide `j` to immediately-following block. For branches where one target is the
+  fall-through block, skip the trailing `j` or invert to `beqz`/`bnez` for fall-through.
+- **Reference**: optimize.md "Redundant Jump Elimination" + "Branch Codegen Simplification"
 
 ---
 
-## Step 4: Update register save/restore instructions
+## Phase 2: Register Allocator Upgrades (High Impact / Medium Difficulty)
 
-**File**: `codegen/src/code_generator.cpp`, function `Generate()`
+### 2.1 Color Pool Expansion — Add a0-a7 to Allocatable Pool
+- **Impact**: ★★★★☆ (doubles register pool from 12 to 19+)
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Register Allocator (`register_allocator.cpp`)
+- **What**: Currently only s0-s11 are available for coloring. Add a0-a7 with proper
+  precolored-interference modeling for function parameters. Far fewer spills to stack.
+- **Reference**: optimize.md "Color Pool Expansion"
 
-### 4a. Prologue (save callee-save registers)
-```cpp
-bb0.PushMemory_S(r_sd_, x, RegSavedLocation(i, x), 2);  // was r_sw_
-```
+### 2.2 Leaf Function Optimization Bundle
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: Register Allocator + Stack Frame
+- **What**: (a) Detect leaf functions (no calls, including builtin_memcpy/memset).
+  (b) Skip call-save area entirely. (c) Prefer t5 + unused a-regs over s-regs →
+  zero s-reg save/restore. (d) Tightened save area: `8 + 8×a_reg_used_cnt` instead of 72.
+- **Reference**: optimize.md "Leaf Function Frame Elimination" + "Leaf Function Register Preference" + "Tightened Save Area"
 
-### 4b. Epilogue (restore before return)
-All callee-save register restores in `value_ret_`, `variable_ret_`, `void_ret_`:
-```cpp
-r_block.PushMemory_I(r_ld_, x, RegSavedLocation(i, x), 2);  // was r_lw_
-```
-
-### 4c. Caller-save spill/reload around function calls
-
-In `non_void_call_`, `void_call_`, `builtin_call_`, `builtin_memset_`, `builtin_memcpy_`:
-- Save: `PushMemory_S(r_sd_, ...)` instead of `r_sw_`
-- Restore: `PushMemory_I(r_ld_, ...)` instead of `r_lw_`
-
-### 4d. VariableAssignment memcpy path (for struct/array moves)
-The caller-save spill/reload inside the memcpy setup blocks:
-- Save: `PushMemory_S(r_sd_, ...)` instead of `r_sw_`
-- Restore: `PushMemory_I(r_ld_, ...)` instead of `r_lw_`
-
-### 4e. Load with large types (struct/array copy via memcpy)
-In `load_` and `variable_store_` large-type paths:
-- Save: `PushMemory_S(r_sd_, ...)` instead of `r_sw_`
-- Restore: `PushMemory_I(r_ld_, ...)` instead of `r_lw_`
+### 2.3 Packed Save Area
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: Stack Frame
+- **What**: Remove t-reg slots from save area, pack a-regs + ra at offsets 8-72 instead
+  of scattered 8-120. Frame size −48 bytes per non-leaf function.
+- **Reference**: optimize.md "Packed Save Area"
 
 ---
 
-## Step 5: Switch integer operations to `*w` variants
+## Phase 3: Move & Store Elimination (Medium Impact / Medium Difficulty)
 
-**File**: `codegen/src/code_generator.cpp`, function `Generate()`
+### 3.1 Briggs Conservative Move Coalescing
+- **Impact**: ★★★☆☆ (comprehensive21: 579 redundant moves)
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Register Allocator
+- **What**: Before coloring, merge move-related virtual register pairs if they don't
+  interfere AND merged node has degree < K. Eliminates `mv` instructions directly.
+- **Reference**: optimize.md "Briggs Conservative Move Coalescing"
 
-### 5a. Binary operations (two_var, var_const, const_var)
+### 3.2 Deferred kMemory Stores
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: Assembly Code Generation
+- **What**: Defer `sd` for `RegToVariable(kMemory, ...)`. If `VariableToReg` later requests
+  the same address, reuse the register directly (skip the `ld`). Flush before any
+  instruction overwrites the register. Eliminates store-then-immediate-reload patterns.
+- **Reference**: optimize.md "Deferred kMemory Stores"
 
-| Old | New |
-|-----|-----|
-| `PushArithmetic_R(r_add_, ...)` | `PushArithmetic_R(r_addw_, ...)` |
-| `PushArithmetic_R(r_sub_, ...)` | `PushArithmetic_R(r_subw_, ...)` |
-| `PushArithmetic_R(r_sll_, ...)` | `PushArithmetic_R(r_sllw_, ...)` |
-| `PushArithmetic_R(r_sra_, ...)` | `PushArithmetic_R(r_sraw_, ...)` |
-| `PushExtended(r_mul_, ...)` | `PushExtended(r_mulw_, ...)` |
-| `PushExtended(r_div_, ...)` | `PushExtended(r_divw_, ...)` |
-| `PushExtended(r_divu_, ...)` | `PushExtended(r_divuw_, ...)` |
-| `PushExtended(r_rem_, ...)` | `PushExtended(r_remw_, ...)` |
-| `PushExtended(r_remu_, ...)` | `PushExtended(r_remuw_, ...)` |
-
-`and`, `or`, `xor` do NOT change (no `w` variants exist — bitwise ops on 64-bit registers work correctly with sign-extended values).
-
-### 5b. Shift immediate in variable_store
-
-```cpp
-r_block.PushArithmetic_I(r_srliw_, src_reg, src_reg, 8);  // was r_srli_
-```
-
-### 5c. GEP (pointer arithmetic) — keep non-w
-
-`get_element_ptr_by_value_` and `get_element_ptr_by_variable_` use `r_addi_`/`r_add_` for pointer offset calculation. These stay as-is (64-bit pointer arithmetic).
-
-### 5d. SP adjustment — keep non-w
-
-All `PushArithmetic_I(r_addi_, 2, ...)` and `PushReturn` stay as `addi`/`add` (SP is a 64-bit pointer).
-
-### 5e. VariableAssignment for pointer types
-
-Add handling for `type_size == 8` (pointer types now 8 bytes):
-- Load from stack: `PushMemory_I(r_ld_, ...)`
-- Store to stack: `PushMemory_S(r_sd_, ...)`
-- Register-register move: `PushArithmetic_R(r_add_, ...)` (keep non-w for 64-bit values)
+### 3.3 Call Result Direct Use
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: After a call, a0 holds the return value. Use a0 directly in `RegToVariable`
+  instead of `mv` to a temp first. Saves ~1 `mv` per non-void call.
+- **Reference**: optimize.md "Call Result Direct Use"
 
 ---
 
-## Step 6: Update instruction printer
+## Phase 4: Constant & Offset Optimization (Medium-High Impact / Medium Difficulty)
 
-**File**: `codegen/src/code_generator.cpp`, function `Print()`
+### 4.1 Constant Cache for Large Immediates (t3/t4)
+- **Impact**: ★★★★☆ (comprehensive21: 2,647 `li t6,<large>` = 20.2% of file)
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Assembly Code Generation
+- **What**: Pre-scan each function for >12-bit constants by frequency. Load top 2 into
+  t3/t4 at function entry. All stack-offset address computations check the cache first,
+  turning `li t6, 1003080; add t6, sp, t6; sd ra, 0(t6)` into `add t6, sp, t3; sd ra, 0(t6)`.
+  Cached immediates survive calls via `li` reload. Scan includes IR operands AND stack offsets.
+- **Est. savings**: comprehensive21: ~2,500 `li t6` eliminated → −19%
+- **Reference**: optimize.md "Constant Cache (t3/t4)"
 
-Add cases for all new instruction types:
+### 4.2 Peephole: Power-of-2 Strength Reduction
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: `li+mulw` → `slliw`, `li+divuw` → `srliw`, `li+remuw` → `andi`,
+  GEP with power-of-2 elem_size → `slli` instead of `li+mul`.
+- **Reference**: optimize.md "GEP with power-of-2" + "Power-of-2 strength reduction"
 
-| Type | Mnemonic | Print helper |
-|------|----------|-------------|
-| `r_addw_` | `addw` | `Print_AR` |
-| `r_subw_` | `subw` | `Print_AR` |
-| `r_addiw_` | `addiw` | `Print_AI` |
-| `r_sllw_` | `sllw` | `Print_AR` |
-| `r_srlw_` | `srlw` | `Print_AR` |
-| `r_sraw_` | `sraw` | `Print_AR` |
-| `r_slliw_` | `slliw` | `Print_AI` |
-| `r_srliw_` | `srliw` | `Print_AI` |
-| `r_sraiw_` | `sraiw` | `Print_AI` |
-| `r_mulw_` | `mulw` | `Print_AR` |
-| `r_divw_` | `divw` | `Print_AR` |
-| `r_divuw_` | `divuw` | `Print_AR` |
-| `r_remw_` | `remw` | `Print_AR` |
-| `r_remuw_` | `remuw` | `Print_AR` |
-| `r_ld_` | `ld` | `Print_MI` |
-| `r_sd_` | `sd` | `Print_MS` |
+### 4.3 Peephole: Constant Negation Folding
+- **Impact**: ★☆☆☆☆
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation
+- **What**: `li N; neg rd, rs` → single `li rd, -N`.
+- **Reference**: optimize.md "Constant negation"
 
----
-
-## Step 7: Rewrite builtin functions for RV64
-
-**Files**:
-- `RCompiler-Testcases/IR-1/builtin/builtin_fn.txt` — builtin assembly functions
-- `RCompiler-Testcases/IR-1/builtin/builtin_str.txt` — format strings
-- `RCompiler-Testcases/IR-1/builtin/builtin.s` — combined file (used by reimu, will be regenerated for RV64)
-
-**Approach**: Write a small C file with the builtins, compile to RV64 assembly:
-
-```bash
-clang -S --target=riscv64-unknown-elf -O0 -march=rv64gc builtin_rv64.c -o builtin_fn.txt
-```
-
-The `builtin_str.txt` just needs the `.attribute` line updated to `"rv64i2p1_m2p0_a2p1_c2p0"` — the format strings themselves don't change.
+### 4.4 GEP Chain Folding
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Assembly Code Generation (post-RA peephole on RISC-V instructions)
+- **What**: Walk backward from true terminals through single-use GEP intermediates,
+  collapsing chains like `addi rd, base, 8; addi rd, rd, 8` → `addi rd, base, 16`.
+  Zero-offset GEP(const 0) → `mv rd, ptrval`.
+- **Reference**: optimize.md "GEP Chain Folding"
 
 ---
 
-## Step 8: Update run.sh for qemu-riscv64
+## Phase 5: Control Flow Optimizations (Lower Impact / Low Difficulty)
 
-**File**: `run.sh`
+### 5.1 Block Layout Reordering (DFS-based)
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: Assembly Code Generation
+- **What**: DFS-based ordering: place jump-target next; for branches, prefer false-target
+  fall-through (so `bnez`/`beqz` takes the common path). Eliminates unnecessary `j`.
+- **Reference**: optimize.md "Block Layout Reordering"
 
-### IR tests (line 6-28):
-```bash
-# Old: clang -S --target=riscv32 + reimu
-# New: clang compiles to ELF, qemu runs it
-clang --target=riscv64-unknown-elf -O0 input.ll -o output.elf
-qemu-riscv64 output.elf < input.in > output.out
-```
-
-### Codegen tests (line 53-70):
-```bash
-# Old: reimu -f=my.s
-# New: assemble + link, then qemu
-clang --target=riscv64-unknown-elf -O0 my_output.s -o my_output.elf
-qemu-riscv64 my_output.elf < input.in > my_output.out
-diff my_output.out expected.out
-```
+### 5.2 Empty Block Elimination + next_block_map_
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: Assembly Code Generation
+- **What**: Skip empty blocks when computing fall-through targets. Eliminate truly empty
+  blocks, thread jump chains, merge phi-only blocks.
+- **Reference**: optimize.md "Empty Block Elimination" + "Empty Block Awareness"
 
 ---
 
-## Step 9: Verify test infrastructure
+## Phase 6: IR-Level Optimizations (High Impact / High Difficulty)
 
-- `test/codegen_test.cpp` — calls `CodeGenerator::Generate()` + `Output()`, which now produce RV64 `.s`. No source changes needed.
-- `CMakeLists.txt` — no changes needed (register_allocator already listed).
+These require significant infrastructure (SSA construction, dominator analysis,
+IR transformation passes). Listed in order of increasing difficulty.
+
+### 6.1 Array Repeat Initialization with Loop Blocks
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: IR Generation (`IR/`)
+- **What**: Replace unrolled `[val; N]` array init with a compact 4-block loop
+  (header/body/end). O(N)→O(1) IR instructions for initialization.
+- **Reference**: optimize.md "Array Repeat Initialization"
+
+### 6.2 Running Pointer Strength Reduction (inside loops)
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: IR Generation
+- **What**: Replace `GEP(base, idx, elem_size)` in array-init loops with running pointer
+  chain (`ptr += elem_size`). Eliminates `li+mul+add` per iteration.
+- **Reference**: optimize.md "Running pointer strength reduction"
+
+### 6.3 Branch Condition Optimization
+- **Impact**: ★★☆☆☆
+- **Difficulty**: ★★☆☆☆ (Low-Medium)
+- **Category**: IR Generation
+- **What**: When comparison/lazy-boolean is used as `if`/`while` condition, emit branch
+  on comparison result directly instead of storing to memory then loading back.
+  Uses a `BranchContext` carrying true/false labels through expression handlers.
+- **Reference**: optimize.md "Branch Condition Optimization"
+
+### 6.4 RVO and Direct-Write for Struct/Array Literals
+- **Impact**: ★★☆☆☆ (struct/array-heavy programs only)
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: IR Generation
+- **What**: `let` RHS struct/array literal → write directly into target instead of
+  temp+memcpy. Return struct/array → skip memcpy when expression already targets
+  the return buffer pointer.
+- **Reference**: optimize.md "RVO and Direct-Write for Struct/Array Literals"
+
+### 6.5 Function Inlining
+- **Impact**: ★★★★☆
+- **Difficulty**: ★★★★☆ (High)
+- **Category**: IR Optimization Pass
+- **What**: Inline small functions (< 50 IR instructions) at call sites. Clones callee
+  blocks, renames locals, redirects allocas to caller's entry block, splits blocks at
+  call sites, rewrites returns as jumps to continuation blocks.
+- **Reference**: optimize.md "Function Inlining"
+
+### 6.6 SCCP (Sparse Conditional Constant Propagation)
+- **Impact**: ★★★☆☆ (folds constants, removes unreachable code)
+- **Difficulty**: ★★★★★ (Very High — requires SSA form with phi nodes)
+- **Category**: IR Optimization Pass
+- **What**: Wegman-Zadeck SCCP on SSA-form IR. Tracks constant lattice values per variable
+  and executability per block. Folds constant arithmetic/compare/select, converts
+  constant-condition branches to unconditional jumps.
+- **Reference**: optimize.md "SCCP"
+
+### 6.7 mem2reg (Memory to Register Promotion via SSA)
+- **Impact**: ★★★★★ (Transformative — all stack allocas become SSA registers)
+- **Difficulty**: ★★★★★ (Very High — full SSA construction pipeline)
+- **Category**: IR Optimization Pass
+- **What**: Promote allocas (only accessed via load/store) to SSA registers. Requires:
+  dominator tree + dominance frontiers, phi insertion at iterated dominance frontiers,
+  variable renaming in dominator-tree order, load/store→register replacement.
+  This is the single most transformative IR optimization — it converts memory traffic
+  into SSA registers, enabling all subsequent SSA-based passes.
+- **Reference**: optimize.md "Liveness Analysis & SSA Construction Performance"
+  (reference compiler already had mem2reg; performance section describes refinements)
+
+### 6.8 Deferred Stack Address Assignment (Post-RA)
+- **Impact**: ★★★☆☆
+- **Difficulty**: ★★★☆☆ (Medium)
+- **Category**: Stack Frame (codegen)
+- **What**: Record alloca sizes without assigning addresses during IR→codegen. After
+  register allocation promotes scalars to registers, only remaining kMemory variables
+  receive contiguous stack addresses. Promoted variables never occupy stack space.
+- **Reference**: optimize.md "Deferred Stack Address Assignment"
 
 ---
 
-## File Changes Summary
+## Summary: Recommended Execution Order
 
-| File | Changes |
-|------|---------|
-| `codegen/include/code_generator.h` | New enum values, updated Push* validation ranges |
-| `codegen/src/code_generator.cpp` | GetSize, MemAlloc, RegSavedLocation, Generate (w-variants, sd/ld), Print (new mnemonics), VariableAssignment (8-byte case) |
-| `RCompiler-Testcases/IR-1/builtin/builtin_fn.txt` | Regenerate for RV64 |
-| `RCompiler-Testcases/IR-1/builtin/builtin_str.txt` | Update .attribute line |
-| `RCompiler-Testcases/IR-1/builtin/builtin.s` | Regenerate for RV64 |
-| `run.sh` | Replace reimu with clang+qemu-riscv64 pipeline |
+| # | Optimization | Impact | Difficulty | Est. Savings (comprehensive21) |
+|---|-------------|--------|-----------|-------------------------------|
+| 1.1 | Call-Save Lazy Deferral | ★★★★★ | ★★★☆☆ | 13-18% |
+| 1.2 | Compare Peephole | ★★★☆☆ | ★☆☆☆☆ | 1-2% |
+| 1.3 | Immediate Folding | ★★★★☆ | ★☆☆☆☆ | 3-5% |
+| 1.4 | Redundant Jump Elim | ★★☆☆☆ | ★☆☆☆☆ | 0.5-1% |
+| 2.1 | Color Pool (a0-a7) | ★★★★☆ | ★★★☆☆ | 5-10% |
+| 2.2 | Leaf Func Opt Bundle | ★★★☆☆ | ★★☆☆☆ | 2-5% |
+| 2.3 | Packed Save Area | ★★★☆☆ | ★★☆☆☆ | 1-2% |
+| 3.1 | Move Coalescing | ★★★☆☆ | ★★★☆☆ | 3-5% |
+| 3.2 | Deferred kMemory | ★★★☆☆ | ★★☆☆☆ | 1-3% |
+| 3.3 | Call Result Direct Use | ★★☆☆☆ | ★☆☆☆☆ | 0.5% |
+| 4.1 | Constant Cache (t3/t4) | ★★★★☆ | ★★★☆☆ | 10-19% |
+| 4.2 | Pow2 Strength Reduction | ★★☆☆☆ | ★☆☆☆☆ | 0.5-1% |
+| 4.3 | Constant Negation | ★☆☆☆☆ | ★☆☆☆☆ | <0.5% |
+| 4.4 | GEP Chain Folding | ★★★☆☆ | ★★★☆☆ | 2-5% |
+| 5.1 | Block Layout | ★★☆☆☆ | ★★☆☆☆ | 1-2% |
+| 5.2 | Empty Block Elim | ★★☆☆☆ | ★★☆☆☆ | 0.5-1% |
+| 6.1 | Array Loop Init | ★★★☆☆ | ★★★☆☆ | varies |
+| 6.2 | Pointer Strength Red. | ★★★☆☆ | ★★★☆☆ | varies |
+| 6.3 | Branch Condition Opt | ★★☆☆☆ | ★★☆☆☆ | 0.5-1% |
+| 6.4 | RVO / Direct-Write | ★★☆☆☆ | ★★★☆☆ | varies |
+| 6.5 | Function Inlining | ★★★★☆ | ★★★★☆ | 5-15% |
+| 6.6 | SCCP | ★★★☆☆ | ★★★★★ | 3-8% |
+| 6.7 | mem2reg / SSA | ★★★★★ | ★★★★★ | 20-40% |
+| 6.8 | Deferred Stack Addr | ★★★☆☆ | ★★★☆☆ | 3-5% |
 
----
+### Key Takeaways:
 
-## Testing After Migration
+1. **Do Phase 1 immediately** — pure codegen changes with outsized payback.
+   Phase 1.1 alone could reduce comprehensive21 from 13k to ~11k lines.
 
-```bash
-# Rebuild
-cmake -S . -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build cmake-build-debug
+2. **Phase 2-3 are the sweet spot** — moderate engineering for major gain.
+   Together they could bring comprehensive21 under 9k lines.
 
-# Run codegen tests (generates _my.s files)
-./cmake-build-debug/codegen_tests
+3. **Phase 4.1 (constant cache) is the next high-leverage item** — 20% of comprehensive21
+   is `li t6,<large>` for stack offset materialization. A 2-register cache cuts this in half.
 
-# Test a single case end-to-end with qemu
-clang --target=riscv64-unknown-elf -O0 \
-  RCompiler-Testcases/IR-1/src/comprehensive1/comprehensive1_my.s \
-  -o /tmp/test.elf
-qemu-riscv64 /tmp/test.elf \
-  < RCompiler-Testcases/IR-1/src/comprehensive1/comprehensive1.in \
-  > /tmp/test.out
-diff /tmp/test.out RCompiler-Testcases/IR-1/src/comprehensive1/comprehensive1.out
+4. **Phase 5 is polish** — small wins individually, zero-risk to implement.
 
-# Run all tests
-bash run.sh
-```
+5. **Phase 6 items are semester-project-scale** — especially mem2reg (6.7) requires
+   building a full SSA construction pipeline (dominance frontiers, phi placement,
+   renaming). But it's also the most transformative single optimization in any compiler.
+
+### Estimated cumulative reduction path (comprehensive21: 13,102 lines):
+- After Phase 1: ~10,500 (−20%)
+- After Phase 2-3: ~8,000 (−24%)
+- After Phase 4: ~6,500 (−19%)
+- After Phase 5: ~6,200 (−5%)
+- After Phase 6.1-6.4: ~5,500 (−11%)
+- After Phase 6.5 (inlining): ~4,700 (−15%)
+- After Phase 6.6-6.7 (SCCP + mem2reg): potentially ~3,000-4,000 (transformative)
+
+Final estimate: a 3-4× code size reduction is achievable if all phases are completed.
