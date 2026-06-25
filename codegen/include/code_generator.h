@@ -499,6 +499,7 @@ private:
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
   std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
   std::vector<bool> registers_saved_;  // per-function: caller-saved regs are currently in save slots
+  std::vector<bool> is_leaf_;         // per-function: leaf (no calls)
 };
 
 #endif

@@ -170,7 +170,11 @@ void CodeGenerator::PhiToMove() {
 
 void CodeGenerator::MemAlloc(const int func_id) {
   int &space = RISCV_functions_[func_id].stack_space_;
-  space = 352; // 28 * 8 for outer save + 128 for temp save area during nested memcpy calls
+  // Non-leaf functions need space for: 28×8=224 save slots + 128 temp area = 352.
+  // Leaf functions (no calls): skip the 128-byte temp save area (no nested
+  // memcpy), saving 128 bytes per leaf function.  Save area stays at 28×8=224
+  // because the register allocator may still use any allocatable reg.
+  space = is_leaf_[func_id] ? 224 : 352;
   int used_register = 0; // a-registers
   for (int i = 0; i < IR_functions_[func_id].parameter_types_.size(); ++i) {
     if (used_register == 8 || IR_functions_[func_id].parameter_types_[i]->basic_type == array_type
@@ -259,7 +263,10 @@ void CodeGenerator::MemAlloc(const int func_id) {
   // reservation must be added AFTER all variables are allocated so the
   // smallest final offset (for the variable with the largest intermediate)
   // is still >= 128.
-  space += 128;
+  // Leaf functions have no calls ⇒ no nested memcpy ⇒ skip temp area.
+  if (!is_leaf_[func_id]) {
+    space += 128;
+  }
   space = (space + 15) / 16 * 16;  // RV64 ABI: 16-byte stack alignment
   for (const auto [var_id, location] : RISCV_functions_[func_id].location_) {
     if (!location.first) {
@@ -479,12 +486,30 @@ void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
   alloca_var_ids_.resize(IR_functions_.size());
   PhiToMove();
+
+  // Detect leaf functions (no calls — builtin or user) before MemAlloc
+  // so the stack frame can be sized accordingly.
+  is_leaf_.resize(IR_functions_.size(), true);
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      for (const auto &inst : block.instructions_) {
+        if (inst.instruction_type_ == non_void_call_ ||
+            inst.instruction_type_ == void_call_ ||
+            inst.instruction_type_ == builtin_call_) {
+          is_leaf_[i] = false;
+          break;
+        }
+      }
+      if (!is_leaf_[i]) break;
+    }
+  }
+
   for (int i = 0; i < IR_functions_.size(); ++i) {
     MemAlloc(i);
   }
   // Register allocation: promote scalars from stack to registers.
   for (int i = 0; i < IR_functions_.size(); ++i) {
-    RegisterAllocator reg_alloc(IR_functions_[i], RISCV_functions_[i]);
+    RegisterAllocator reg_alloc(IR_functions_[i], RISCV_functions_[i], is_leaf_[i]);
     reg_alloc.Run();
   }
   // Determine which registers actually hold variables after RA.

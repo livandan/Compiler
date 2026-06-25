@@ -10,7 +10,8 @@
 class RegisterAllocator {
 public:
   RegisterAllocator(const IRFunctionNode &ir_func,
-                    RISCVFunctionNode &riscv_func);
+                    RISCVFunctionNode &riscv_func,
+                    bool is_leaf = false);
   void Run();
 
 private:
@@ -46,6 +47,7 @@ private:
 
   const IRFunctionNode &ir_func_;
   RISCVFunctionNode &riscv_func_;
+  bool is_leaf_;  // leaf function: no calls → prefer caller-saved regs
 
   // CFG
   std::map<int, std::vector<int>> successors_;

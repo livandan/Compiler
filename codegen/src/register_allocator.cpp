@@ -5,15 +5,31 @@
 #include <queue>
 
 RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
-                                     RISCVFunctionNode &riscv_func)
-    : ir_func_(ir_func), riscv_func_(riscv_func) {
+                                     RISCVFunctionNode &riscv_func,
+                                     bool is_leaf)
+    : ir_func_(ir_func), riscv_func_(riscv_func), is_leaf_(is_leaf) {
 
   // Build the pool of allocatable physical registers.
   // Reserved: x0(zero), x1(ra), x2(sp), x3(gp), x4(tp)
   // Scratch:  x5(t0), x6(t1), x7(t2), x31(t6)
-  for (int r = 0; r < 32; ++r) {
-    if (!IsReservedReg(r) && !IsScratchReg(r)) {
-      allocatable_regs_.push_back(r);
+  //
+  // For leaf functions (no calls), prefer caller-saved registers first
+  // (a0-a7, t3-t5) since they are never clobbered and don't need
+  // prologue/epilogue save/restore.  This allows small leaf functions
+  // to compile with zero callee-saved register overhead.
+  if (is_leaf) {
+    // Caller-saved first: a0-a7 (10-17), t3-t5 (28-30)
+    for (int r = 10; r <= 17; ++r) allocatable_regs_.push_back(r);
+    for (int r = 28; r <= 30; ++r) allocatable_regs_.push_back(r);
+    // Then callee-saved: s0-s1 (8-9), s2-s11 (18-27)
+    allocatable_regs_.push_back(8);
+    allocatable_regs_.push_back(9);
+    for (int r = 18; r <= 27; ++r) allocatable_regs_.push_back(r);
+  } else {
+    for (int r = 0; r < 32; ++r) {
+      if (!IsReservedReg(r) && !IsScratchReg(r)) {
+        allocatable_regs_.push_back(r);
+      }
     }
   }
 }
