@@ -9,7 +9,7 @@
 #include "mem2reg.h"
 
 static void RunMem2RegOn(const std::string &base) {
-  const std::string file = "../RCompiler-Testcases/" + base;
+  const std::string file = "RCompiler-Testcases/" + base;
   const std::string code_file = file + ".rx";
   const std::string IR_file = file + ".ll";
   const std::string RISCV_file = file + "_my.s";
@@ -61,13 +61,13 @@ static void RunMem2RegOn(const std::string &base) {
   }
 
   // Output IR
-  std::ofstream IR_output_file(IR_file);
-  if (IR_output_file.is_open()) {
-    IR_generator.Output(IR_output_file);
-    IR_output_file.close();
-  } else {
-    // std::cerr << "[Error] Cannot open " << IR_file << "!\n";
-  }
+  // std::ofstream IR_output_file(IR_file);
+  // if (IR_output_file.is_open()) {
+  //   IR_generator.Output(IR_output_file);
+  //   IR_output_file.close();
+  // } else {
+  //   // std::cerr << "[Error] Cannot open " << IR_file << "!\n";
+  // }
 
   try {
     CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
@@ -78,7 +78,7 @@ static void RunMem2RegOn(const std::string &base) {
     if (RISCV_output_file.is_open()) {
       // Prepend the builtin assembly so the .s file is self-contained for
       // local testing (link + run via reimu without an extra concat step).
-      std::ifstream builtin("../RCompiler-Testcases/IR-1/builtin/builtin.s");
+      std::ifstream builtin("RCompiler-Testcases/IR-1/builtin/builtin.s");
       if (builtin.is_open()) {
         RISCV_output_file << builtin.rdbuf() << '\n';
         builtin.close();
