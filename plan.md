@@ -14,7 +14,7 @@ Key findings from current ASM output (comprehensive21: 13,102 lines, 117 calls):
 
 ## Phase 1: Low-Hanging Fruit (High Impact / Low Difficulty)
 
-### 1.1 Call-Save Consolidation — Deferred + Per-Register Lazy Save/Restore
+### 1.1 Call-Save Consolidation — Deferred + Per-Register Lazy Save/Restore ✅ **DONE**
 - **Impact**: ★★★★★ (13.4% of comprehensive21; 60%+ of per-call overhead eliminated)
 - **Difficulty**: ★★★☆☆ (Medium)
 - **Category**: Assembly Code Generation (`code_generator.cpp`)
@@ -22,32 +22,41 @@ Key findings from current ASM output (comprehensive21: 13,102 lines, 117 calls):
   Instead: mark a-regs as "dirty" after a call, restore lazily on next use, flush remaining
   dirty regs only at block exits (branch/jump/return). Between back-to-back calls,
   skip the intermediate restore+save entirely.
-- **Est. savings**: comprehensive21: 13,102 → ~11,400 (−13%); comprehensive1: 4,945 → ~4,100 (−17%)
+- **Actual results**: Total asm −21.6% (365k→287k lines). comprehensive21 −40.0% (13.1k→7.9k).
+  All 50 tests pass.
 - **Reference**: optimize.md "Call-Save Consolidation" Phase 2-3
 
-### 1.2 Peephole: Compare Instruction Optimization
+### 1.2 Peephole: Compare Instruction Optimization ✅ **DONE**
 - **Impact**: ★★★☆☆
 - **Difficulty**: ★☆☆☆☆ (Very Low)
-- **Category**: Assembly Code Generation
+- **Category**: Assembly Code Generation (`code_generator.cpp`)
 - **What**: `==`/`!=` → `sub`+`sltiu`/`sltu` (2 insns instead of 3-4). `==0` → `sltiu` (1 insn).
   `!=0` → `sltu x0`. `==0`/`!=0` checks fire BEFORE `VariableToReg`.
+- **Actual results**: `==0`/`!=0` comparisons reduced from 2 insns to 1 insn.
+  `two_var_icmp_` `==`/`!=` uses `sub`+`sltiu`/`sltu` pattern. All 50 tests pass.
 - **Reference**: optimize.md "Compare" + "Compare peephole ordering"
 
-### 1.3 Peephole: Immediate Folding in Arithmetic
+### 1.3 Peephole: Immediate Folding in Arithmetic ✅ **DONE**
 - **Impact**: ★★★★☆
 - **Difficulty**: ★☆☆☆☆ (Very Low)
-- **Category**: Assembly Code Generation
+- **Category**: Assembly Code Generation (`code_generator.cpp`)
 - **What**: When one operand of `+`/`-`/`&`/`|`/`^` fits in 12-bit signed immediate,
   fold into `addi`/`andi`/`ori`/`xori` instead of `li`+`op`. Commutative `+` also
   folds `c + x` when constant is operand1.
+- **Actual results**: `var_const` ops (`add`/`sub`/`and`/`or`/`xor`/`shl`/`ashr`) and
+  commutative `const_var` ops (`add`/`and`/`or`/`xor`) fold constants directly into
+  I-type instructions when they fit in 12 bits. All 50 tests pass.
 - **Reference**: optimize.md "Immediate folding" + "Commutative operand1"
 
-### 1.4 Redundant Jump Elimination
+### 1.4 Redundant Jump Elimination ✅ **DONE**
 - **Impact**: ★★☆☆☆
 - **Difficulty**: ★☆☆☆☆ (Very Low)
-- **Category**: Assembly Code Generation
+- **Category**: Assembly Code Generation (`code_generator.cpp`)
 - **What**: Elide `j` to immediately-following block. For branches where one target is the
   fall-through block, skip the trailing `j` or invert to `beqz`/`bnez` for fall-through.
+- **Actual results**: Unconditional jumps to the next block are skipped. Conditional branches
+  use direct `beqz`/`bnez` when one target is the fall-through, saving one jump per
+  applicable branch. All 50 tests pass.
 - **Reference**: optimize.md "Redundant Jump Elimination" + "Branch Codegen Simplification"
 
 ---

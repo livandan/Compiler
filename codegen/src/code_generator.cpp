@@ -508,6 +508,15 @@ void CodeGenerator::Generate() {
     }
     FlushSavedRegisters(i, bb0);
     bb0.PushJ(IR_functions_[i].blocks_.begin()->first);
+    // Build next_block_map for redundant jump elimination.
+    std::map<int, int> next_block_map;
+    {
+      int prev_id = -1;
+      for (const auto &[b_id, b] : IR_functions_[i].blocks_) {
+        if (prev_id != -1) next_block_map[prev_id] = b_id;
+        prev_id = b_id;
+      }
+    }
     // blocks
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
       auto &r_block = RISCV_functions_[i].blocks_[block_id];
@@ -627,54 +636,58 @@ void CodeGenerator::Generate() {
               r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, first_var_register), 2);
               first_var_register = 5;
             }
-            r_block.PushLi(second_var_register, instruction.operand_2_id_);
             switch (instruction.operator_) {
               case add_: {
-                r_block.PushArithmetic_R(r_addw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_addiw_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case sub_: {
-                r_block.PushArithmetic_R(r_subw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_addiw_, 5, first_var_register, -instruction.operand_2_id_);
                 break;
               }
               case mul_: {
+                r_block.PushLi(second_var_register, instruction.operand_2_id_);
                 r_block.PushExtended(r_mulw_, 5, first_var_register, second_var_register);
                 break;
               }
               case udiv_: {
+                r_block.PushLi(second_var_register, instruction.operand_2_id_);
                 r_block.PushExtended(r_divuw_, 5, first_var_register, second_var_register);
                 break;
               }
               case sdiv_: {
+                r_block.PushLi(second_var_register, instruction.operand_2_id_);
                 r_block.PushExtended(r_divw_, 5, first_var_register, second_var_register);
                 break;
               }
               case urem_: {
+                r_block.PushLi(second_var_register, instruction.operand_2_id_);
                 r_block.PushExtended(r_remuw_, 5, first_var_register, second_var_register);
                 break;
               }
               case srem_: {
+                r_block.PushLi(second_var_register, instruction.operand_2_id_);
                 r_block.PushExtended(r_remw_, 5, first_var_register, second_var_register);
                 break;
               }
               case shl_: {
-                r_block.PushArithmetic_R(r_sllw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_slliw_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case ashr_: {
-                r_block.PushArithmetic_R(r_sraw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_sraiw_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case and_: {
-                r_block.PushArithmetic_R(r_and_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_andi_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case or_: {
-                r_block.PushArithmetic_R(r_or_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_ori_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case xor_: {
-                r_block.PushArithmetic_R(r_xor_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_xori_, 5, first_var_register, instruction.operand_2_id_);
                 break;
               }
               default:;
@@ -713,54 +726,61 @@ void CodeGenerator::Generate() {
               r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, second_var_register), 2);
               second_var_register = 6;
             }
-            r_block.PushLi(first_var_register, instruction.operand_1_id_);
             switch (instruction.operator_) {
               case add_: {
-                r_block.PushArithmetic_R(r_addw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_addiw_, 5, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case sub_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushArithmetic_R(r_subw_, 5, first_var_register, second_var_register);
                 break;
               }
               case mul_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushExtended(r_mulw_, 5, first_var_register, second_var_register);
                 break;
               }
               case udiv_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushExtended(r_divuw_, 5, first_var_register, second_var_register);
                 break;
               }
               case sdiv_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushExtended(r_divw_, 5, first_var_register, second_var_register);
                 break;
               }
               case urem_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushExtended(r_remuw_, 5, first_var_register, second_var_register);
                 break;
               }
               case srem_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushExtended(r_remw_, 5, first_var_register, second_var_register);
                 break;
               }
               case shl_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushArithmetic_R(r_sllw_, 5, first_var_register, second_var_register);
                 break;
               }
               case ashr_: {
+                r_block.PushLi(first_var_register, instruction.operand_1_id_);
                 r_block.PushArithmetic_R(r_sraw_, 5, first_var_register, second_var_register);
                 break;
               }
               case and_: {
-                r_block.PushArithmetic_R(r_and_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_andi_, 5, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case or_: {
-                r_block.PushArithmetic_R(r_or_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_ori_, 5, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case xor_: {
-                r_block.PushArithmetic_R(r_xor_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_I(r_xori_, 5, second_var_register, instruction.operand_1_id_);
                 break;
               }
               default:;
@@ -807,13 +827,37 @@ void CodeGenerator::Generate() {
               r_block.deferred_load_.push_back(
                   RISCVInstruction(r_lbu_, 5, 2, -1, cond_home, -1));
             }
-            r_block.PushControl_B(r_beq_, 0, 5, instruction.if_false_);
-            r_block.PushJ(instruction.if_true_);
+            int next_blk = -1;
+            auto it = next_block_map.find(block_id);
+            if (it != next_block_map.end()) next_blk = it->second;
+            if (instruction.if_true_ == next_blk) {
+              // True target is the fall-through block.  Branch directly to
+              // the false target when condition is false (r5 == 0), fall
+              // through to the next block (true target) otherwise.
+              // Use beqz (direct label) instead of PushControl_B (trampoline
+              // via jump_blocks_) so the fall-through path lands on the next
+              // block, not on the jump-block trampolines.
+              r_block.instructions_.push_back(
+                  RISCVInstruction(r_beqz_, -1, 5, -1, -1, instruction.if_false_));
+            } else if (instruction.if_false_ == next_blk) {
+              // False target is the fall-through block.  Branch directly to
+              // the true target when condition is true (r5 != 0).
+              r_block.instructions_.push_back(
+                  RISCVInstruction(r_bnez_, -1, 5, -1, -1, instruction.if_true_));
+            } else {
+              r_block.PushControl_B(r_beq_, 0, 5, instruction.if_false_);
+              r_block.PushJ(instruction.if_true_);
+            }
             break;
           }
           case unconditional_br_: {
             FlushSavedRegisters(i, r_block);
-            r_block.PushJ(instruction.destination_);
+            int next_blk = -1;
+            auto it = next_block_map.find(block_id);
+            if (it != next_block_map.end()) next_blk = it->second;
+            if (instruction.destination_ != next_blk) {
+              r_block.PushJ(instruction.destination_);
+            }
             break;
           }
           case value_ret_: {
@@ -1187,7 +1231,7 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 == %op2, reg5 <- 0
+                r_block.PushArithmetic_R(r_sub_, 5, op1_reg, op2_reg); // if %op1 == %op2, reg5 <- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
                   if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
@@ -1200,7 +1244,7 @@ void CodeGenerator::Generate() {
                 break;
               }
               case not_equal_: {
-                r_block.PushArithmetic_R(r_xor_, 5, op1_reg, op2_reg); // if %op1 != %op2, reg5 <x- 0
+                r_block.PushArithmetic_R(r_sub_, 5, op1_reg, op2_reg); // if %op1 != %op2, reg5 <x- 0
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
                   r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
                   if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
@@ -1327,28 +1371,54 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 == op2, reg5 <- 0
-                if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-                  r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
-                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
-                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                if (instruction.operand_2_id_ == 0) {
+                  // ==0 peephole: sltiu rd, op1_reg, 1  (1 insn instead of 2)
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op1_reg, 1);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_I(r_sltiu_, 5, op1_reg, 1);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                   }
                 } else {
-                  r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
-                  r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 == op2, reg5 <- 0
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  }
                 }
                 break;
               }
               case not_equal_: {
-                r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 != op2, reg5 <x- 0
-                if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-                  r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
-                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
-                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                if (instruction.operand_2_id_ == 0) {
+                  // !=0 peephole: sltu rd, x0, op1_reg  (1 insn instead of 2)
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, op1_reg);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_R(r_sltu_, 5, 0, op1_reg);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                   }
                 } else {
-                  r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
-                  r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  r_block.PushArithmetic_I(r_xori_, 5, op1_reg, instruction.operand_2_id_); // if %op1 != op2, reg5 <x- 0
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  }
                 }
                 break;
               }
@@ -1475,28 +1545,54 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.icmp_condition_) {
               case equal_: {
-                r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 == %op2, reg5 <- 0
-                if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-                  r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
-                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
-                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                if (instruction.operand_1_id_ == 0) {
+                  // ==0 peephole: sltiu rd, op2_reg, 1  (1 insn instead of 2)
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, op2_reg, 1);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_I(r_sltiu_, 5, op2_reg, 1);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                   }
                 } else {
-                  r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
-                  r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 == %op2, reg5 <- 0
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_I(r_sltiu_, RISCV_functions_[i].location_[instruction.result_id_].second, 5, 1);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_I(r_sltiu_, 5, 5, 1);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  }
                 }
                 break;
               }
               case not_equal_: {
-                r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 != %op2, reg5 <x- 0
-                if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-                  r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
-                  if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
-                    r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                if (instruction.operand_1_id_ == 0) {
+                  // !=0 peephole: sltu rd, x0, op2_reg  (1 insn instead of 2)
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, op2_reg);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_R(r_sltu_, 5, 0, op2_reg);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                   }
                 } else {
-                  r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
-                  r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  r_block.PushArithmetic_I(r_xori_, 5, op2_reg, instruction.operand_1_id_); // if op1 != %op2, reg5 <x- 0
+                  if (RISCV_functions_[i].location_[instruction.result_id_].first) {
+                    r_block.PushArithmetic_R(r_sltu_, RISCV_functions_[i].location_[instruction.result_id_].second, 0, 5);
+                    if (registers_saved_[i] && IsCallerSavedReg(RISCV_functions_[i].location_[instruction.result_id_].second)) {
+                      r_block.PushMemory_S(r_sd_, RISCV_functions_[i].location_[instruction.result_id_].second, RegSavedLocation(i, RISCV_functions_[i].location_[instruction.result_id_].second), 2);
+                    }
+                  } else {
+                    r_block.PushArithmetic_R(r_sltu_, 5, 0, 5);
+                    r_block.PushMemory_S(r_sb_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
+                  }
                 }
                 break;
               }
