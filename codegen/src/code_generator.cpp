@@ -550,6 +550,12 @@ void CodeGenerator::Generate() {
           case two_var_binary_operation_: {
             int first_var_register = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
+            const bool dest_in_reg = RISCV_functions_[i].location_[instruction.result_id_].first;
+            // Compute directly into the destination register when it is in a
+            // register; otherwise fall back to the scratch register (t0 = 5).
+            const int dest_reg = dest_in_reg
+                ? RISCV_functions_[i].location_[instruction.result_id_].second
+                : 5;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
                 r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, first_var_register, 2);
@@ -578,60 +584,58 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.operator_) {
               case add_: {
-                r_block.PushArithmetic_R(r_addw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_addw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case sub_: {
-                r_block.PushArithmetic_R(r_subw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_subw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case mul_: {
-                r_block.PushExtended(r_mulw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case udiv_: {
-                r_block.PushExtended(r_divuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case sdiv_: {
-                r_block.PushExtended(r_divw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case urem_: {
-                r_block.PushExtended(r_remuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case srem_: {
-                r_block.PushExtended(r_remw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case shl_: {
-                r_block.PushArithmetic_R(r_sllw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_sllw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case ashr_: {
-                r_block.PushArithmetic_R(r_sraw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_sraw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case and_: {
-                r_block.PushArithmetic_R(r_and_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_and_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case or_: {
-                r_block.PushArithmetic_R(r_or_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_or_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case xor_: {
-                r_block.PushArithmetic_R(r_xor_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_xor_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               default:;
             }
-            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
-              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
-                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+            if (dest_in_reg) {
+              if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_S(r_sd_, dest_reg, RegSavedLocation(i, dest_reg), 2);
               }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
@@ -648,6 +652,10 @@ void CodeGenerator::Generate() {
           case var_const_binary_operation_: {
             int first_var_register = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             constexpr int second_var_register = 6;
+            const bool dest_in_reg = RISCV_functions_[i].location_[instruction.result_id_].first;
+            const int dest_reg = dest_in_reg
+                ? RISCV_functions_[i].location_[instruction.result_id_].second
+                : 5;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
                 r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, first_var_register, 2);
@@ -663,65 +671,63 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.operator_) {
               case add_: {
-                r_block.PushArithmetic_I(r_addiw_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_addiw_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case sub_: {
-                r_block.PushArithmetic_I(r_addiw_, 5, first_var_register, -instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_addiw_, dest_reg, first_var_register, -instruction.operand_2_id_);
                 break;
               }
               case mul_: {
                 r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_mulw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case udiv_: {
                 r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_divuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case sdiv_: {
                 r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_divw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case urem_: {
                 r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_remuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case srem_: {
                 r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_remw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case shl_: {
-                r_block.PushArithmetic_I(r_slliw_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_slliw_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case ashr_: {
-                r_block.PushArithmetic_I(r_sraiw_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_sraiw_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case and_: {
-                r_block.PushArithmetic_I(r_andi_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_andi_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case or_: {
-                r_block.PushArithmetic_I(r_ori_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_ori_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               case xor_: {
-                r_block.PushArithmetic_I(r_xori_, 5, first_var_register, instruction.operand_2_id_);
+                r_block.PushArithmetic_I(r_xori_, dest_reg, first_var_register, instruction.operand_2_id_);
                 break;
               }
               default:;
             }
-            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
-              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
-                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+            if (dest_in_reg) {
+              if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_S(r_sd_, dest_reg, RegSavedLocation(i, dest_reg), 2);
               }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
@@ -738,6 +744,10 @@ void CodeGenerator::Generate() {
           case const_var_binary_operation_: {
             constexpr int first_var_register = 5;
             int second_var_register = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
+            const bool dest_in_reg = RISCV_functions_[i].location_[instruction.result_id_].first;
+            const int dest_reg = dest_in_reg
+                ? RISCV_functions_[i].location_[instruction.result_id_].second
+                : 5;
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               if (instruction.result_type_->is_int || instruction.result_type_->basic_type == pointer_type) {
                 r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, second_var_register, 2);
@@ -753,68 +763,66 @@ void CodeGenerator::Generate() {
             }
             switch (instruction.operator_) {
               case add_: {
-                r_block.PushArithmetic_I(r_addiw_, 5, second_var_register, instruction.operand_1_id_);
+                r_block.PushArithmetic_I(r_addiw_, dest_reg, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case sub_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushArithmetic_R(r_subw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_subw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case mul_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_mulw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case udiv_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_divuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case sdiv_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_divw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_divw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case urem_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_remuw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remuw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case srem_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_remw_, 5, first_var_register, second_var_register);
+                r_block.PushExtended(r_remw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case shl_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushArithmetic_R(r_sllw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_sllw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case ashr_: {
                 r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushArithmetic_R(r_sraw_, 5, first_var_register, second_var_register);
+                r_block.PushArithmetic_R(r_sraw_, dest_reg, first_var_register, second_var_register);
                 break;
               }
               case and_: {
-                r_block.PushArithmetic_I(r_andi_, 5, second_var_register, instruction.operand_1_id_);
+                r_block.PushArithmetic_I(r_andi_, dest_reg, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case or_: {
-                r_block.PushArithmetic_I(r_ori_, 5, second_var_register, instruction.operand_1_id_);
+                r_block.PushArithmetic_I(r_ori_, dest_reg, second_var_register, instruction.operand_1_id_);
                 break;
               }
               case xor_: {
-                r_block.PushArithmetic_I(r_xori_, 5, second_var_register, instruction.operand_1_id_);
+                r_block.PushArithmetic_I(r_xori_, dest_reg, second_var_register, instruction.operand_1_id_);
                 break;
               }
               default:;
             }
-            if (RISCV_functions_[i].location_[instruction.result_id_].first) {
-              const int result_reg_id = RISCV_functions_[i].location_[instruction.result_id_].second;
-              r_block.PushArithmetic_R(r_add_, result_reg_id, 5, 0);
-              if (registers_saved_[i] && IsCallerSavedReg(result_reg_id)) {
-                r_block.PushMemory_S(r_sd_, result_reg_id, RegSavedLocation(i, result_reg_id), 2);
+            if (dest_in_reg) {
+              if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_S(r_sd_, dest_reg, RegSavedLocation(i, dest_reg), 2);
               }
             } else {
               const int result_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
