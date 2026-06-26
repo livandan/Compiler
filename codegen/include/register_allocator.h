@@ -4,7 +4,6 @@
 #include "IR_generator.h"
 #include "code_generator.h"
 #include <map>
-#include <set>
 #include <vector>
 
 class RegisterAllocator {
@@ -15,6 +14,10 @@ public:
   void Run();
 
 private:
+  // Step 0: Initialize vectors/bitsets
+  void ComputeMaxVarId();
+  void InitializeVectors();
+
   // Step 1: Build CFG and compute liveness
   void BuildCFG();
   void ComputeLiveness();
@@ -45,55 +48,80 @@ private:
   // Classify variables
   void ClassifyVariables();
 
+  // ---- Bitset helpers (all inline, operate on bitset_words_ words) ----
+  // Each helper silently ignores out-of-range ids because some IR
+  // instruction fields are overloaded (e.g. result_id_ holds a size
+  // in builtin_memset_, not a variable id).
+  void BitSet(std::vector<uint64_t> &bs, int id) const {
+    if (id < 0 || id > max_var_id_) return;
+    bs[static_cast<size_t>(id) >> 6] |= (1ULL << (static_cast<size_t>(id) & 63));
+  }
+  void BitClear(std::vector<uint64_t> &bs, int id) const {
+    if (id < 0 || id > max_var_id_) return;
+    bs[static_cast<size_t>(id) >> 6] &= ~(1ULL << (static_cast<size_t>(id) & 63));
+  }
+  bool BitTest(const std::vector<uint64_t> &bs, int id) const {
+    if (id < 0 || id > max_var_id_) return false;
+    return (bs[static_cast<size_t>(id) >> 6] >> (static_cast<size_t>(id) & 63)) & 1ULL;
+  }
+  void BitOr(std::vector<uint64_t> &dest, const std::vector<uint64_t> &src) const {
+    for (int i = 0; i < bitset_words_; ++i) dest[i] |= src[i];
+  }
+  void BitSubtract(std::vector<uint64_t> &dest, const std::vector<uint64_t> &src) const {
+    for (int i = 0; i < bitset_words_; ++i) dest[i] &= ~src[i];
+  }
+  bool BitEqual(const std::vector<uint64_t> &a, const std::vector<uint64_t> &b) const {
+    for (int i = 0; i < bitset_words_; ++i) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+  std::vector<uint64_t> MakeBitSet() const {
+    return std::vector<uint64_t>(bitset_words_, 0);
+  }
+
   const IRFunctionNode &ir_func_;
   RISCVFunctionNode &riscv_func_;
-  bool is_leaf_;  // leaf function: no calls → prefer caller-saved regs
+  bool is_leaf_;
 
-  // CFG
+  // ---- Sizing ----
+  int max_var_id_ = -1;
+  int bitset_words_ = 0;
+
+  // ---- CFG (block-indexed, B is small so map is fine) ----
   std::map<int, std::vector<int>> successors_;
   std::map<int, std::vector<int>> predecessors_;
 
-  // Liveness
-  std::map<int, std::set<int>> live_in_;
-  std::map<int, std::set<int>> live_out_;
+  // ---- Liveness: per-block bitsets ----
+  std::map<int, std::vector<uint64_t>> live_in_;
+  std::map<int, std::vector<uint64_t>> live_out_;
+  std::map<int, std::vector<uint64_t>> block_defs_;
+  std::map<int, std::vector<uint64_t>> block_uses_;
 
-  // Per-block def/use sets (computed once during liveness)
-  std::map<int, std::set<int>> block_defs_;
-  std::map<int, std::set<int>> block_uses_;
+  // ---- Classification bitsets ----
+  std::vector<uint64_t> is_allocatable_;
+  std::vector<uint64_t> is_stack_bound_;
+  std::vector<int> var_size_;           // 0 = not set, 4 or 8
 
-  // Variables that could be in registers (scalar, not stack-bound)
-  std::set<int> allocatable_vars_;
-  std::map<int, int> var_size_;  // var_id -> size in bytes (4 for int, 8 for pointer)
+  // ---- Interference graph: adjacency lists ----
+  std::vector<std::vector<int>> interference_;
+  std::vector<std::vector<int>> move_edges_;
 
-  // Variables that must stay on stack (alloca'd, non-scalar)
-  std::set<int> stack_bound_vars_;
+  // ---- Chaitin-Briggs worklists (bitsets + plain vectors) ----
+  std::vector<uint64_t> in_worklist_;
+  std::vector<uint64_t> is_spilled_;
+  std::vector<uint64_t> in_move_related_;
+  std::vector<int> current_degree_;     // -1 = not in worklist
+  std::vector<int> select_stack_;
+  std::vector<int> coalesced_rep_;      // -1 = not coalesced
+  std::vector<int> assignment_;         // -2 = unassigned, -1 = spill, >=0 = phys reg
 
-  // Interference graph
-  std::map<int, std::set<int>> interference_; // node -> {interfering nodes}
-  std::map<int, std::set<int>> move_edges_;   // node -> {move-related nodes}
+  // ---- Scratch bitset reused in dataflow loop ----
+  std::vector<uint64_t> scratch_bs_;
 
-  // Chaitin-Briggs worklists
-  std::set<int> worklist_;          // nodes not yet processed
-  std::vector<int> select_stack_;   // removed nodes, in order
-  std::map<int, bool> is_spilled_;  // node -> marked for spilling?
-  // Cached degree of each node within the *current* worklist. Updated
-  // incrementally as nodes leave the worklist so GetDegree is O(1).
-  std::map<int, int> current_degree_;
-
-  // Move-related nodes that still have move edges
-  std::set<int> move_related_;      // nodes with at least one move edge
-
-  // Coalescing: coalesced_rep_[v] = u means v was merged into u
-  std::map<int, int> coalesced_rep_;
-
-  // Result
-  std::map<int, int> assignment_;   // var_id -> physical register, or -1 for spill
-  std::map<int, int> spill_slot_;   // var_id -> stack offset for spilled vars
-
-  // Available physical registers for allocation
+  // ---- Available physical registers ----
   std::vector<int> allocatable_regs_;
 
-  // Scratch registers reserved for codegen (not allocatable)
   static constexpr int SCRATCH_REGS[] = {5, 6, 7, 31}; // t0, t1, t2, t6
 
   static bool IsReservedReg(int reg) {
