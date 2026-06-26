@@ -59,6 +59,48 @@ Key findings from current ASM output (comprehensive21: 13,102 lines, 117 calls):
   applicable branch. All 50 tests pass.
 - **Reference**: optimize.md "Redundant Jump Elimination" + "Branch Codegen Simplification"
 
+### 1.5 Peephole: Store-Load Pair + Redundant Move Elimination
+- **Impact**: ★★★☆☆ (debugging_my.s: 369 store+load pairs + 544 redundant `add x,rs,x0` = 6-10%)
+- **Difficulty**: ★☆☆☆☆ (Very Low)
+- **Category**: Assembly Code Generation (post-codegen peephole on RISC-V instruction stream)
+- **What**: Three simple peepholes on the final instruction buffer before output:
+
+  **(a) Adjacent store-load pair elimination**: When `sd`/`sw`/`sb rs, offset(base)` is
+  immediately followed by `ld`/`lw`/`lbu rd, same_offset(same_base)`, the store writes
+  a value that the load immediately reads back.
+
+  **Safety analysis**: Eliminating the store would leave the stack slot stale — if that
+  same offset is loaded again later, it would read garbage. However, measured across
+  debugging_my.s: 367 of 369 pairs (99.5%) have their offset **never accessed again**
+  within the same block — they are write-once-read-once temporaries. Only 2 pairs have
+  later reuse. So a block-local offset-liveness check makes the aggressive optimization safe.
+
+  **Algorithm** (per basic block, single reverse scan):
+  1. Collect the set of offsets that appear in any `ld`/`lw`/`lbu` instruction in the block.
+  2. Scan instructions forward. For each adjacent `store rs, off(base)` → `load rd, off(base)`:
+     - If `off` appears in the block's load-offset set more than once: **conservative** —
+       keep the store, only eliminate/replace the load. If `rd == rs`: drop the load.
+       If `rd != rs`: replace load with `mv rd, rs`.
+     - If `off` appears only in this pair (write-once-read-once): **aggressive** —
+       eliminate both. If `rd == rs`: drop both store and load. If `rd != rs`: replace
+       both with `mv rd, rs`.
+  3. Skip pairs spanning a block boundary (label between store and load).
+  4. Skip stores to the caller-save spill region (high offsets; side effect for lazy reload).
+
+  - Measured: 281 same-reg pairs (aggressive: drop 2 insns each; conservative: drop 1),
+    88 diff-reg pairs (aggressive: 2→1 insn; conservative: 2→1).
+
+  **(b) Redundant self-move elimination**: `add rd, rs, x0` where `rd == rs` is a
+  no-op — eliminate it entirely. Always safe. (75 instances in debugging_my.s)
+
+  **(c) `add`→`mv` canonicalization**: `add rd, rs, x0` where `rd != rs` → `mv rd, rs`.
+  Same semantics, standard RISC-V pseudo-instruction. Always safe. (469 instances)
+
+- **Est. savings**: debugging_my.s: aggressive ~650 insns eliminated (~8.7% of 7,492 lines);
+  conservative ~450 insns (~6.0%). The aggressive approach is recommended since 99.5% of
+  pairs qualify. The `add`→`mv` rewrite (469 cases) is cosmetic (same instruction count).
+- **Reference**: optimize.md "Store-Load Pair Peephole" + "Redundant Move Elimination"
+
 ---
 
 ## Phase 2: Register Allocator Upgrades (High Impact / Medium Difficulty)
@@ -274,6 +316,7 @@ IR transformation passes). Listed in order of increasing difficulty.
 | 1.2 | Compare Peephole | ★★★☆☆ | ★☆☆☆☆ | 1-2% |
 | 1.3 | Immediate Folding | ★★★★☆ | ★☆☆☆☆ | 3-5% |
 | 1.4 | Redundant Jump Elim | ★★☆☆☆ | ★☆☆☆☆ | 0.5-1% |
+| 1.5 | Store-Load Pair + Redundant Move | ★★★☆☆ | ★☆☆☆☆ | 5-10% |
 | 2.1 | Color Pool (a0-a7) | ★★★★☆ | ★★★☆☆ | 5-10% |
 | 2.2 | Leaf Func Opt Bundle | ★★★☆☆ | ★★☆☆☆ | 2-5% |
 | 2.3 | Packed Save Area | ★★★☆☆ | ★★☆☆☆ | 1-2% |
@@ -299,9 +342,13 @@ IR transformation passes). Listed in order of increasing difficulty.
 
 1. **Do Phase 1 immediately** — pure codegen changes with outsized payback.
    Phase 1.1 alone could reduce comprehensive21 from 13k to ~11k lines.
+   1.5 (store-load peephole) is the simplest item in the entire plan — a single-pass
+   scan over the instruction buffer — and eliminates ~6-10% of instructions.
 
 2. **Phase 2-3 are the sweet spot** — moderate engineering for major gain.
    Together they could bring comprehensive21 under 9k lines.
+   3.2 (deferred kMemory stores) is the IR-level counterpart to 1.5's peephole;
+   implementing both gives defense-in-depth against store-load round-trips.
 
 3. **Phase 4.1 (constant cache) is the next high-leverage item** — 20% of comprehensive21
    is `li t6,<large>` for stack offset materialization. A 2-register cache cuts this in half.
