@@ -17,5 +17,6 @@ testcases
 testcases.zip
 RV32toRV64.md
 build
-optimize.md
+plan.md
+compile_faster.md
 .claude
