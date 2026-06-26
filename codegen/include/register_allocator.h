@@ -5,6 +5,7 @@
 #include "code_generator.h"
 #include <map>
 #include <vector>
+#include <cstdint>
 
 class RegisterAllocator {
 public:
