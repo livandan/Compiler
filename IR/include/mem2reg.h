@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <set>
+#include <unordered_map>
 
 void Mem2RegThrow(const std::string &err_info);
 
@@ -36,6 +37,14 @@ struct ReachingDef {
   }
 };
 
+// A use-site of a variable: records where a variable ID is referenced,
+// so we can visit only the relevant instructions instead of scanning all.
+struct UseSite {
+  int block_id;
+  bool is_phi;  // true → phi_instructions_, false → instructions_
+  int index;    // index within the vector
+};
+
 class Mem2Reg {
 public:
   explicit Mem2Reg(IRVisitor &IR_generator);
@@ -56,22 +65,23 @@ private:
   // --- Dominance frontier ---
   void ComputeDominanceFrontier();
 
+  // --- Use-list: O(1) access to all use sites of a variable ---
+  // Built once per function; transforms O(N²) full-IR scans into O(uses)
+  // lookups for IsPromotable, CollectStoresAndLoads, and ReplaceAllUses.
+  void BuildUseList();
+
   // --- Alloca promotion analysis ---
-  // Returns true if the alloca is a scalar whose address is never taken outside load/store.
   bool IsPromotable(int alloca_id) const;
 
   // --- SSA construction for one alloca ---
-  // Returns true if the alloca was promoted, false if the pass bailed out
-  // (in which case the alloca is left intact).
   bool PromoteAlloca(int alloca_id);
 
   // --- Instruction rewriting helpers ---
-  // Replace every use of old_id with new_def (variable or constant) in all instructions of func_.
-  void ReplaceAllUses(int old_id, const ReachingDef &new_def) const;
+  void ReplaceAllUses(int old_id, const ReachingDef &new_def);
 
   // --- Cleanup ---
   void RemoveDeadInstructions() const;
-  void RemoveDeadPhis() const;
+  void RemoveDeadPhis();
 
   std::vector<IRFunctionNode> &functions_;
   // ========== per-function state (reset for each function) ==========
@@ -80,36 +90,31 @@ private:
   std::map<int, std::set<int>> successors_;
   std::map<int, std::set<int>> predecessors_;
 
+  // --- Use-list: var_id → list of use sites ---
+  std::map<int, std::vector<UseSite>> use_list_;
+
   // --- LT state ---
-  // dfs number → block_id
-  std::vector<int> vertex_;        // 1-indexed (vertex_[1] = entry block)
-  // block_id → dfs number (0 means unvisited)
+  std::vector<int> vertex_;
   std::map<int, int> dfn_;
-  // block_id → parent block_id in DFS tree
   std::map<int, int> parent_block_;
-  // block_id → immediate dominator block_id
   std::map<int, int> idom_;
-  // block_id → set of block_ids in its dominance frontier
   std::map<int, std::set<int>> dom_frontier_;
-  // Children in dominator tree (for renaming traversal)
   std::map<int, std::vector<int>> dom_children_;
 
   // LT working arrays (indexed by DFS number, 1-indexed)
-  int n_ = 0;  // number of reachable blocks
-  std::vector<int> semi_;     // semi-dominator (as dfs number)
-  std::vector<int> label_;    // vertex with minimum sdom on path
-  std::vector<int> ancestor_; // forest for path compression
-  std::vector<std::vector<int>> bucket_; // bucket[v] = vertices whose sdom is v
+  int n_ = 0;
+  std::vector<int> semi_;
+  std::vector<int> label_;
+  std::vector<int> ancestor_;
+  std::vector<std::vector<int>> bucket_;
 
   // --- Promotion state for current alloca ---
-  // block_id → list of stores to this alloca
   struct StoreInfo {
     int inst_idx;
-    int value_id;     // variable ID (if !is_constant) or constant value (if is_constant)
-    bool is_constant;  // true when the stored value is a literal constant (from value_store_)
+    int value_id;
+    bool is_constant;
   };
   std::map<int, std::vector<StoreInfo>> stores_of_alloca_;
-  // block_id → list of loads from this alloca
   struct LoadInfo {
     int inst_idx;
     int load_result_id;
