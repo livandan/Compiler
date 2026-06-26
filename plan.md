@@ -63,21 +63,29 @@ Key findings from current ASM output (comprehensive21: 13,102 lines, 117 calls):
 
 ## Phase 2: Register Allocator Upgrades (High Impact / Medium Difficulty)
 
-### 2.1 Color Pool Expansion — Add a0-a7 to Allocatable Pool
+### 2.1 Color Pool Expansion — Add a0-a7 to Allocatable Pool ✅ **DONE**
 - **Impact**: ★★★★☆ (doubles register pool from 12 to 19+)
 - **Difficulty**: ★★★☆☆ (Medium)
 - **Category**: Register Allocator (`register_allocator.cpp`)
 - **What**: Currently only s0-s11 are available for coloring. Add a0-a7 with proper
   precolored-interference modeling for function parameters. Far fewer spills to stack.
+- **Actual results**: a0-a7 and t3-t5 were already in the allocatable pool (22 registers
+  total). Parameters remove their specific a-reg from the pool. Caller-saved registers
+  are handled by the deferred save/restore mechanism (1.1). All 50 tests pass.
 - **Reference**: optimize.md "Color Pool Expansion"
 
-### 2.2 Leaf Function Optimization Bundle
+### 2.2 Leaf Function Optimization Bundle ✅ **DONE**
 - **Impact**: ★★★☆☆
 - **Difficulty**: ★★☆☆☆ (Low-Medium)
 - **Category**: Register Allocator + Stack Frame
 - **What**: (a) Detect leaf functions (no calls, including builtin_memcpy/memset).
   (b) Skip call-save area entirely. (c) Prefer t5 + unused a-regs over s-regs →
   zero s-reg save/restore. (d) Tightened save area: `8 + 8×a_reg_used_cnt` instead of 72.
+- **Actual results**: Leaf functions detected by scanning IR for call instructions.
+  For leaf functions: allocatable_regs_ reordered (a0-a7, t3-t5 before s0-s11) so
+  caller-saved regs are picked first; temp save area (128 bytes) skipped — stack
+  frame 224 instead of 352. Small leaf functions compile with zero s-reg saves.
+  All 50 tests pass. Part (d) deferred to 2.3.
 - **Reference**: optimize.md "Leaf Function Frame Elimination" + "Leaf Function Register Preference" + "Tightened Save Area"
 
 ### 2.3 Packed Save Area
