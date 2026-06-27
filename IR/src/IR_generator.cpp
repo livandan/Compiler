@@ -2704,7 +2704,7 @@ void IRVisitor::Print(std::ofstream &file, const IRInstruction &instruction) {
 }
 
 void IRVisitor::PrintPhi(std::ofstream &file, const PhiInstruction &instruction) {
-  file << "%var." << instruction.result_id << " = phi ";
+  file << "	%var." << instruction.result_id << " = phi ";
   OutputType(file, instruction.type);
   // For pointer-typed phis, an undef operand is encoded as literal 0
   // (set by mem2reg). Emit it as `null` rather than integer 0 to satisfy
