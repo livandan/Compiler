@@ -3,11 +3,397 @@
 #include "expression.h"
 #include "statements.h"
 #include "fstream"
+#include <map>
+#include <set>
+#include <vector>
 
 void IRThrow(const std::string &err_info) {
   std::cerr << "[IR Error] " << err_info << '\n';
   throw "";
 }
+
+namespace {
+
+void AddUse(std::map<int, int> &use_count, const int var_id) {
+  if (var_id >= 0) {
+    ++use_count[var_id];
+  }
+}
+
+std::map<int, int> CountVariableUses(const IRFunctionNode &function) {
+  std::map<int, int> use_count;
+  for (const auto &[block_id, block] : function.blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          AddUse(use_count, condition.var_id);
+        }
+      }
+    }
+    for (const auto &instruction : block.instructions_) {
+      switch (instruction.instruction_type_) {
+        case two_var_binary_operation_:
+        case two_var_icmp_: {
+          AddUse(use_count, instruction.operand_1_id_);
+          AddUse(use_count, instruction.operand_2_id_);
+          break;
+        }
+        case var_const_binary_operation_:
+        case var_const_icmp_: {
+          AddUse(use_count, instruction.operand_1_id_);
+          break;
+        }
+        case const_var_binary_operation_:
+        case const_var_icmp_: {
+          AddUse(use_count, instruction.operand_2_id_);
+          break;
+        }
+        case conditional_br_: {
+          AddUse(use_count, instruction.condition_id_);
+          break;
+        }
+        case variable_ret_: {
+          AddUse(use_count, instruction.result_id_);
+          break;
+        }
+        case load_:
+        case ptr_load_: {
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case variable_store_: {
+          AddUse(use_count, instruction.result_id_);
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case value_store_: {
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case ptr_store_: {
+          AddUse(use_count, instruction.result_id_);
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case get_element_ptr_by_value_: {
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case get_element_ptr_by_variable_: {
+          AddUse(use_count, instruction.pointer_);
+          AddUse(use_count, instruction.index_);
+          break;
+        }
+        case non_void_call_:
+        case void_call_:
+        case builtin_call_: {
+          for (const auto &argument : instruction.function_call_arguments_) {
+            if (argument.is_variable_) {
+              AddUse(use_count, argument.value_);
+            }
+          }
+          break;
+        }
+        case value_select_ii_:
+        case value_select_iv_:
+        case value_select_vi_:
+        case value_select_vv_:
+        case variable_select_ii_:
+        case variable_select_iv_:
+        case variable_select_vi_:
+        case variable_select_vv_: {
+          if (instruction.instruction_type_ == variable_select_ii_ ||
+              instruction.instruction_type_ == variable_select_iv_ ||
+              instruction.instruction_type_ == variable_select_vi_ ||
+              instruction.instruction_type_ == variable_select_vv_) {
+            AddUse(use_count, instruction.condition_id_);
+          }
+          if (instruction.instruction_type_ == value_select_ii_ ||
+              instruction.instruction_type_ == value_select_iv_ ||
+              instruction.instruction_type_ == variable_select_ii_ ||
+              instruction.instruction_type_ == variable_select_iv_) {
+            AddUse(use_count, instruction.operand_1_id_);
+          }
+          if (instruction.instruction_type_ == value_select_ii_ ||
+              instruction.instruction_type_ == value_select_vi_ ||
+              instruction.instruction_type_ == variable_select_ii_ ||
+              instruction.instruction_type_ == variable_select_vi_) {
+            AddUse(use_count, instruction.operand_2_id_);
+          }
+          break;
+        }
+        case builtin_memset_: {
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        case builtin_memcpy_: {
+          AddUse(use_count, instruction.destination_);
+          AddUse(use_count, instruction.pointer_);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+  return use_count;
+}
+
+std::set<int> CollectAllocaIds(const IRFunctionNode &function) {
+  std::set<int> alloca_ids;
+  for (const auto &instruction : function.alloca_instructions_) {
+    alloca_ids.insert(instruction.result_id_);
+  }
+  return alloca_ids;
+}
+
+void ReplaceUse(int &var_id, const int from, const int to) {
+  if (var_id == from) {
+    var_id = to;
+  }
+}
+
+void ReplaceInstructionUses(IRInstruction &instruction, const int from, const int to) {
+  switch (instruction.instruction_type_) {
+    case two_var_binary_operation_:
+    case two_var_icmp_: {
+      ReplaceUse(instruction.operand_1_id_, from, to);
+      ReplaceUse(instruction.operand_2_id_, from, to);
+      break;
+    }
+    case var_const_binary_operation_:
+    case var_const_icmp_: {
+      ReplaceUse(instruction.operand_1_id_, from, to);
+      break;
+    }
+    case const_var_binary_operation_:
+    case const_var_icmp_: {
+      ReplaceUse(instruction.operand_2_id_, from, to);
+      break;
+    }
+    case conditional_br_: {
+      ReplaceUse(instruction.condition_id_, from, to);
+      break;
+    }
+    case variable_ret_: {
+      ReplaceUse(instruction.result_id_, from, to);
+      break;
+    }
+    case load_:
+    case ptr_load_: {
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case variable_store_: {
+      ReplaceUse(instruction.result_id_, from, to);
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case value_store_: {
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case ptr_store_: {
+      ReplaceUse(instruction.result_id_, from, to);
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case get_element_ptr_by_value_: {
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case get_element_ptr_by_variable_: {
+      ReplaceUse(instruction.pointer_, from, to);
+      ReplaceUse(instruction.index_, from, to);
+      break;
+    }
+    case non_void_call_:
+    case void_call_:
+    case builtin_call_: {
+      for (auto &argument : instruction.function_call_arguments_) {
+        if (argument.is_variable_) {
+          ReplaceUse(argument.value_, from, to);
+        }
+      }
+      break;
+    }
+    case value_select_ii_:
+    case value_select_iv_:
+    case value_select_vi_:
+    case value_select_vv_:
+    case variable_select_ii_:
+    case variable_select_iv_:
+    case variable_select_vi_:
+    case variable_select_vv_: {
+      if (instruction.instruction_type_ == variable_select_ii_ ||
+          instruction.instruction_type_ == variable_select_iv_ ||
+          instruction.instruction_type_ == variable_select_vi_ ||
+          instruction.instruction_type_ == variable_select_vv_) {
+        ReplaceUse(instruction.condition_id_, from, to);
+      }
+      if (instruction.instruction_type_ == value_select_ii_ ||
+          instruction.instruction_type_ == value_select_iv_ ||
+          instruction.instruction_type_ == variable_select_ii_ ||
+          instruction.instruction_type_ == variable_select_iv_) {
+        ReplaceUse(instruction.operand_1_id_, from, to);
+      }
+      if (instruction.instruction_type_ == value_select_ii_ ||
+          instruction.instruction_type_ == value_select_vi_ ||
+          instruction.instruction_type_ == variable_select_ii_ ||
+          instruction.instruction_type_ == variable_select_vi_) {
+        ReplaceUse(instruction.operand_2_id_, from, to);
+      }
+      break;
+    }
+    case builtin_memset_: {
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    case builtin_memcpy_: {
+      ReplaceUse(instruction.destination_, from, to);
+      ReplaceUse(instruction.pointer_, from, to);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void ReplacePhiUses(PhiInstruction &instruction, const int from, const int to) {
+  for (auto &condition : instruction.conditions) {
+    if (!condition.is_const) {
+      ReplaceUse(condition.var_id, from, to);
+    }
+  }
+}
+
+void ReplaceAllUses(IRFunctionNode &function, const int from, const int to) {
+  for (auto &[block_id, block] : function.blocks_) {
+    for (auto &phi : block.phi_instructions_) {
+      ReplacePhiUses(phi, from, to);
+    }
+    for (auto &instruction : block.instructions_) {
+      ReplaceInstructionUses(instruction, from, to);
+    }
+  }
+}
+
+bool TryForwardReturnSlot(IRFunctionNode &function) {
+  if (function.return_type_ == nullptr ||
+      (function.return_type_->basic_type != array_type &&
+       function.return_type_->basic_type != struct_type) ||
+      function.parameter_types_.empty()) {
+    return false;
+  }
+  for (int i = 0; i + 1 < function.parameter_types_.size(); ++i) {
+    if (function.parameter_types_[i]->basic_type == pointer_type) {
+      return false;
+    }
+  }
+
+  const int return_ptr_id = static_cast<int>(function.parameter_types_.size() - 1);
+  const auto alloca_ids = CollectAllocaIds(function);
+  const auto use_count = CountVariableUses(function);
+  const auto return_use = use_count.find(return_ptr_id);
+  if (return_use == use_count.end() || return_use->second != 1) {
+    return false;
+  }
+
+  int return_block_id = -1;
+  int copy_index = -1;
+  int source_ptr_id = -1;
+  for (auto &[block_id, block] : function.blocks_) {
+    auto &instructions = block.instructions_;
+    if (instructions.size() < 2) {
+      continue;
+    }
+    const int maybe_copy_index = static_cast<int>(instructions.size()) - 2;
+    const auto &copy = instructions[maybe_copy_index];
+    const auto &ret = instructions.back();
+    if (copy.instruction_type_ == builtin_memcpy_ &&
+        ret.instruction_type_ == void_ret_ &&
+        copy.destination_ == return_ptr_id &&
+        copy.pointer_ != return_ptr_id &&
+        alloca_ids.contains(copy.pointer_)) {
+      if (return_block_id != -1) {
+        return false;
+      }
+      return_block_id = block_id;
+      copy_index = maybe_copy_index;
+      source_ptr_id = copy.pointer_;
+    }
+  }
+  if (return_block_id == -1) {
+    return false;
+  }
+
+  ReplaceAllUses(function, source_ptr_id, return_ptr_id);
+  auto &instructions = function.blocks_[return_block_id].instructions_;
+  instructions.erase(instructions.begin() + copy_index);
+  return true;
+}
+
+bool IsAggregateReturnToTemp(const IRInstruction &call_instruction,
+    const IRInstruction &copy_instruction, const std::set<int> &alloca_ids,
+    const std::map<int, int> &use_count) {
+  if (call_instruction.instruction_type_ != void_call_ ||
+      copy_instruction.instruction_type_ != builtin_memcpy_ ||
+      call_instruction.function_call_arguments_.empty()) {
+    return false;
+  }
+
+  const auto &return_argument = call_instruction.function_call_arguments_.back();
+  if (!return_argument.is_variable_ || return_argument.type_ == nullptr ||
+      return_argument.type_->basic_type != pointer_type ||
+      return_argument.value_ != copy_instruction.pointer_ ||
+      copy_instruction.destination_ == copy_instruction.pointer_ ||
+      !alloca_ids.contains(copy_instruction.pointer_)) {
+    return false;
+  }
+  for (int i = 0; i + 1 < call_instruction.function_call_arguments_.size(); ++i) {
+    const auto &argument = call_instruction.function_call_arguments_[i];
+    if (argument.is_variable_ && argument.value_ == copy_instruction.destination_) {
+      return false;
+    }
+  }
+
+  const auto use_it = use_count.find(copy_instruction.pointer_);
+  return use_it != use_count.end() && use_it->second == 2;
+}
+
+bool IsMemsetTempCopiedToDest(const IRInstruction &set_instruction,
+    const IRInstruction &copy_instruction, const std::set<int> &alloca_ids,
+    const std::map<int, int> &use_count) {
+  if (set_instruction.instruction_type_ != builtin_memset_ ||
+      copy_instruction.instruction_type_ != builtin_memcpy_ ||
+      set_instruction.pointer_ != copy_instruction.pointer_ ||
+      set_instruction.result_id_ != copy_instruction.result_id_ ||
+      copy_instruction.destination_ == copy_instruction.pointer_ ||
+      !alloca_ids.contains(copy_instruction.pointer_)) {
+    return false;
+  }
+
+  const auto use_it = use_count.find(copy_instruction.pointer_);
+  return use_it != use_count.end() && use_it->second == 2;
+}
+
+bool IsMemcpyForwardable(const IRInstruction &first_copy,
+    const IRInstruction &second_copy, const std::set<int> &alloca_ids,
+    const std::map<int, int> &use_count) {
+  if (first_copy.instruction_type_ != builtin_memcpy_ ||
+      second_copy.instruction_type_ != builtin_memcpy_ ||
+      first_copy.destination_ != second_copy.pointer_ ||
+      first_copy.result_id_ != second_copy.result_id_ ||
+      second_copy.destination_ == second_copy.pointer_ ||
+      !alloca_ids.contains(second_copy.pointer_)) {
+    return false;
+  }
+
+  const auto use_it = use_count.find(second_copy.pointer_);
+  return use_it != use_count.end() && use_it->second == 2;
+}
+
+} // namespace
 
 void IRVisitor::AddFunction(const std::shared_ptr<IntegratedType> &return_type) {
   functions_.push_back(IRFunctionNode(return_type));
@@ -73,6 +459,30 @@ std::pair<int, bool> IRVisitor::GetTypeSize(const std::shared_ptr<IntegratedType
   return {0, false};
 }
 
+Expression *IRVisitor::GetDirectAggregateInitializer(Node *node) const {
+  auto *expression = dynamic_cast<Expression *>(node);
+  if (expression == nullptr) {
+    return nullptr;
+  }
+  if (expression->GetExprType() == grouped_expr && expression->children_.size() >= 2) {
+    return GetDirectAggregateInitializer(expression->children_[1]);
+  }
+  if (expression->GetExprType() == array_expr || expression->GetExprType() == struct_expr) {
+    return expression;
+  }
+  return nullptr;
+}
+
+void IRVisitor::InitializeAggregateInto(Node *node, const int ptr_id) {
+  if (auto *initializer = GetDirectAggregateInitializer(node)) {
+    RecursiveInitialize(initializer, ptr_id);
+    node->IR_var_ID_ = ptr_id;
+    node->IR_ID_ = -1;
+    return;
+  }
+  node->Accept(this);
+}
+
 void IRVisitor::RecursiveInitialize(const Node *expression_ptr, const int ptr_id) {
   auto &function = functions_[wrapping_functions_.back()];
   const auto &integrated_type = expression_ptr->integrated_type_;
@@ -92,10 +502,12 @@ void IRVisitor::RecursiveInitialize(const Node *expression_ptr, const int ptr_id
           function.blocks_[block_stack_.back()].AddVariableStore(integrated_type->element_type,
               expression_ptr->children_[2 * i + 1]->IR_var_ID_, element_ptr_id);
         } else if (basic_type == array_type || basic_type == struct_type) {
-          expression_ptr->children_[2 * i + 1]->Accept(this);
-          functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddBuiltinMemcpy(
-              GetTypeSize(expression_ptr->children_[2 * i + 1]->integrated_type_).first,
-              element_ptr_id, expression_ptr->children_[2 * i + 1]->IR_var_ID_);
+          InitializeAggregateInto(expression_ptr->children_[2 * i + 1], element_ptr_id);
+          if (expression_ptr->children_[2 * i + 1]->IR_var_ID_ != element_ptr_id) {
+            functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddBuiltinMemcpy(
+                GetTypeSize(expression_ptr->children_[2 * i + 1]->integrated_type_).first,
+                element_ptr_id, expression_ptr->children_[2 * i + 1]->IR_var_ID_);
+          }
         } else if (!expression_ptr->children_[2 * i + 1]->integrated_type_->is_const) {
           expression_ptr->children_[2 * i + 1]->Accept(this);
           if (expression_ptr->children_[2 * i + 1]->IR_ID_ == -1 &&
@@ -272,10 +684,12 @@ void IRVisitor::RecursiveInitialize(const Node *expression_ptr, const int ptr_id
         function.blocks_[block_stack_.back()].AddVariableStore(item_expr_ptr->integrated_type_,
             struct_expr_fields->children_[2 * i]->children_[2]->IR_var_ID_, target_item_id);
       } else if (basic_type == array_type || basic_type == struct_type) {
-        struct_expr_fields->children_[2 * i]->children_[2]->Accept(this);
-        function.blocks_[block_stack_.back()].AddBuiltinMemcpy(
-            GetTypeSize(struct_expr_fields->children_[2 * i]->children_[2]->integrated_type_).first,
-            target_item_id, struct_expr_fields->children_[2 * i]->children_[2]->IR_var_ID_);
+        InitializeAggregateInto(struct_expr_fields->children_[2 * i]->children_[2], target_item_id);
+        if (struct_expr_fields->children_[2 * i]->children_[2]->IR_var_ID_ != target_item_id) {
+          function.blocks_[block_stack_.back()].AddBuiltinMemcpy(
+              GetTypeSize(struct_expr_fields->children_[2 * i]->children_[2]->integrated_type_).first,
+              target_item_id, struct_expr_fields->children_[2 * i]->children_[2]->IR_var_ID_);
+        }
       } else if (!item_expr_ptr->integrated_type_->is_const) {
         struct_expr_fields->children_[2 * i]->children_[2]->Accept(this);
         if (struct_expr_fields->children_[2 * i]->children_[2]->IR_ID_ == -1 &&
@@ -453,6 +867,56 @@ void IRVisitor::EmitLogicalExpression(Expression *expression_ptr) {
       expression_ptr->integrated_type_, 0, false_branch, true);
 }
 
+void IRVisitor::OptimizeAggregateCopies() {
+  for (auto &function : functions_) {
+    bool changed = false;
+    do {
+      changed = false;
+      if (TryForwardReturnSlot(function)) {
+        changed = true;
+      }
+      const auto alloca_ids = CollectAllocaIds(function);
+      const auto use_count = CountVariableUses(function);
+      for (auto &[block_id, block] : function.blocks_) {
+        auto &instructions = block.instructions_;
+        for (int i = 0; i + 1 < instructions.size();) {
+          auto &first = instructions[i];
+          auto &second = instructions[i + 1];
+          if (IsAggregateReturnToTemp(first, second, alloca_ids, use_count)) {
+            first.function_call_arguments_.back().value_ = second.destination_;
+            instructions.erase(instructions.begin() + i + 1);
+            changed = true;
+            continue;
+          }
+          if (IsMemsetTempCopiedToDest(first, second, alloca_ids, use_count)) {
+            first.pointer_ = second.destination_;
+            instructions.erase(instructions.begin() + i + 1);
+            changed = true;
+            continue;
+          }
+          if (IsMemcpyForwardable(first, second, alloca_ids, use_count)) {
+            second.pointer_ = first.pointer_;
+            instructions.erase(instructions.begin() + i);
+            changed = true;
+            continue;
+          }
+          ++i;
+        }
+      }
+    } while (changed);
+
+    const auto use_count = CountVariableUses(function);
+    std::vector<IRInstruction> remaining_allocas;
+    remaining_allocas.reserve(function.alloca_instructions_.size());
+    for (const auto &instruction : function.alloca_instructions_) {
+      if (use_count.contains(instruction.result_id_)) {
+        remaining_allocas.push_back(instruction);
+      }
+    }
+    function.alloca_instructions_ = std::move(remaining_allocas);
+  }
+}
+
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
     std::set<int> &visited_block) const {
   const auto &last_instruction = functions_[func_id].blocks_.at(start_block).instructions_.back();
@@ -542,6 +1006,7 @@ void IRVisitor::Visit(Crate *crate_ptr) {
   for (const auto &it : crate_ptr->children_) {
     it->Accept(this);
   }
+  OptimizeAggregateCopies();
 }
 void IRVisitor::Visit(Item *item_ptr) {
   item_ptr->children_[0]->Accept(this);
@@ -761,10 +1226,12 @@ void IRVisitor::Visit(LetStatement *let_statement_ptr) {
     }
   } else if (let_statement_ptr->children_[1]->integrated_type_->basic_type == array_type ||
       let_statement_ptr->children_[1]->integrated_type_->basic_type == struct_type) {
-    let_statement_ptr->children_[5]->Accept(this);
-    function.blocks_[block_stack_.back()].AddBuiltinMemcpy(
-        GetTypeSize(let_statement_ptr->children_[1]->integrated_type_).first,
-        let_statement_ptr->children_[1]->IR_var_ID_, let_statement_ptr->children_[5]->IR_var_ID_);
+    InitializeAggregateInto(let_statement_ptr->children_[5], let_statement_ptr->children_[1]->IR_var_ID_);
+    if (let_statement_ptr->children_[5]->IR_var_ID_ != let_statement_ptr->children_[1]->IR_var_ID_) {
+      function.blocks_[block_stack_.back()].AddBuiltinMemcpy(
+          GetTypeSize(let_statement_ptr->children_[1]->integrated_type_).first,
+          let_statement_ptr->children_[1]->IR_var_ID_, let_statement_ptr->children_[5]->IR_var_ID_);
+    }
   } else if (let_statement_ptr->children_[1]->integrated_type_->basic_type == pointer_type) {
     let_statement_ptr->children_[5]->Accept(this);
     if (let_statement_ptr->children_[5]->IR_var_ID_ != -1) {
@@ -1684,11 +2151,13 @@ void IRVisitor::Visit(Expression *expression_ptr) {
                   expression_ptr->children_[1]->IR_ID_, variable_id);
             }
           } else if (basic_type == array_type || basic_type == struct_type) {
-            expression_ptr->children_[1]->Accept(this);
-            if (expression_ptr->children_[1]->IR_var_ID_ != -1) {
+            InitializeAggregateInto(expression_ptr->children_[1], variable_id);
+            if (expression_ptr->children_[1]->IR_var_ID_ != -1 &&
+                expression_ptr->children_[1]->IR_var_ID_ != variable_id) {
               functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddBuiltinMemcpy(
                   GetTypeSize(expression_ptr->children_[0]->integrated_type_).first,
                   variable_id, expression_ptr->children_[1]->IR_var_ID_);
+            } else if (expression_ptr->children_[1]->IR_var_ID_ == variable_id) {
             } else {
               // todo: remove after complete function that returns array/struct
               functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddVariableStore(

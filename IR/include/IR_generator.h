@@ -387,6 +387,8 @@ private:
   void AddFunction(const std::shared_ptr<IntegratedType> &return_type);
   void AddStruct();
   std::pair<int, bool> GetTypeSize(const std::shared_ptr<IntegratedType> &type); // the returned pair is <size, has_int>
+  Expression *GetDirectAggregateInitializer(Node *node) const;
+  void InitializeAggregateInto(Node *node, int ptr_id);
   void RecursiveInitialize(const Node *expression_ptr, int ptr_id);
   void DeclareItems(const std::shared_ptr<ScopeNode> &new_scope);
   int GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr<IntegratedType> &expected_type);
@@ -395,6 +397,7 @@ private:
   void EmitConditionBranch(Node *condition_ptr, int true_branch, int false_branch);
   void EmitLogicalBranch(Expression *expression_ptr, int true_branch, int false_branch);
   void EmitLogicalExpression(Expression *expression_ptr);
+  void OptimizeAggregateCopies();
   int GetPreviousBlockHelper(int func_id, int start_block, int target_block, std::set<int> &visited_block) const;
   [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);
