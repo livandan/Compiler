@@ -101,56 +101,45 @@ builtin_memcpy:
 	.type	main,@function
 main:                                   # @main
 # %bb.0:                                # %alloca
-	addi	sp, sp, -176
-	sd	s0, 152(sp)
-	sd	s1, 160(sp)
+	addi	sp, sp, -160
+	sd	s0, 144(sp)
+	sd	s1, 152(sp)
 	j	.LBB8_0
 .LBB8_0:                               # %label_0
 	sd	ra, 128(sp)
 	sd	a0, 136(sp)
-	sd	a1, 144(sp)
+	call	getInt
+	add	s1, a0, x0
 	call	getInt
 	add	a0, a0, x0
 	sd	a0, 136(sp)
 	sd	a0, 136(sp)
-	call	getInt
-	add	a1, a0, x0
-	sd	a1, 144(sp)
-	sd	a1, 144(sp)
-	ld	t0, 136(sp)
-	xori	t0, t0, 1
-	sltiu	a0, t0, 1
-	sd	a0, 136(sp)
+	xori	t0, s1, 1
+	sltiu	s1, t0, 1
 	ld	ra, 128(sp)
 	ld	a0, 136(sp)
-	ld	a1, 144(sp)
-	add	t0, a0, x0
-	beqz	t0, .LBB8_7
-.LBB8_6:                               # %label_6
-	li	s0, 1
-	j	.LBB8_12
-.LBB8_7:                               # %label_7
-	xori	t0, a1, 2
-	sltu	s1, x0, t0
 	add	t0, s1, x0
-	bnez	t0, .LBB8_11
-.LBB8_10:                               # %label_10
-	li	s0, 0
-	j	.LBB8_12
-.LBB8_11:                               # %label_11
-	li	s0, 1
-.LBB8_12:                               # %label_12
-	add	t0, s0, x0
-	beqz	t0, .LBB8_15
-.LBB8_14:                               # %label_14
-	j	.LBB8_16
-.LBB8_15:                               # %label_15
-.LBB8_16:                               # %label_16
-	ld	s0, 152(sp)
-	ld	s1, 160(sp)
+	beq	x0, t0, .LBB8_0_jump_0
+	j	.LBB8_7
+.LBB8_0_jump_0:                               # %label_0_jump_0
+	j	.LBB8_5
+.LBB8_4:                               # %label_4
+	j	.LBB8_6
+.LBB8_5:                               # %label_5
+.LBB8_6:                               # %label_6
+	ld	s0, 144(sp)
+	ld	s1, 152(sp)
 	li	a0, 0
-	addi	sp, sp, 176
+	addi	sp, sp, 160
 	ret
+.LBB8_7:                               # %label_7
+	xori	t0, a0, 2
+	sltu	s0, x0, t0
+	add	t0, s0, x0
+	beq	x0, t0, .LBB8_7_jump_0
+	j	.LBB8_4
+.LBB8_7_jump_0:                               # %label_7_jump_0
+	j	.LBB8_5
 .Lfunc_end8:
 	.size	main, .Lfunc_end8-main
                                         # -- End function

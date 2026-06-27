@@ -349,14 +349,19 @@ int IRVisitor::GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr
   return variable_id;
 }
 
-void IRVisitor::CollectLogicalOperands(Expression *expression_ptr, const Infix op,
-    std::vector<Node *> &operands) const {
-  if (expression_ptr->GetExprInfix() == op && expression_ptr->children_.size() == 2) {
-    CollectLogicalOperands(dynamic_cast<Expression *>(expression_ptr->children_[0]), op, operands);
-    CollectLogicalOperands(dynamic_cast<Expression *>(expression_ptr->children_[1]), op, operands);
-    return;
+Expression *IRVisitor::GetLogicalNode(Node *node) const {
+  auto *expression = dynamic_cast<Expression *>(node);
+  if (expression == nullptr) {
+    return nullptr;
   }
-  operands.push_back(expression_ptr);
+  if (expression->GetExprType() == grouped_expr && expression->children_.size() >= 2) {
+    return GetLogicalNode(expression->children_[1]);
+  }
+  const Infix infix = expression->GetExprInfix();
+  if (infix == logic_and || infix == logic_or) {
+    return expression;
+  }
+  return nullptr;
 }
 
 int IRVisitor::EnsureValue(Node *expression_ptr) {
@@ -369,97 +374,83 @@ int IRVisitor::EnsureValue(Node *expression_ptr) {
   return expression_ptr->IR_ID_;
 }
 
-void IRVisitor::EmitLogicalChain(Expression *expression_ptr, const Infix op) {
+void IRVisitor::EmitConditionBranch(Node *condition_ptr, const int true_branch,
+    const int false_branch) {
+  if (auto *logic_expression = GetLogicalNode(condition_ptr)) {
+    EmitLogicalBranch(logic_expression, true_branch, false_branch);
+    return;
+  }
+  const int condition_id = EnsureValue(condition_ptr);
+  functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddConditionalBranch(
+      condition_id, true_branch, false_branch);
+}
+
+void IRVisitor::EmitLogicalBranch(Expression *expression_ptr, const int true_branch,
+    const int false_branch) {
   auto &function = functions_[wrapping_functions_.back()];
-  const bool is_and = op == logic_and;
-  const int short_value = is_and ? 0 : 1;
-  const int final_value = is_and ? 1 : 0;
-  std::vector<Node *> operands;
-  CollectLogicalOperands(expression_ptr, op, operands);
-  if (operands.empty()) {
-    IRThrow("Empty logical expression.");
+  const auto &current_instructions = function.blocks_[block_stack_.back()].instructions_;
+  if (!current_instructions.empty()) {
+    const auto last_instruction_type = current_instructions.back().instruction_type_;
+    if (last_instruction_type == value_ret_ || last_instruction_type == variable_ret_ ||
+        last_instruction_type == void_ret_ || last_instruction_type == conditional_br_ ||
+        last_instruction_type == unconditional_br_) {
+      IRThrow("Cannot emit logical expression after a terminated block.");
+    }
   }
 
-  std::vector<int> short_result_blocks;
-  int final_result_block = -1;
+  struct LogicalTask {
+    Node *node;
+    int begin;
+    int if_true;
+    int if_false;
+  };
+  std::vector<LogicalTask> tasks;
+  tasks.push_back({expression_ptr, block_stack_.back(), true_branch, false_branch});
 
-  for (int i = 0; i < operands.size(); ++i) {
-    auto *operand = operands[i];
-    if (operand->integrated_type_->is_const) {
-      if (operand->value_.int_value == short_value) {
-        const int result_block = function.var_id_++;
-        function.blocks_[result_block] = IRBlock();
-        function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
-        block_stack_.back() = result_block;
-        short_result_blocks.push_back(result_block);
-        break;
-      }
-      if (i + 1 == operands.size()) {
-        const int result_block = function.var_id_++;
-        function.blocks_[result_block] = IRBlock();
-        function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
-        block_stack_.back() = result_block;
-        final_result_block = result_block;
+  for (int i = 0; i < tasks.size(); ++i) {
+    auto [node, begin, if_true, if_false] = tasks[i];
+    auto *logic_expression = GetLogicalNode(node);
+    if (logic_expression != nullptr) {
+      const int right_begin = function.var_id_++;
+      function.blocks_[right_begin] = IRBlock();
+      if (logic_expression->GetExprInfix() == logic_and) {
+        tasks.push_back({logic_expression->children_[0], begin, right_begin, if_false});
+        tasks.push_back({logic_expression->children_[1], right_begin, if_true, if_false});
+      } else {
+        tasks.push_back({logic_expression->children_[0], begin, if_true, right_begin});
+        tasks.push_back({logic_expression->children_[1], right_begin, if_true, if_false});
       }
       continue;
     }
 
-    const int value_id = EnsureValue(operand);
-    const bool is_last = i + 1 == operands.size();
-    const int result_block = function.var_id_++;
-    function.blocks_[result_block] = IRBlock();
-    if (is_last) {
-      const int opposite_result_block = function.var_id_++;
-      function.blocks_[opposite_result_block] = IRBlock();
-      if (is_and) {
-        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, result_block, opposite_result_block);
-      } else {
-        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, opposite_result_block, result_block);
-      }
-      block_stack_.back() = result_block;
-      final_result_block = result_block;
-      block_stack_.back() = opposite_result_block;
-      short_result_blocks.push_back(opposite_result_block);
-    } else {
-      const int next_block = function.var_id_++;
-      function.blocks_[next_block] = IRBlock();
-      if (is_and) {
-        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, next_block, result_block);
-      } else {
-        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, result_block, next_block);
-      }
-      block_stack_.back() = result_block;
-      short_result_blocks.push_back(result_block);
-      block_stack_.back() = next_block;
+    block_stack_.back() = begin;
+    if (node->integrated_type_->is_const) {
+      function.blocks_[begin].AddUnconditionalBranch(
+          node->value_.int_value ? if_true : if_false);
+      continue;
     }
+    const int value_id = EnsureValue(node);
+    function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, if_true, if_false);
   }
+}
 
-  if (final_result_block == -1 && short_result_blocks.empty()) {
-    const int result_block = function.var_id_++;
-    function.blocks_[result_block] = IRBlock();
-    function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
-    block_stack_.back() = result_block;
-    final_result_block = result_block;
-  }
-
+void IRVisitor::EmitLogicalExpression(Expression *expression_ptr) {
+  auto &function = functions_[wrapping_functions_.back()];
+  const int true_branch = function.var_id_++;
+  function.blocks_[true_branch] = IRBlock();
+  const int false_branch = function.var_id_++;
+  function.blocks_[false_branch] = IRBlock();
   const int merged_label = function.var_id_++;
-  for (const int block_id : short_result_blocks) {
-    function.blocks_[block_id].AddUnconditionalBranch(merged_label);
-  }
-  if (final_result_block != -1) {
-    function.blocks_[final_result_block].AddUnconditionalBranch(merged_label);
-  }
+  EmitLogicalBranch(expression_ptr, true_branch, false_branch);
+  function.blocks_[true_branch].AddUnconditionalBranch(merged_label);
+  function.blocks_[false_branch].AddUnconditionalBranch(merged_label);
   function.blocks_[merged_label] = IRBlock();
   block_stack_.back() = merged_label;
   expression_ptr->IR_ID_ = function.var_id_++;
-  for (const int block_id : short_result_blocks) {
-    function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
-        expression_ptr->integrated_type_, short_value, block_id, true);
-  }
-  if (final_result_block != -1) {
-    function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
-        expression_ptr->integrated_type_, final_value, final_result_block, true);
-  }
+  function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
+      expression_ptr->integrated_type_, 1, true_branch, true);
+  function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
+      expression_ptr->integrated_type_, 0, false_branch, true);
 }
 
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
@@ -890,18 +881,7 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             AddUnconditionalBranch(condition_check);
         // complete condition_check
         block_stack_.back() = condition_check;
-        expression_ptr->children_[2]->Accept(this);
-        if (expression_ptr->children_[2]->IR_ID_ == -1 &&
-            expression_ptr->children_[2]->IR_var_ID_ != -1) {
-          expression_ptr->children_[2]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-          functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-              expression_ptr->children_[2]->IR_ID_,
-              expression_ptr->children_[2]->integrated_type_,
-              expression_ptr->children_[2]->IR_var_ID_);
-        }
-        functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].
-            AddConditionalBranch(expression_ptr->children_[2]->IR_ID_, loop_begin,
-                loop_end);
+        EmitConditionBranch(expression_ptr->children_[2], loop_begin, loop_end);
         // complete loop_begin
         block_stack_.back() = loop_begin;
         if (expression_ptr->children_.size() == 7) {
@@ -928,20 +908,11 @@ void IRVisitor::Visit(Expression *expression_ptr) {
           DeclareItems(expression_ptr->children_[5]->scope_node_);
           expression_ptr->children_[5]->Accept(this);
         } else { // whether enter "if" block depends on the condition expression
-          expression_ptr->children_[2]->Accept(this);
-          if (expression_ptr->children_[2]->IR_ID_ == -1 &&
-              expression_ptr->children_[2]->IR_var_ID_ != -1) {
-            expression_ptr->children_[2]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-            functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                expression_ptr->children_[2]->IR_ID_, expression_ptr->children_[2]->integrated_type_,
-                expression_ptr->children_[2]->IR_var_ID_);
-          }
           const int if_block_id = functions_[wrapping_functions_.back()].var_id_++;
           functions_[wrapping_functions_.back()].blocks_[if_block_id] = IRBlock();
           const int exit_if_block_id = functions_[wrapping_functions_.back()].var_id_++;
           functions_[wrapping_functions_.back()].blocks_[exit_if_block_id] = IRBlock();
-          functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddConditionalBranch(
-              expression_ptr->children_[2]->IR_ID_, if_block_id, exit_if_block_id);
+          EmitConditionBranch(expression_ptr->children_[2], if_block_id, exit_if_block_id);
           // complete if_label_block
           block_stack_.back() = if_block_id;
           DeclareItems(expression_ptr->children_[5]->scope_node_);
@@ -976,23 +947,14 @@ void IRVisitor::Visit(Expression *expression_ptr) {
             expression_ptr->IR_ID_ = expression_ptr->children_.back()->IR_ID_;
           }
         } else { // entering which block depends on condition expression
-          expression_ptr->children_[2]->Accept(this);
-          if (expression_ptr->children_[2]->IR_ID_ == -1 &&
-              expression_ptr->children_[2]->IR_var_ID_ != -1) {
-            expression_ptr->children_[2]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-            functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                expression_ptr->children_[2]->IR_ID_, expression_ptr->children_[2]->integrated_type_,
-                expression_ptr->children_[2]->IR_var_ID_);
-          }
           const int if_block_id = functions_[wrapping_functions_.back()].var_id_++;
           functions_[wrapping_functions_.back()].blocks_[if_block_id] = IRBlock();
           const int else_block_id = functions_[wrapping_functions_.back()].var_id_++;
-          functions_[wrapping_functions_.back()].blocks_[if_block_id] = IRBlock();
+          functions_[wrapping_functions_.back()].blocks_[else_block_id] = IRBlock();
           const int exit_if_block_id = functions_[wrapping_functions_.back()].var_id_++;
           functions_[wrapping_functions_.back()].blocks_[exit_if_block_id] = IRBlock();
           // jump conditionally
-          functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddConditionalBranch(
-              expression_ptr->children_[2]->IR_ID_, if_block_id, else_block_id);
+          EmitConditionBranch(expression_ptr->children_[2], if_block_id, else_block_id);
           // complete if_label_block
           block_stack_.back() = if_block_id;
           DeclareItems(expression_ptr->children_[5]->scope_node_);
@@ -1691,12 +1653,12 @@ void IRVisitor::Visit(Expression *expression_ptr) {
         }
         case logic_or: {
           status = 2;
-          EmitLogicalChain(expression_ptr, logic_or);
+          EmitLogicalExpression(expression_ptr);
           break;
         }
         case logic_and: {
           status = 2;
-          EmitLogicalChain(expression_ptr, logic_and);
+          EmitLogicalExpression(expression_ptr);
           break;
         }
         case assign: {
