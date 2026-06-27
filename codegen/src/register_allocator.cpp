@@ -166,12 +166,12 @@ void RegisterAllocator::ClassifyVariables() {
             }
             break;
           case load_:
-            // Load results stay on the stack for now — promoting them to
-            // registers exposes a liveness/interference bug with loop-invariant
-            // variables (observed in IR-1 test 27). The allocator incorrectly
-            // reuses the same register for a load result and a live
-            // loop-invariant variable across the loop back edge.
-            BitSet(is_stack_bound_, result_id);
+            if (IsScalarType(inst.result_type_)) {
+              BitSet(is_allocatable_, result_id);
+              var_size_[result_id] = (inst.result_type_->basic_type == pointer_type) ? 8 : 4;
+            } else {
+              BitSet(is_stack_bound_, result_id);
+            }
             break;
           case ptr_load_:
             // Always loads a pointer (8 bytes).
@@ -436,12 +436,14 @@ void RegisterAllocator::ComputeLiveness() {
     BitSubtract(scratch, block_defs_[block_id]);
     BitOr(scratch, block_uses_[block_id]);
 
-    if (!BitEqual(scratch, live_in_[block_id])) {
+    const bool live_in_changed = !BitEqual(scratch, live_in_[block_id]);
+    const bool live_out_changed = !BitEqual(new_live_out, live_out_[block_id]);
+    if (live_in_changed || live_out_changed) {
       live_in_[block_id] = scratch;  // copy scratch back
       // Reset scratch for next use
       scratch = MakeBitSet();
       live_out_[block_id] = std::move(new_live_out);
-      if (predecessors_.count(block_id)) {
+      if (live_in_changed && predecessors_.count(block_id)) {
         for (int pred : predecessors_.at(block_id)) {
           worklist.push(pred);
         }

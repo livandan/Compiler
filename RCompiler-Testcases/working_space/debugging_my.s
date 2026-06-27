@@ -418,51 +418,27 @@ fn.0:                                   # @fn.0
 	li	t6, 1002720
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a7, t0, 0
-	li	t6, 1002992
-	add	t6, sp, t6
-	sd	a7, 0(t6)
-	li	t6, 1002992
-	add	t6, sp, t6
-	ld	t0, 0(t6)
+	addi	s1, t0, 0
 	li	t1, 100
-	sw	t1, 0(t0)
+	sw	t1, 0(s1)
 	li	t6, 1002720
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a7, t0, 4
-	li	t6, 1002992
-	add	t6, sp, t6
-	sd	a7, 0(t6)
-	li	t6, 1002992
-	add	t6, sp, t6
-	ld	t0, 0(t6)
+	addi	s1, t0, 4
 	li	t1, 500
-	sw	t1, 0(t0)
+	sw	t1, 0(s1)
 	li	t6, 1002720
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a7, t0, 8
-	li	t6, 1002992
-	add	t6, sp, t6
-	sd	a7, 0(t6)
-	li	t6, 1002992
-	add	t6, sp, t6
-	ld	t0, 0(t6)
+	addi	s1, t0, 8
 	li	t1, 1000
-	sw	t1, 0(t0)
+	sw	t1, 0(s1)
 	li	t6, 1002720
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a7, t0, 12
-	li	t6, 1002992
-	add	t6, sp, t6
-	sd	a7, 0(t6)
-	li	t6, 1002992
-	add	t6, sp, t6
-	ld	t0, 0(t6)
+	addi	s1, t0, 12
 	li	t1, 2000
-	sw	t1, 0(t0)
+	sw	t1, 0(s1)
 	li	t6, 1002744
 	add	t6, sp, t6
 	ld	t0, 0(t6)
@@ -509,7 +485,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	li	s3, 0
+	li	a0, 0
 	li	t0, 0
 	sd	t0, 480(sp)
 	li	t0, 0
@@ -541,12 +517,12 @@ fn.0:                                   # @fn.0
 	li	t0, 0
 	sd	t0, 368(sp)
 .LBB8_7:                               # %label_7
-	slti	t0, s3, 4
+	slti	t0, a0, 4
 	sb	t0, 1231(sp)
 	lbu	t0, 1231(sp)
 	beqz	t0, .LBB8_9
 .LBB8_8:                               # %label_8
-	add	t0, s3, x0
+	add	t0, a0, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	li	t6, 1002744
@@ -555,10 +531,9 @@ fn.0:                                   # @fn.0
 	add	t2, t1, t0
 	sd	t2, 1216(sp)
 	ld	t0, 1216(sp)
-	lw	t0, 0(t0)
-	sw	t0, 1212(sp)
+	lw	s1, 0(t0)
 	li	t1, 100
-	mulw	t0, s3, t1
+	mulw	t0, a0, t1
 	sw	t0, 1208(sp)
 	lw	t1, 1208(sp)
 	li	t6, 21000
@@ -641,7 +616,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	li	s2, 0
+	li	s0, 0
 	ld	t0, 480(sp)
 	add	t0, t0, x0
 	sd	t0, 352(sp)
@@ -761,11 +736,11 @@ fn.0:                                   # @fn.0
 	li	t6, 842424
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a2, t0, 24
-	li	t6, 1003032
+	addi	a1, t0, 24
+	li	t6, 1003040
 	add	t6, sp, t6
-	sd	a2, 0(t6)
-	li	t6, 1003032
+	sd	a1, 0(t6)
+	li	t6, 1003040
 	add	t6, sp, t6
 	ld	a0, 0(t6)
 	li	t6, 762360
@@ -831,14 +806,14 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	li	a4, 0
-	li	a3, 0
-	li	a2, 0
+	li	a1, 0
+	li	a0, 0
+	li	s1, 0
 	li	t0, 0
 	sw	t0, 224(sp)
 	j	.LBB8_124
 .LBB8_21:                               # %label_21
-	slti	t0, s2, 8
+	slti	t0, s0, 8
 	sb	t0, 1191(sp)
 	lbu	t0, 1191(sp)
 	beqz	t0, .LBB8_23
@@ -879,8 +854,8 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
-	add	a0, s2, x0
-	lw	a1, 1212(sp)
+	add	a0, s0, x0
+	add	a1, s1, x0
 	li	t6, 962664
 	add	t6, sp, t6
 	ld	a2, 0(t6)
@@ -921,7 +896,7 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a1, 0(t6)
-	lw	a2, 1212(sp)
+	add	a2, s1, x0
 	call	fn.2
 	li	t6, 842584
 	add	t6, sp, t6
@@ -940,7 +915,7 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	li	t6, 842616
 	add	t6, sp, t6
 	ld	a2, 0(t6)
@@ -948,7 +923,7 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	call	fn.1
 	sb	a0, 1175(sp)
 	lbu	t1, 1175(sp)
@@ -997,8 +972,8 @@ fn.0:                                   # @fn.0
 .LBB8_22_jump_0:                               # %label_22_jump_0
 	j	.LBB8_51
 .LBB8_23:                               # %label_23
-	addiw	a3, s3, 1
-	add	s3, a3, x0
+	addiw	a7, a0, 1
+	add	a0, a7, x0
 	ld	t0, 352(sp)
 	add	t0, t0, x0
 	sd	t0, 480(sp)
@@ -1124,7 +1099,8 @@ fn.0:                                   # @fn.0
 	li	t6, 1002696
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	t5, t0, 24
+	addi	t0, t0, 24
+	sd	t0, 1160(sp)
 	li	t6, 1003096
 	add	t6, sp, t6
 	sd	ra, 0(t6)
@@ -1161,13 +1137,11 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
-	li	t6, 1002888
-	add	t6, sp, t6
-	ld	a0, 0(t6)
+	ld	a0, 1160(sp)
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a1, 0(t6)
-	lw	a2, 1212(sp)
+	add	a2, s1, x0
 	call	fn.2
 	li	t6, 842520
 	add	t6, sp, t6
@@ -1186,7 +1160,7 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	li	t6, 842552
 	add	t6, sp, t6
 	ld	a2, 0(t6)
@@ -1194,20 +1168,15 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	call	fn.1
-	add	t4, a0, x0
-	li	t6, 1002896
-	add	t6, sp, t6
-	sd	t4, 0(t6)
-	li	t6, 1002896
-	add	t6, sp, t6
-	ld	t1, 0(t6)
+	sb	a0, 1159(sp)
+	lbu	t1, 1159(sp)
 	li	t0, 1
-	subw	t3, t0, t1
-	li	t6, 1002904
+	subw	t5, t0, t1
+	li	t6, 1002888
 	add	t6, sp, t6
-	sd	t3, 0(t6)
+	sd	t5, 0(t6)
 	li	t6, 1003096
 	add	t6, sp, t6
 	ld	ra, 0(t6)
@@ -1244,7 +1213,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	add	t0, t3, x0
+	add	t0, t5, x0
 	beqz	t0, .LBB8_71
 .LBB8_70:                               # %label_70
 	li	t6, 1003096
@@ -1325,7 +1294,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002696
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s11, t0, 24
+	addi	t4, t0, 24
 	li	t6, 1003096
 	add	t6, sp, t6
 	sd	ra, 0(t6)
@@ -1362,11 +1331,13 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
-	add	a0, s11, x0
+	li	t6, 1002896
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a1, 0(t6)
-	lw	a2, 1212(sp)
+	add	a2, s1, x0
 	call	fn.2
 	li	t6, 842456
 	add	t6, sp, t6
@@ -1385,7 +1356,7 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	li	t6, 842488
 	add	t6, sp, t6
 	ld	a2, 0(t6)
@@ -1393,11 +1364,17 @@ fn.0:                                   # @fn.0
 	li	t6, 922632
 	add	t6, sp, t6
 	ld	a0, 0(t6)
-	lw	a1, 1212(sp)
+	add	a1, s1, x0
 	call	fn.1
-	add	s10, a0, x0
+	add	t3, a0, x0
+	li	t6, 1002904
+	add	t6, sp, t6
+	sd	t3, 0(t6)
+	li	t6, 1002904
+	add	t6, sp, t6
+	ld	t1, 0(t6)
 	li	t0, 1
-	subw	s9, t0, s10
+	subw	s11, t0, t1
 	li	t6, 1003096
 	add	t6, sp, t6
 	ld	ra, 0(t6)
@@ -1434,7 +1411,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	add	t0, s9, x0
+	add	t0, s11, x0
 	beqz	t0, .LBB8_91
 .LBB8_90:                               # %label_90
 	li	t6, 1003096
@@ -1515,12 +1492,10 @@ fn.0:                                   # @fn.0
 	li	t6, 842616
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s8, t0, 12
-	lw	t0, 0(s8)
-	sw	t0, 1124(sp)
-	lw	t0, 1124(sp)
+	addi	s10, t0, 12
+	lw	s9, 0(s10)
 	li	t1, 100
-	divw	s7, t0, t1
+	divw	s8, s9, t1
 	li	t6, 1003096
 	add	t6, sp, t6
 	sd	ra, 0(t6)
@@ -1557,46 +1532,28 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
-	add	a0, s7, x0
+	add	a0, s8, x0
 	call	printlnInt
 	li	t6, 842552
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s6, t0, 12
-	lw	t0, 0(s6)
-	sw	t0, 1108(sp)
-	lw	t0, 1108(sp)
+	addi	s7, t0, 12
+	lw	s6, 0(s7)
 	li	t1, 100
-	divw	a6, t0, t1
-	li	t6, 1003000
-	add	t6, sp, t6
-	sd	a6, 0(t6)
-	li	t6, 1003000
-	add	t6, sp, t6
-	ld	a0, 0(t6)
+	divw	s5, s6, t1
+	add	a0, s5, x0
 	call	printlnInt
 	li	t6, 842488
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a5, t0, 12
-	li	t6, 1003008
-	add	t6, sp, t6
-	sd	a5, 0(t6)
-	li	t6, 1003008
-	add	t6, sp, t6
-	ld	t0, 0(t6)
-	lw	t0, 0(t0)
-	sw	t0, 1092(sp)
-	lw	t0, 1092(sp)
+	addi	s4, t0, 12
+	lw	s3, 0(s4)
 	li	t1, 100
-	divw	t0, t0, t1
+	divw	t0, s3, t1
 	sw	t0, 1088(sp)
 	lw	a0, 1088(sp)
 	call	printlnInt
-	addiw	a4, s2, 1
-	li	t6, 1003016
-	add	t6, sp, t6
-	sd	a4, 0(t6)
+	addiw	s2, s0, 1
 	li	t6, 1003096
 	add	t6, sp, t6
 	ld	ra, 0(t6)
@@ -1686,21 +1643,22 @@ fn.0:                                   # @fn.0
 	ld	t0, 0(t6)
 	add	t0, t0, x0
 	sd	t0, 328(sp)
-	add	t0, t5, x0
+	ld	t0, 1160(sp)
+	add	t0, t0, x0
 	sd	t0, 312(sp)
 	li	t6, 842552
 	add	t6, sp, t6
 	ld	t0, 0(t6)
 	add	t0, t0, x0
 	sd	t0, 288(sp)
-	add	t0, s11, x0
+	add	t0, t4, x0
 	sd	t0, 272(sp)
 	li	t6, 842488
 	add	t6, sp, t6
 	ld	t0, 0(t6)
 	add	t0, t0, x0
 	sd	t0, 248(sp)
-	add	s2, a4, x0
+	add	s0, s2, x0
 	j	.LBB8_21
 .LBB8_124:                               # %label_124
 	lw	t0, 224(sp)
@@ -1806,10 +1764,7 @@ fn.0:                                   # @fn.0
 	add	t6, sp, t6
 	ld	a3, 0(t6)
 	call	fn.6
-	add	a5, a0, x0
-	li	t6, 1003008
-	add	t6, sp, t6
-	sd	a5, 0(t6)
+	add	s0, a0, x0
 	lw	t0, 1052(sp)
 	xori	t0, t0, -1
 	sltu	t0, x0, t0
@@ -1892,23 +1847,30 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
+	li	t6, 1003040
+	add	t6, sp, t6
+	ld	a0, 0(t6)
+	call	printlnInt
+	li	t6, 1003048
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	li	t1, 1000
+	divw	a4, t0, t1
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
 	li	t6, 1003016
 	add	t6, sp, t6
 	ld	a0, 0(t6)
 	call	printlnInt
-	li	t6, 1003024
-	add	t6, sp, t6
-	ld	t0, 0(t6)
 	li	t1, 1000
-	divw	s1, t0, t1
-	add	a0, s1, x0
-	call	printlnInt
-	li	t6, 1003032
+	divw	a4, s1, t1
+	li	t6, 1003016
 	add	t6, sp, t6
-	ld	t0, 0(t6)
-	li	t1, 1000
-	divw	s1, t0, t1
-	add	a0, s1, x0
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	a0, 1
 	li	a1, 300
@@ -1929,26 +1891,36 @@ fn.0:                                   # @fn.0
 	li	t6, 682152
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	a0, t0, 24
-	li	t6, 1003048
+	addi	a5, t0, 24
+	li	t6, 1003008
 	add	t6, sp, t6
-	sd	a0, 0(t6)
+	sd	a5, 0(t6)
 	li	t6, 682152
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s1, t0, 0
-	lw	t0, 0(s1)
-	sw	t0, 1012(sp)
-	li	t6, 1003048
+	addi	a4, t0, 0
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	lw	a4, 0(t0)
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003008
 	add	t6, sp, t6
 	ld	a0, 0(t6)
 	li	a1, 300
-	lw	a2, 1012(sp)
-	call	fn.16
-	add	a1, a0, x0
-	li	t6, 1003040
+	li	t6, 1003016
 	add	t6, sp, t6
-	sd	a1, 0(t6)
+	ld	a2, 0(t6)
+	call	fn.16
+	add	a6, a0, x0
+	li	t6, 1003000
+	add	t6, sp, t6
+	sd	a6, 0(t6)
 	li	t6, 562080
 	add	t6, sp, t6
 	ld	t0, 0(t6)
@@ -1969,8 +1941,13 @@ fn.0:                                   # @fn.0
 	li	t6, 682152
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s1, t0, 24
-	add	a0, s1, x0
+	addi	a4, t0, 24
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	li	t6, 602088
 	add	t6, sp, t6
 	ld	a1, 0(t6)
@@ -1981,26 +1958,41 @@ fn.0:                                   # @fn.0
 	ld	a0, 0(t6)
 	li	a1, 300
 	call	fn.4
-	add	a0, a0, x0
-	li	t6, 1003048
+	add	a5, a0, x0
+	li	t6, 1003008
 	add	t6, sp, t6
-	sd	a0, 0(t6)
+	sd	a5, 0(t6)
 	li	t6, 682152
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s1, t0, 0
-	lw	t0, 0(s1)
-	sw	t0, 980(sp)
-	lw	a0, 980(sp)
+	addi	a4, t0, 0
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	lw	a4, 0(t0)
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
-	li	t6, 1003040
+	li	t6, 1003000
 	add	t6, sp, t6
 	ld	t0, 0(t6)
 	li	t1, 1000
-	divw	s1, t0, t1
-	add	a0, s1, x0
+	divw	a4, t0, t1
+	li	t6, 1003016
+	add	t6, sp, t6
+	sd	a4, 0(t6)
+	li	t6, 1003016
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
-	li	t6, 1003048
+	li	t6, 1003008
 	add	t6, sp, t6
 	ld	a0, 0(t6)
 	call	printlnInt
@@ -2041,7 +2033,7 @@ fn.0:                                   # @fn.0
 	li	t6, 321992
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s1, t0, 8
+	addi	s0, t0, 8
 	li	t6, 241968
 	add	t6, sp, t6
 	ld	t0, 0(t6)
@@ -2089,7 +2081,7 @@ fn.0:                                   # @fn.0
 	sw	t0, 220(sp)
 	j	.LBB8_217
 .LBB8_155:                               # %label_155
-	xori	t0, a5, -1
+	xori	t0, s0, -1
 	sltu	t0, x0, t0
 	sb	t0, 967(sp)
 	lbu	t0, 967(sp)
@@ -2105,12 +2097,12 @@ fn.0:                                   # @fn.0
 	add	t0, t0, x0
 	sb	t0, 219(sp)
 .LBB8_157:                               # %label_157
-	add	t0, a4, x0
+	add	t0, a1, x0
 	sw	t0, 212(sp)
 	lbu	t0, 219(sp)
 	beqz	t0, .LBB8_164
 .LBB8_163:                               # %label_163
-	addiw	t0, a4, 1
+	addiw	t0, a1, 1
 	sw	t0, 960(sp)
 	lw	t0, 960(sp)
 	add	t0, t0, x0
@@ -2125,7 +2117,7 @@ fn.0:                                   # @fn.0
 	lw	t0, 0(t0)
 	sw	t0, 948(sp)
 	lw	t1, 948(sp)
-	addw	t0, a3, t1
+	addw	t0, a0, t1
 	sw	t0, 944(sp)
 	li	t6, 682216
 	add	t6, sp, t6
@@ -2136,20 +2128,20 @@ fn.0:                                   # @fn.0
 	lw	t0, 0(t0)
 	sw	t0, 932(sp)
 	lw	t1, 932(sp)
-	addw	t0, a2, t1
+	addw	t0, s1, t1
 	sw	t0, 928(sp)
 	lw	t0, 224(sp)
 	addiw	t0, t0, 1
 	sw	t0, 924(sp)
 	lw	t0, 944(sp)
-	add	a3, t0, x0
+	add	a0, t0, x0
 	lw	t0, 928(sp)
-	add	a2, t0, x0
+	add	s1, t0, x0
 	lw	t0, 924(sp)
 	add	t0, t0, x0
 	sw	t0, 224(sp)
 	lw	t0, 212(sp)
-	add	a4, t0, x0
+	add	a1, t0, x0
 	j	.LBB8_124
 .LBB8_217:                               # %label_217
 	lw	t0, 220(sp)
@@ -2293,22 +2285,26 @@ fn.0:                                   # @fn.0
 	li	t6, 281976
 	add	t6, sp, t6
 	ld	t1, 0(t6)
-	add	a0, s1, x0
+	add	a0, s0, x0
 	add	a1, t1, x0
 	li	a2, 40000
 	call	builtin_memcpy
 	li	t6, 321992
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s0, t0, 4
+	addi	t0, t0, 4
+	sd	t0, 896(sp)
+	ld	t0, 896(sp)
 	li	t1, 0
-	sw	t1, 0(s0)
+	sw	t1, 0(t0)
 	li	t6, 321992
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s0, t0, 0
+	addi	t0, t0, 0
+	sd	t0, 888(sp)
+	ld	t0, 888(sp)
 	li	t1, 0
-	sw	t1, 0(s0)
+	sw	t1, 0(t0)
 	li	t6, 362008
 	add	t6, sp, t6
 	ld	t0, 0(t6)
@@ -2329,7 +2325,7 @@ fn.0:                                   # @fn.0
 	add	t6, sp, t6
 	ld	a2, 0(t6)
 	call	fn.3
-	add	s0, a0, x0
+	sb	a0, 887(sp)
 	li	t6, 1003096
 	add	t6, sp, t6
 	ld	ra, 0(t6)
@@ -2366,7 +2362,7 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	ld	t5, 0(t6)
-	add	t0, s0, x0
+	lbu	t0, 887(sp)
 	beqz	t0, .LBB8_236
 .LBB8_235:                               # %label_235
 	li	s1, 0
@@ -2797,7 +2793,7 @@ fn.0:                                   # @fn.0
 	j	.LBB8_309
 .LBB8_311:                               # %label_311
 	li	t1, 1000
-	divw	s5, s0, t1
+	divw	a3, s0, t1
 	li	t6, 1003096
 	add	t6, sp, t6
 	sd	ra, 0(t6)
@@ -2834,29 +2830,56 @@ fn.0:                                   # @fn.0
 	li	t6, 1002888
 	add	t6, sp, t6
 	sd	t5, 0(t6)
-	add	a0, s5, x0
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	t1, 1000
-	divw	s5, s1, t1
-	add	a0, s5, x0
+	divw	a3, s1, t1
+	li	t6, 1003024
+	add	t6, sp, t6
+	sd	a3, 0(t6)
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	t6, 1003048
 	add	t6, sp, t6
 	ld	t0, 0(t6)
 	li	t1, 100
-	divw	s5, t0, t1
-	add	a0, s5, x0
+	divw	a3, t0, t1
+	li	t6, 1003024
+	add	t6, sp, t6
+	sd	a3, 0(t6)
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	t6, 241560
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s5, t0, 4
-	lw	t0, 0(s5)
-	sw	t0, 612(sp)
-	lw	t0, 612(sp)
+	addi	a3, t0, 4
+	li	t6, 1003024
+	add	t6, sp, t6
+	sd	a3, 0(t6)
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	lw	a3, 0(t0)
+	li	t6, 1003024
+	add	t6, sp, t6
+	sd	a3, 0(t6)
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	t0, 0(t6)
 	li	t1, 1000
-	divw	s5, t0, t1
-	add	a0, s5, x0
+	divw	a3, t0, t1
+	li	t6, 1003024
+	add	t6, sp, t6
+	sd	a3, 0(t6)
+	li	t6, 1003024
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	t6, 1003096
 	add	t6, sp, t6
@@ -3150,13 +3173,28 @@ fn.0:                                   # @fn.0
 	li	t6, 81400
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s4, t0, 12
-	lw	t0, 0(s4)
-	sw	t0, 532(sp)
-	lw	t0, 532(sp)
+	addi	a2, t0, 12
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	lw	a2, 0(t0)
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	t0, 0(t6)
 	li	t1, 100
-	divw	s4, t0, t1
-	add	a0, s4, x0
+	divw	a2, t0, t1
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	t6, 41328
 	add	t6, sp, t6
@@ -3178,9 +3216,15 @@ fn.0:                                   # @fn.0
 	li	t6, 81336
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s4, t0, 0
+	addi	a2, t0, 0
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	t0, 0(t6)
 	li	t1, 123
-	sw	t1, 0(s4)
+	sw	t1, 0(t0)
 	ld	a0, 1288(sp)
 	call	fn.12
 	ld	t0, 1320(sp)
@@ -3198,10 +3242,20 @@ fn.0:                                   # @fn.0
 	li	t6, 81336
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s4, t0, 0
-	lw	t0, 0(s4)
-	sw	t0, 508(sp)
-	lw	a0, 508(sp)
+	addi	a2, t0, 0
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	t0, 0(t6)
+	lw	a2, 0(t0)
+	li	t6, 1003032
+	add	t6, sp, t6
+	sd	a2, 0(t6)
+	li	t6, 1003032
+	add	t6, sp, t6
+	ld	a0, 0(t6)
 	call	printlnInt
 	li	a0, 21999
 	call	printlnInt
@@ -3325,41 +3379,40 @@ fn.0:                                   # @fn.0
 fn.1:                                   # @fn.1
 # %bb.0:                                # %alloca
 	addi	sp, sp, -272
+	sd	s0, 232(sp)
 	j	.LBB9_0
 .LBB9_0:                               # %label_0
 	li	a2, 0
 .LBB9_5:                               # %label_5
-	addiw	a6, a1, -1
-	slt	a5, a2, a6
-	add	t0, a5, x0
+	addiw	s0, a1, -1
+	slt	t5, a2, s0
+	add	t0, t5, x0
 	beqz	t0, .LBB9_7
 .LBB9_6:                               # %label_6
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a4, a0, t0
-	lw	t0, 0(a4)
-	sw	t0, 28(sp)
-	addiw	a4, a2, 1
-	add	t0, a4, x0
+	add	t4, a0, t0
+	lw	t3, 0(t4)
+	addiw	a6, a2, 1
+	add	t0, a6, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a4, a0, t0
-	lw	t0, 0(a4)
-	sw	t0, 12(sp)
-	lw	t0, 28(sp)
-	lw	t1, 12(sp)
-	slt	a4, t1, t0
+	add	a7, a0, t0
+	lw	a5, 0(a7)
+	slt	a4, a5, t3
 	add	t0, a4, x0
 	beq	x0, t0, .LBB9_6_jump_0
 	j	.LBB9_22
 .LBB9_6_jump_0:                               # %label_6_jump_0
 	j	.LBB9_23
 .LBB9_7:                               # %label_7
+	ld	s0, 232(sp)
 	li	a0, 1
 	addi	sp, sp, 272
 	ret
 .LBB9_22:                               # %label_22
+	ld	s0, 232(sp)
 	li	a0, 0
 	addi	sp, sp, 272
 	ret
@@ -3380,22 +3433,22 @@ fn.2:                                   # @fn.2
 .LBB10_0:                               # %label_0
 	li	a3, 0
 .LBB10_7:                               # %label_7
-	slt	a6, a3, a2
-	add	t0, a6, x0
+	slt	t3, a3, a2
+	add	t0, t3, x0
 	beqz	t0, .LBB10_9
 .LBB10_8:                               # %label_8
 	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a5, a1, t0
+	add	a7, a1, t0
 	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a4, a0, t0
-	lw	t0, 0(a4)
+	add	a6, a0, t0
+	lw	t0, 0(a6)
 	sw	t0, 20(sp)
 	lw	t1, 20(sp)
-	sw	t1, 0(a5)
+	sw	t1, 0(a7)
 	addiw	a4, a3, 1
 	add	a3, a4, x0
 	j	.LBB10_7
@@ -3412,7 +3465,6 @@ fn.2:                                   # @fn.2
 fn.3:                                   # @fn.3
 # %bb.0:                                # %alloca
 	addi	sp, sp, -544
-	sd	s0, 504(sp)
 	sd	s1, 496(sp)
 	sd	s2, 424(sp)
 	sd	s3, 416(sp)
@@ -3426,20 +3478,15 @@ fn.3:                                   # @fn.3
 	sd	s11, 352(sp)
 	j	.LBB11_0
 .LBB11_0:                               # %label_0
-	addi	s9, a0, 0
-	lw	t0, 0(s9)
-	sw	t0, 308(sp)
-	addi	s9, a1, 4
-	lw	t0, 0(s9)
-	sw	t0, 292(sp)
-	lw	t0, 308(sp)
-	lw	t1, 292(sp)
-	sub	t0, t0, t1
-	sltu	s9, x0, t0
-	add	t0, s9, x0
+	addi	a3, a0, 0
+	lw	a4, 0(a3)
+	addi	a3, a1, 4
+	lw	a3, 0(a3)
+	sub	t0, a4, a3
+	sltu	a3, x0, t0
+	add	t0, a3, x0
 	beqz	t0, .LBB11_14
 .LBB11_13:                               # %label_13
-	ld	s0, 504(sp)
 	ld	s1, 496(sp)
 	ld	s2, 424(sp)
 	ld	s3, 416(sp)
@@ -3467,8 +3514,8 @@ fn.3:                                   # @fn.3
 	sw	t0, 244(sp)
 	lw	t1, 244(sp)
 	sw	t1, 0(s8)
-	li	a5, 0
-	li	s7, 0
+	li	a7, 0
+	li	a3, 0
 .LBB11_26:                               # %label_26
 	addi	t0, a0, 4
 	sd	t0, 232(sp)
@@ -3476,16 +3523,15 @@ fn.3:                                   # @fn.3
 	lw	t0, 0(t0)
 	sw	t0, 228(sp)
 	lw	t1, 228(sp)
-	slt	t0, a5, t1
+	slt	t0, a7, t1
 	sb	t0, 227(sp)
 	lbu	t0, 227(sp)
 	beqz	t0, .LBB11_28
 .LBB11_27:                               # %label_27
-	li	a4, 0
-	add	s8, s7, x0
+	li	a6, 0
+	add	a4, a3, x0
 	j	.LBB11_35
 .LBB11_28:                               # %label_28
-	ld	s0, 504(sp)
 	ld	s1, 496(sp)
 	ld	s2, 424(sp)
 	ld	s3, 416(sp)
@@ -3507,20 +3553,20 @@ fn.3:                                   # @fn.3
 	lw	t0, 0(t0)
 	sw	t0, 212(sp)
 	lw	t1, 212(sp)
-	slt	t0, a4, t1
+	slt	t0, a6, t1
 	sb	t0, 211(sp)
 	lbu	t0, 211(sp)
 	beqz	t0, .LBB11_37
 .LBB11_36:                               # %label_36
 	addi	t0, a2, 8
 	sd	t0, 200(sp)
-	add	t0, a5, x0
+	add	t0, a7, x0
 	li	t1, 400
 	mul	t0, t0, t1
 	ld	t1, 200(sp)
 	add	t2, t1, t0
 	sd	t2, 192(sp)
-	add	t0, a4, x0
+	add	t0, a6, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	ld	t1, 192(sp)
@@ -3529,12 +3575,12 @@ fn.3:                                   # @fn.3
 	ld	t0, 184(sp)
 	li	t1, 0
 	sw	t1, 0(t0)
-	li	a3, 0
+	li	a5, 0
 	j	.LBB11_50
 .LBB11_37:                               # %label_37
-	addiw	a6, a5, 1
-	add	a5, a6, x0
-	add	s7, s8, x0
+	addiw	t3, a7, 1
+	add	a7, t3, x0
+	add	a3, a4, x0
 	j	.LBB11_26
 .LBB11_50:                               # %label_50
 	addi	t0, a0, 0
@@ -3543,74 +3589,76 @@ fn.3:                                   # @fn.3
 	lw	t0, 0(t0)
 	sw	t0, 164(sp)
 	lw	t1, 164(sp)
-	slt	t0, a3, t1
+	slt	t0, a5, t1
 	sb	t0, 163(sp)
 	lbu	t0, 163(sp)
 	beqz	t0, .LBB11_52
 .LBB11_51:                               # %label_51
 	addi	t0, a2, 8
 	sd	t0, 152(sp)
-	add	t0, a5, x0
+	add	t0, a7, x0
 	li	t1, 400
 	mul	t0, t0, t1
 	ld	t1, 152(sp)
 	add	t2, t1, t0
 	sd	t2, 144(sp)
-	add	t0, a4, x0
+	add	t0, a6, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	ld	t1, 144(sp)
 	add	t2, t1, t0
 	sd	t2, 136(sp)
-	addi	s11, a2, 8
-	add	t0, a5, x0
+	addi	t0, a2, 8
+	sd	t0, 128(sp)
+	add	t0, a7, x0
+	li	t1, 400
+	mul	t0, t0, t1
+	ld	t1, 128(sp)
+	add	t2, t1, t0
+	sd	t2, 120(sp)
+	add	t0, a6, x0
+	li	t1, 4
+	mul	t0, t0, t1
+	ld	t1, 120(sp)
+	add	t2, t1, t0
+	sd	t2, 112(sp)
+	ld	t0, 112(sp)
+	lw	t0, 0(t0)
+	sw	t0, 108(sp)
+	addi	s11, a0, 8
+	add	t0, a7, x0
 	li	t1, 400
 	mul	t0, t0, t1
 	add	s10, s11, t0
-	add	t0, a4, x0
+	add	t0, a5, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s6, s10, t0
-	lw	t0, 0(s6)
-	sw	t0, 108(sp)
-	addi	s5, a0, 8
+	add	s9, s10, t0
+	lw	s6, 0(s9)
+	addi	s5, a1, 8
 	add	t0, a5, x0
 	li	t1, 400
 	mul	t0, t0, t1
 	add	s4, s5, t0
-	add	t0, a3, x0
+	add	t0, a6, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	s3, s4, t0
-	lw	t0, 0(s3)
-	sw	t0, 76(sp)
-	addi	s2, a1, 8
-	add	t0, a3, x0
-	li	t1, 400
-	mul	t0, t0, t1
-	add	s1, s2, t0
-	add	t0, a4, x0
-	li	t1, 4
-	mul	t0, t0, t1
-	add	s0, s1, t0
-	lw	t0, 0(s0)
-	sw	t0, 44(sp)
-	lw	t0, 76(sp)
-	lw	t1, 44(sp)
-	mulw	t5, t0, t1
+	lw	s2, 0(s3)
+	mulw	s1, s6, s2
 	lw	t0, 108(sp)
-	addw	t0, t0, t5
+	addw	t0, t0, s1
 	sw	t0, 36(sp)
 	ld	t0, 136(sp)
 	lw	t1, 36(sp)
 	sw	t1, 0(t0)
-	addiw	t3, a3, 1
-	add	a3, t3, x0
+	addiw	t5, a5, 1
+	add	a5, t5, x0
 	j	.LBB11_50
 .LBB11_52:                               # %label_52
-	addiw	a7, a4, 1
-	add	a4, a7, x0
-	add	s8, a3, x0
+	addiw	t4, a6, 1
+	add	a6, t4, x0
+	add	a4, a5, x0
 	j	.LBB11_35
 .Lfunc_end11:
 	.size	fn.3, .Lfunc_end11-fn.3
@@ -3634,6 +3682,7 @@ fn.4:                                   # @fn.4
 	sd	ra, 632(sp)
 	sd	a0, 584(sp)
 	sd	a1, 576(sp)
+	sd	a2, 568(sp)
 	ld	a0, 248(sp)
 	call	fn.12
 	ld	t0, 280(sp)
@@ -3648,12 +3697,16 @@ fn.4:                                   # @fn.4
 	call	fn.21
 	ld	t0, 576(sp)
 	li	t1, 2
-	remw	s1, t0, t1
-	sltiu	s1, s1, 1
+	remw	a2, t0, t1
+	sd	a2, 568(sp)
+	ld	t0, 568(sp)
+	sltiu	a2, t0, 1
+	sd	a2, 568(sp)
 	ld	ra, 632(sp)
 	ld	a0, 584(sp)
 	ld	a1, 576(sp)
-	add	t0, s1, x0
+	ld	a2, 568(sp)
+	add	t0, a2, x0
 	beqz	t0, .LBB12_14
 .LBB12_13:                               # %label_13
 	li	t1, 2
@@ -3664,19 +3717,15 @@ fn.4:                                   # @fn.4
 	li	t1, 4
 	mul	t0, t0, t1
 	add	s0, a0, t0
-	lw	t0, 0(s0)
-	sw	t0, 196(sp)
+	lw	s1, 0(s0)
 	li	t1, 2
 	divuw	s0, a1, t1
 	add	t0, s0, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	s0, a0, t0
-	lw	t0, 0(s0)
-	sw	t0, 180(sp)
-	lw	t0, 196(sp)
-	lw	t1, 180(sp)
-	addw	s0, t0, t1
+	lw	s0, 0(s0)
+	addw	s0, s1, s0
 	li	t1, 2
 	divw	s0, s0, t1
 	add	s0, s0, x0
@@ -3690,10 +3739,8 @@ fn.4:                                   # @fn.4
 	li	t1, 4
 	mul	t0, t0, t1
 	add	s0, a0, t0
-	lw	t0, 0(s0)
-	sw	t0, 148(sp)
-	lw	t0, 148(sp)
-	add	s0, t0, x0
+	lw	s0, 0(s0)
+	add	s0, s0, x0
 	add	t0, s0, x0
 	sw	t0, 140(sp)
 .LBB12_15:                               # %label_15
@@ -3713,108 +3760,102 @@ fn.5:                                   # @fn.5
 	addi	sp, sp, -384
 	sd	s0, 344(sp)
 	sd	s1, 336(sp)
-	sd	s2, 264(sp)
 	sd	s3, 256(sp)
+	sd	s4, 248(sp)
 	sd	s5, 240(sp)
 	sd	s6, 232(sp)
 	sd	s7, 224(sp)
+	sd	s9, 208(sp)
+	sd	s10, 200(sp)
 	j	.LBB13_0
 .LBB13_0:                               # %label_0
-	addi	s3, a3, 0
-	addi	s2, a3, 0
-	lw	t0, 0(s2)
-	sw	t0, 140(sp)
-	lw	t0, 140(sp)
-	addiw	t0, t0, 1
+	addi	s10, a3, 0
+	addi	s7, a3, 0
+	lw	s7, 0(s7)
+	addiw	t0, s7, 1
 	sw	t0, 136(sp)
 	lw	t1, 136(sp)
-	sw	t1, 0(s3)
+	sw	t1, 0(s10)
 	li	t0, 0
 	sw	t0, 4(sp)
 .LBB13_15:                               # %label_15
 	lw	t0, 4(sp)
-	slt	s1, t0, a1
-	add	t0, s1, x0
+	slt	s6, t0, a1
+	add	t0, s6, x0
 	beqz	t0, .LBB13_17
 .LBB13_16:                               # %label_16
-	addi	s0, a3, 12
-	addi	t5, a3, 12
-	lw	t0, 0(t5)
-	sw	t0, 108(sp)
-	lw	t0, 108(sp)
-	addiw	t0, t0, 1
+	addi	s5, a3, 12
+	addi	s4, a3, 12
+	lw	s3, 0(s4)
+	addiw	t0, s3, 1
 	sw	t0, 104(sp)
 	lw	t1, 104(sp)
-	sw	t1, 0(s0)
-	addi	t3, a3, 4
-	addi	a7, a3, 4
-	lw	t0, 0(a7)
-	sw	t0, 84(sp)
-	lw	t0, 84(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(s5)
+	addi	s1, a3, 4
+	addi	s0, a3, 4
+	lw	t5, 0(s0)
+	addiw	t0, t5, 1
 	sw	t0, 80(sp)
 	lw	t1, 80(sp)
-	sw	t1, 0(t3)
+	sw	t1, 0(s1)
 	lw	t0, 4(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a5, a0, t0
-	lw	t0, 0(a5)
-	sw	t0, 68(sp)
-	lw	t0, 68(sp)
-	sub	t0, t0, a2
-	sltiu	a4, t0, 1
-	add	t0, a4, x0
+	add	t3, a0, t0
+	lw	a7, 0(t3)
+	sub	t0, a7, a2
+	sltiu	a6, t0, 1
+	add	t0, a6, x0
 	beq	x0, t0, .LBB13_16_jump_0
 	j	.LBB13_39
 .LBB13_16_jump_0:                               # %label_16_jump_0
 	j	.LBB13_40
 .LBB13_17:                               # %label_17
-	addi	s6, a3, 16
-	addi	s5, a3, 16
-	lw	t0, 0(s5)
-	sw	t0, 44(sp)
-	lw	t0, 44(sp)
-	addw	t0, t0, a1
+	addi	a4, a3, 16
+	addi	s9, a3, 16
+	lw	s9, 0(s9)
+	addw	t0, s9, a1
 	sw	t0, 40(sp)
 	lw	t1, 40(sp)
-	sw	t1, 0(s6)
+	sw	t1, 0(a4)
 	ld	s0, 344(sp)
 	ld	s1, 336(sp)
-	ld	s2, 264(sp)
 	ld	s3, 256(sp)
+	ld	s4, 248(sp)
 	ld	s5, 240(sp)
 	ld	s6, 232(sp)
 	ld	s7, 224(sp)
+	ld	s9, 208(sp)
+	ld	s10, 200(sp)
 	li	a0, -1
 	addi	sp, sp, 384
 	ret
 .LBB13_39:                               # %label_39
-	addi	s6, a3, 16
-	addi	s5, a3, 16
-	lw	t0, 0(s5)
-	sw	t0, 20(sp)
-	lw	t0, 20(sp)
+	addi	a4, a3, 16
+	addi	s9, a3, 16
+	lw	s9, 0(s9)
 	lw	t1, 4(sp)
-	addw	s5, t0, t1
-	addiw	t0, s5, 1
+	addw	s9, s9, t1
+	addiw	t0, s9, 1
 	sw	t0, 12(sp)
 	lw	t1, 12(sp)
-	sw	t1, 0(s6)
+	sw	t1, 0(a4)
 	lw	a0, 4(sp)
 	ld	s0, 344(sp)
 	ld	s1, 336(sp)
-	ld	s2, 264(sp)
 	ld	s3, 256(sp)
+	ld	s4, 248(sp)
 	ld	s5, 240(sp)
 	ld	s6, 232(sp)
 	ld	s7, 224(sp)
+	ld	s9, 208(sp)
+	ld	s10, 200(sp)
 	addi	sp, sp, 384
 	ret
 .LBB13_40:                               # %label_40
 	lw	t0, 4(sp)
-	addiw	s7, t0, 1
-	add	t0, s7, x0
+	addiw	a5, t0, 1
+	add	t0, a5, x0
 	sw	t0, 4(sp)
 	j	.LBB13_15
 .Lfunc_end13:
@@ -3826,142 +3867,151 @@ fn.5:                                   # @fn.5
 fn.6:                                   # @fn.6
 # %bb.0:                                # %alloca
 	addi	sp, sp, -432
-	sd	s0, 392(sp)
 	sd	s1, 384(sp)
 	sd	s2, 312(sp)
 	sd	s3, 304(sp)
 	sd	s4, 296(sp)
 	sd	s5, 288(sp)
 	sd	s6, 280(sp)
+	sd	s7, 272(sp)
 	sd	s8, 264(sp)
+	sd	s9, 256(sp)
+	sd	s10, 248(sp)
 	j	.LBB14_0
 .LBB14_0:                               # %label_0
-	addi	a6, a3, 0
-	addi	a5, a3, 0
-	lw	t0, 0(a5)
-	sw	t0, 188(sp)
-	lw	t0, 188(sp)
-	addiw	t0, t0, 1
+	addi	a7, a3, 0
+	addi	t5, a3, 0
+	lw	t5, 0(t5)
+	addiw	t0, t5, 1
 	sw	t0, 184(sp)
 	lw	t1, 184(sp)
-	sw	t1, 0(a6)
-	addiw	a5, a1, -1
-	li	t3, 0
-	add	a7, a5, x0
+	sw	t1, 0(a7)
+	addiw	a7, a1, -1
+	li	t4, 0
+	add	t3, a7, x0
 .LBB14_18:                               # %label_18
-	slt	t0, a7, t3
-	xori	s8, t0, 1
-	add	t0, s8, x0
+	slt	t0, t3, t4
+	xori	t0, t0, 1
+	sb	t0, 179(sp)
+	lbu	t0, 179(sp)
 	beqz	t0, .LBB14_20
 .LBB14_19:                               # %label_19
-	subw	a4, a7, t3
+	subw	t0, t3, t4
+	sw	t0, 172(sp)
+	lw	t0, 172(sp)
 	li	t1, 2
-	divw	a4, a4, t1
-	addw	t0, t3, a4
+	divw	t0, t0, t1
+	sw	t0, 168(sp)
+	lw	t1, 168(sp)
+	addw	t0, t4, t1
 	sw	t0, 164(sp)
-	addi	a4, a3, 12
-	addi	s6, a3, 12
-	lw	t0, 0(s6)
+	addi	t0, a3, 12
+	sd	t0, 152(sp)
+	addi	t0, a3, 12
+	sd	t0, 144(sp)
+	ld	t0, 144(sp)
+	lw	t0, 0(t0)
 	sw	t0, 140(sp)
 	lw	t0, 140(sp)
 	addiw	t0, t0, 1
 	sw	t0, 136(sp)
+	ld	t0, 152(sp)
 	lw	t1, 136(sp)
-	sw	t1, 0(a4)
-	addi	a4, a3, 4
-	addi	s6, a3, 4
-	lw	t0, 0(s6)
+	sw	t1, 0(t0)
+	addi	t0, a3, 4
+	sd	t0, 128(sp)
+	addi	t0, a3, 4
+	sd	t0, 120(sp)
+	ld	t0, 120(sp)
+	lw	t0, 0(t0)
 	sw	t0, 116(sp)
 	lw	t0, 116(sp)
 	addiw	t0, t0, 1
 	sw	t0, 112(sp)
+	ld	t0, 128(sp)
 	lw	t1, 112(sp)
-	sw	t1, 0(a4)
+	sw	t1, 0(t0)
 	lw	t0, 164(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a4, a0, t0
-	lw	t0, 0(a4)
-	sw	t0, 100(sp)
-	lw	t0, 100(sp)
-	sub	t0, t0, a2
-	sltiu	a4, t0, 1
-	add	t0, a4, x0
+	add	s10, a0, t0
+	lw	a6, 0(s10)
+	sub	t0, a6, a2
+	sltiu	a5, t0, 1
+	add	t0, a5, x0
 	beq	x0, t0, .LBB14_19_jump_0
 	j	.LBB14_49
 .LBB14_19_jump_0:                               # %label_19_jump_0
 	j	.LBB14_50
 .LBB14_20:                               # %label_20
-	ld	s0, 392(sp)
 	ld	s1, 384(sp)
 	ld	s2, 312(sp)
 	ld	s3, 304(sp)
 	ld	s4, 296(sp)
 	ld	s5, 288(sp)
 	ld	s6, 280(sp)
+	ld	s7, 272(sp)
 	ld	s8, 264(sp)
+	ld	s9, 256(sp)
+	ld	s10, 248(sp)
 	li	a0, -1
 	addi	sp, sp, 432
 	ret
 .LBB14_49:                               # %label_49
-	addi	s5, a3, 16
-	addi	s4, a3, 16
-	lw	t0, 0(s4)
-	sw	t0, 76(sp)
-	lw	t0, 76(sp)
-	addiw	t0, t0, 1
+	addi	a4, a3, 16
+	addi	s9, a3, 16
+	lw	s9, 0(s9)
+	addiw	t0, s9, 1
 	sw	t0, 72(sp)
 	lw	t1, 72(sp)
-	sw	t1, 0(s5)
+	sw	t1, 0(a4)
 	lw	a0, 164(sp)
-	ld	s0, 392(sp)
 	ld	s1, 384(sp)
 	ld	s2, 312(sp)
 	ld	s3, 304(sp)
 	ld	s4, 296(sp)
 	ld	s5, 288(sp)
 	ld	s6, 280(sp)
+	ld	s7, 272(sp)
 	ld	s8, 264(sp)
+	ld	s9, 256(sp)
+	ld	s10, 248(sp)
 	addi	sp, sp, 432
 	ret
 .LBB14_50:                               # %label_50
 	lw	t0, 164(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s3, a0, t0
-	lw	t0, 0(s3)
-	sw	t0, 60(sp)
-	lw	t0, 60(sp)
-	slt	s2, t0, a2
-	add	t0, s2, x0
+	add	s8, a0, t0
+	lw	s7, 0(s8)
+	slt	s6, s7, a2
+	add	t0, s6, x0
 	beq	x0, t0, .LBB14_50_jump_0
 	j	.LBB14_65
 .LBB14_50_jump_0:                               # %label_50_jump_0
 	j	.LBB14_66
 .LBB14_51:                               # %label_51
-	addi	t5, a3, 16
-	addi	t4, a3, 16
-	lw	t0, 0(t4)
-	sw	t0, 36(sp)
-	lw	t0, 36(sp)
-	addiw	t0, t0, 1
+	addi	s3, a3, 16
+	addi	s2, a3, 16
+	lw	s1, 0(s2)
+	addiw	t0, s1, 1
 	sw	t0, 32(sp)
 	lw	t1, 32(sp)
-	sw	t1, 0(t5)
-	add	t3, a6, x0
-	add	a7, a5, x0
+	sw	t1, 0(s3)
+	add	t4, t5, x0
+	add	t3, a7, x0
 	j	.LBB14_18
 .LBB14_65:                               # %label_65
 	lw	t0, 164(sp)
-	addiw	s1, t0, 1
-	add	a6, s1, x0
-	add	a5, a7, x0
+	addiw	s5, t0, 1
+	add	t5, s5, x0
+	add	a7, t3, x0
 	j	.LBB14_67
 .LBB14_66:                               # %label_66
 	lw	t0, 164(sp)
-	addiw	s0, t0, -1
-	add	a5, s0, x0
-	add	a6, t3, x0
+	addiw	s4, t0, -1
+	add	a7, s4, x0
+	add	t5, t4, x0
 .LBB14_67:                               # %label_67
 	j	.LBB14_51
 .Lfunc_end14:
@@ -4666,173 +4716,151 @@ fn.8:                                   # @fn.8
 	j	.LBB16_0
 .LBB16_0:                               # %label_0
 	li	t0, 2
-	mulw	s2, t0, a2
-	addiw	s5, s2, 1
+	mulw	s3, t0, a2
+	addiw	s6, s3, 1
 	li	t0, 2
-	mulw	s2, t0, a2
-	addiw	s4, s2, 2
+	mulw	s3, t0, a2
+	addiw	s5, s3, 2
+	addi	s4, a3, 4
 	addi	s3, a3, 4
-	addi	s2, a3, 4
-	lw	t0, 0(s2)
-	sw	t0, 412(sp)
-	lw	t0, 412(sp)
-	addiw	t0, t0, 1
+	lw	s3, 0(s3)
+	addiw	t0, s3, 1
 	sw	t0, 408(sp)
 	lw	t1, 408(sp)
-	sw	t1, 0(s3)
-	slt	s2, s5, a1
-	add	s6, a2, x0
-	add	t0, s2, x0
+	sw	t1, 0(s4)
+	slt	s3, s6, a1
+	add	s7, a2, x0
+	add	t0, s3, x0
 	beqz	t0, .LBB16_28
 .LBB16_27:                               # %label_27
-	addi	s0, a3, 12
-	addi	a7, a3, 12
-	lw	t0, 0(a7)
-	sw	t0, 380(sp)
-	lw	t0, 380(sp)
-	addiw	t0, t0, 1
+	addi	s2, a3, 12
+	addi	a6, a3, 12
+	lw	a6, 0(a6)
+	addiw	t0, a6, 1
 	sw	t0, 376(sp)
 	lw	t1, 376(sp)
-	sw	t1, 0(s0)
-	addi	s0, a3, 4
-	addi	a7, a3, 4
-	lw	t0, 0(a7)
-	sw	t0, 356(sp)
-	lw	t0, 356(sp)
-	addiw	t0, t0, 2
+	sw	t1, 0(s2)
+	addi	s2, a3, 4
+	addi	a6, a3, 4
+	lw	a6, 0(a6)
+	addiw	t0, a6, 2
 	sw	t0, 352(sp)
 	lw	t1, 352(sp)
-	sw	t1, 0(s0)
-	add	t0, s5, x0
+	sw	t1, 0(s2)
+	add	t0, s6, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s0, a0, t0
-	lw	t0, 0(s0)
-	sw	t0, 340(sp)
+	add	a6, a0, t0
+	lw	s2, 0(a6)
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s0, a0, t0
-	lw	t0, 0(s0)
-	sw	t0, 324(sp)
-	lw	t0, 340(sp)
-	lw	t1, 324(sp)
-	slt	s0, t1, t0
-	add	s7, a2, x0
-	add	t0, s0, x0
+	add	a6, a0, t0
+	lw	a6, 0(a6)
+	slt	a6, a6, s2
+	add	s8, a2, x0
+	add	t0, a6, x0
 	beq	x0, t0, .LBB16_27_jump_0
 	j	.LBB16_50
 .LBB16_27_jump_0:                               # %label_27_jump_0
 	j	.LBB16_51
 .LBB16_28:                               # %label_28
-	slt	s11, s4, a1
-	add	s8, s6, x0
-	add	t0, s11, x0
+	slt	t3, s5, a1
+	add	s9, s7, x0
+	add	t0, t3, x0
 	beq	x0, t0, .LBB16_28_jump_0
 	j	.LBB16_56
 .LBB16_28_jump_0:                               # %label_28_jump_0
 	j	.LBB16_57
 .LBB16_50:                               # %label_50
-	add	s7, s5, x0
+	add	s8, s6, x0
 .LBB16_51:                               # %label_51
-	add	s6, s7, x0
+	add	s7, s8, x0
 	j	.LBB16_28
 .LBB16_56:                               # %label_56
-	addi	a6, a3, 12
 	addi	a5, a3, 12
-	lw	t0, 0(a5)
-	sw	t0, 300(sp)
-	lw	t0, 300(sp)
-	addiw	t0, t0, 1
+	addi	a4, a3, 12
+	lw	a4, 0(a4)
+	addiw	t0, a4, 1
 	sw	t0, 296(sp)
 	lw	t1, 296(sp)
-	sw	t1, 0(a6)
-	addi	a6, a3, 4
+	sw	t1, 0(a5)
 	addi	a5, a3, 4
-	lw	t0, 0(a5)
-	sw	t0, 276(sp)
-	lw	t0, 276(sp)
-	addiw	t0, t0, 2
+	addi	a4, a3, 4
+	lw	a4, 0(a4)
+	addiw	t0, a4, 2
 	sw	t0, 272(sp)
 	lw	t1, 272(sp)
-	sw	t1, 0(a6)
-	add	t0, s4, x0
+	sw	t1, 0(a5)
+	add	t0, s5, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a5, a0, t0
-	lw	t0, 0(a5)
-	sw	t0, 260(sp)
-	add	t0, s6, x0
+	add	a4, a0, t0
+	lw	a5, 0(a4)
+	add	t0, s7, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a5, a0, t0
-	lw	t0, 0(a5)
-	sw	t0, 244(sp)
-	lw	t0, 260(sp)
-	lw	t1, 244(sp)
-	slt	a5, t1, t0
-	add	s9, s6, x0
-	add	t0, a5, x0
+	add	a4, a0, t0
+	lw	a4, 0(a4)
+	slt	a4, a4, a5
+	add	s10, s7, x0
+	add	t0, a4, x0
 	beq	x0, t0, .LBB16_56_jump_0
 	j	.LBB16_79
 .LBB16_56_jump_0:                               # %label_56_jump_0
 	j	.LBB16_80
 .LBB16_57:                               # %label_57
-	sub	t0, s8, a2
-	sltu	s10, x0, t0
-	add	t0, s10, x0
+	sub	t0, s9, a2
+	sltu	s11, x0, t0
+	add	t0, s11, x0
 	beq	x0, t0, .LBB16_57_jump_0
 	j	.LBB16_85
 .LBB16_57_jump_0:                               # %label_57_jump_0
 	j	.LBB16_86
 .LBB16_79:                               # %label_79
-	add	s9, s4, x0
+	add	s10, s5, x0
 .LBB16_80:                               # %label_80
-	add	s8, s9, x0
+	add	s9, s10, x0
 	j	.LBB16_57
 .LBB16_85:                               # %label_85
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s1, a0, t0
-	lw	t0, 0(s1)
+	add	s0, a0, t0
+	lw	t0, 0(s0)
 	sw	t0, 228(sp)
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a4, a0, t0
-	add	t0, s8, x0
+	add	s0, a0, t0
+	add	t0, s9, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s1, a0, t0
-	lw	t0, 0(s1)
+	add	a7, a0, t0
+	lw	t0, 0(a7)
 	sw	t0, 204(sp)
 	lw	t1, 204(sp)
-	sw	t1, 0(a4)
-	add	t0, s8, x0
+	sw	t1, 0(s0)
+	add	t0, s9, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s1, a0, t0
+	add	s0, a0, t0
 	lw	t1, 228(sp)
-	sw	t1, 0(s1)
-	addi	a4, a3, 8
+	sw	t1, 0(s0)
+	addi	s0, a3, 8
 	addi	s1, a3, 8
-	lw	t0, 0(s1)
-	sw	t0, 172(sp)
-	lw	t0, 172(sp)
-	addiw	t0, t0, 1
+	lw	s1, 0(s1)
+	addiw	t0, s1, 1
 	sw	t0, 168(sp)
 	lw	t1, 168(sp)
-	sw	t1, 0(a4)
-	addi	a4, a3, 4
+	sw	t1, 0(s0)
+	addi	s0, a3, 4
 	addi	s1, a3, 4
-	lw	t0, 0(s1)
-	sw	t0, 148(sp)
-	lw	t0, 148(sp)
-	addiw	t0, t0, 4
+	lw	s1, 0(s1)
+	addiw	t0, s1, 4
 	sw	t0, 144(sp)
 	lw	t1, 144(sp)
-	sw	t1, 0(a4)
+	sw	t1, 0(s0)
 	sd	ra, 792(sp)
 	sd	a0, 744(sp)
 	sd	a1, 736(sp)
@@ -4842,9 +4870,10 @@ fn.8:                                   # @fn.8
 	sd	a5, 704(sp)
 	sd	a6, 696(sp)
 	sd	a7, 688(sp)
+	sd	t3, 600(sp)
 	ld	a0, 744(sp)
 	ld	a1, 736(sp)
-	add	a2, s8, x0
+	add	a2, s9, x0
 	ld	a3, 720(sp)
 	call	fn.8
 	ld	ra, 792(sp)
@@ -4856,6 +4885,7 @@ fn.8:                                   # @fn.8
 	ld	a5, 704(sp)
 	ld	a6, 696(sp)
 	ld	a7, 688(sp)
+	ld	t3, 600(sp)
 .LBB16_86:                               # %label_86
 	ld	s0, 760(sp)
 	ld	s1, 752(sp)
@@ -4892,43 +4922,38 @@ fn.9:                                   # @fn.9
 	sd	s8, 344(sp)
 	sd	s9, 336(sp)
 	sd	s10, 328(sp)
-	sd	s11, 320(sp)
 	j	.LBB17_0
 .LBB17_0:                               # %label_0
-	addi	s3, a2, 0
-	addi	s6, a2, 0
-	lw	t0, 0(s6)
-	sw	t0, 268(sp)
-	lw	t0, 268(sp)
-	addiw	t0, t0, 1
+	addi	s2, a2, 0
+	addi	s5, a2, 0
+	lw	s5, 0(s5)
+	addiw	t0, s5, 1
 	sw	t0, 264(sp)
 	lw	t1, 264(sp)
-	sw	t1, 0(s3)
-	li	s8, 0
-	li	s3, 0
+	sw	t1, 0(s2)
+	li	s7, 0
+	li	s2, 0
 .LBB17_13:                               # %label_13
 	addiw	t0, a1, -1
 	sw	t0, 260(sp)
 	lw	t1, 260(sp)
-	slt	t0, s8, t1
+	slt	t0, s7, t1
 	sb	t0, 259(sp)
 	lbu	t0, 259(sp)
 	beqz	t0, .LBB17_15
 .LBB17_14:                               # %label_14
-	addiw	t0, s8, 1
+	addiw	t0, s7, 1
 	sw	t0, 252(sp)
 	lw	t0, 252(sp)
-	add	s5, t0, x0
-	add	s6, s8, x0
+	add	s4, t0, x0
+	add	s5, s7, x0
 	j	.LBB17_25
 .LBB17_15:                               # %label_15
 	addi	a3, a2, 16
-	addi	s9, a2, 16
-	lw	t0, 0(s9)
-	sw	t0, 228(sp)
-	mulw	s9, a1, a1
-	lw	t0, 228(sp)
-	addw	t0, t0, s9
+	addi	s8, a2, 16
+	lw	s9, 0(s8)
+	mulw	s8, a1, a1
+	addw	t0, s9, s8
 	sw	t0, 220(sp)
 	lw	t1, 220(sp)
 	sw	t1, 0(a3)
@@ -4943,12 +4968,11 @@ fn.9:                                   # @fn.9
 	ld	s8, 344(sp)
 	ld	s9, 336(sp)
 	ld	s10, 328(sp)
-	ld	s11, 320(sp)
 	li	a0, 0
 	addi	sp, sp, 512
 	ret
 .LBB17_25:                               # %label_25
-	slt	t0, s5, a1
+	slt	t0, s4, a1
 	sb	t0, 219(sp)
 	lbu	t0, 219(sp)
 	beqz	t0, .LBB17_27
@@ -4979,7 +5003,7 @@ fn.9:                                   # @fn.9
 	ld	t0, 184(sp)
 	lw	t1, 168(sp)
 	sw	t1, 0(t0)
-	add	t0, s5, x0
+	add	t0, s4, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -4987,7 +5011,7 @@ fn.9:                                   # @fn.9
 	ld	t0, 160(sp)
 	lw	t0, 0(t0)
 	sw	t0, 156(sp)
-	add	t0, s6, x0
+	add	t0, s5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -4999,79 +5023,82 @@ fn.9:                                   # @fn.9
 	lw	t1, 140(sp)
 	slt	t0, t0, t1
 	sb	t0, 139(sp)
-	add	s7, s6, x0
+	add	s6, s5, x0
 	lbu	t0, 139(sp)
 	beq	x0, t0, .LBB17_26_jump_0
 	j	.LBB17_52
 .LBB17_26_jump_0:                               # %label_26_jump_0
 	j	.LBB17_53
 .LBB17_27:                               # %label_27
-	sub	t0, s6, s8
-	sltu	s11, x0, t0
-	add	s4, s3, x0
-	add	t0, s11, x0
+	sub	t0, s5, s7
+	sltu	t0, x0, t0
+	sb	t0, 138(sp)
+	add	s3, s2, x0
+	lbu	t0, 138(sp)
 	beq	x0, t0, .LBB17_27_jump_0
 	j	.LBB17_60
 .LBB17_27_jump_0:                               # %label_27_jump_0
 	j	.LBB17_61
 .LBB17_52:                               # %label_52
-	add	s7, s5, x0
+	add	s6, s4, x0
 .LBB17_53:                               # %label_53
-	addiw	t0, s5, 1
+	addiw	t0, s4, 1
 	sw	t0, 132(sp)
 	lw	t0, 132(sp)
-	add	s5, t0, x0
-	add	s6, s7, x0
+	add	s4, t0, x0
+	add	s5, s6, x0
 	j	.LBB17_25
 .LBB17_60:                               # %label_60
-	add	t0, s8, x0
+	add	t0, s7, x0
+	li	t1, 4
+	mul	t0, t0, t1
+	add	t2, a0, t0
+	sd	t2, 120(sp)
+	ld	t0, 120(sp)
+	lw	t0, 0(t0)
+	sw	t0, 116(sp)
+	add	t0, s7, x0
+	li	t1, 4
+	mul	t0, t0, t1
+	add	t2, a0, t0
+	sd	t2, 104(sp)
+	add	t0, s5, x0
+	li	t1, 4
+	mul	t0, t0, t1
+	add	t2, a0, t0
+	sd	t2, 96(sp)
+	ld	t0, 96(sp)
+	lw	t0, 0(t0)
+	sw	t0, 92(sp)
+	ld	t0, 104(sp)
+	lw	t1, 92(sp)
+	sw	t1, 0(t0)
+	add	t0, s5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	s10, a0, t0
-	lw	t0, 0(s10)
-	sw	t0, 116(sp)
-	add	t0, s8, x0
-	li	t1, 4
-	mul	t0, t0, t1
-	add	s2, a0, t0
-	add	t0, s6, x0
-	li	t1, 4
-	mul	t0, t0, t1
-	add	s1, a0, t0
-	lw	t0, 0(s1)
-	sw	t0, 92(sp)
-	lw	t1, 92(sp)
-	sw	t1, 0(s2)
-	add	t0, s6, x0
-	li	t1, 4
-	mul	t0, t0, t1
-	add	s0, a0, t0
 	lw	t1, 116(sp)
-	sw	t1, 0(s0)
-	addi	t5, a2, 8
-	addi	t4, a2, 8
-	lw	t0, 0(t4)
-	sw	t0, 60(sp)
-	lw	t0, 60(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(s10)
+	addi	s1, a2, 8
+	addi	s0, a2, 8
+	lw	t5, 0(s0)
+	addiw	t0, t5, 1
 	sw	t0, 56(sp)
 	lw	t1, 56(sp)
-	sw	t1, 0(t5)
+	sw	t1, 0(s1)
+	addi	t3, a2, 4
 	addi	a7, a2, 4
-	addi	a6, a2, 4
-	lw	t0, 0(a6)
-	sw	t0, 36(sp)
-	lw	t0, 36(sp)
-	addiw	t0, t0, 4
+	lw	a6, 0(a7)
+	addiw	t0, a6, 4
 	sw	t0, 32(sp)
 	lw	t1, 32(sp)
-	sw	t1, 0(a7)
+	sw	t1, 0(t3)
 	lw	t0, 116(sp)
-	add	s4, t0, x0
+	add	s3, t0, x0
 .LBB17_61:                               # %label_61
-	addiw	a4, s8, 1
-	add	s8, a4, x0
-	add	s3, s4, x0
+	addiw	a4, s7, 1
+	add	s7, a4, x0
+	add	s2, s3, x0
 	j	.LBB17_13
 .Lfunc_end17:
 	.size	fn.9, .Lfunc_end17-fn.9
@@ -5188,33 +5215,28 @@ fn.13:                                   # @fn.13
 	addi	sp, sp, -672
 	sd	s0, 632(sp)
 	sd	s1, 624(sp)
-	sd	s2, 552(sp)
 	sd	s3, 544(sp)
 	sd	s4, 536(sp)
 	sd	s5, 528(sp)
-	sd	s6, 520(sp)
 	sd	s7, 512(sp)
 	sd	s8, 504(sp)
 	sd	s9, 496(sp)
 	sd	s10, 488(sp)
-	sd	s11, 480(sp)
 	j	.LBB21_0
 .LBB21_0:                               # %label_0
-	addi	s10, a2, 0
-	addi	s9, a2, 0
-	lw	t0, 0(s9)
-	sw	t0, 300(sp)
-	lw	t0, 300(sp)
-	addiw	t0, t0, 1
+	addi	s0, a2, 0
+	addi	t4, a2, 0
+	lw	t4, 0(t4)
+	addiw	t0, t4, 1
 	sw	t0, 296(sp)
 	lw	t1, 296(sp)
-	sw	t1, 0(s10)
+	sw	t1, 0(s0)
 	li	t1, 2
-	divw	s9, a1, t1
-	addiw	s9, s9, -1
-	add	s11, s9, x0
+	divw	s0, a1, t1
+	addiw	s0, s0, -1
+	add	s1, s0, x0
 .LBB21_16:                               # %label_16
-	slti	t0, s11, 0
+	slti	t0, s1, 0
 	xori	t0, t0, 1
 	sb	t0, 287(sp)
 	lbu	t0, 287(sp)
@@ -5224,128 +5246,134 @@ fn.13:                                   # @fn.13
 	sd	a0, 616(sp)
 	sd	a1, 608(sp)
 	sd	a2, 600(sp)
+	sd	a3, 592(sp)
 	sd	a4, 584(sp)
 	sd	a5, 576(sp)
+	sd	a6, 568(sp)
 	sd	a7, 560(sp)
 	sd	t3, 472(sp)
 	sd	t4, 464(sp)
 	sd	t5, 456(sp)
 	ld	a0, 616(sp)
 	ld	a1, 608(sp)
-	add	a2, s11, x0
+	add	a2, s1, x0
 	ld	a3, 600(sp)
 	call	fn.8
-	addiw	t5, s11, -1
-	sd	t5, 456(sp)
+	addiw	t0, s1, -1
+	sw	t0, 280(sp)
 	ld	ra, 664(sp)
 	ld	a0, 616(sp)
 	ld	a1, 608(sp)
 	ld	a2, 600(sp)
+	ld	a3, 592(sp)
 	ld	a4, 584(sp)
 	ld	a5, 576(sp)
+	ld	a6, 568(sp)
 	ld	a7, 560(sp)
 	ld	t3, 472(sp)
 	ld	t4, 464(sp)
 	ld	t5, 456(sp)
-	add	s11, t5, x0
+	lw	t0, 280(sp)
+	add	s1, t0, x0
 	j	.LBB21_16
 .LBB21_18:                               # %label_18
-	addiw	s8, a1, -1
-	add	t3, s8, x0
+	addiw	t0, a1, -1
+	sw	t0, 276(sp)
+	lw	t0, 276(sp)
+	add	a3, t0, x0
 .LBB21_29:                               # %label_29
 	li	t1, 0
-	slt	s7, t1, t3
-	add	t0, s7, x0
+	slt	t0, t1, a3
+	sb	t0, 275(sp)
+	lbu	t0, 275(sp)
 	beqz	t0, .LBB21_31
 .LBB21_30:                               # %label_30
-	addi	s6, a0, 0
-	lw	t0, 0(s6)
+	addi	t0, a0, 0
+	sd	t0, 264(sp)
+	ld	t0, 264(sp)
+	lw	t0, 0(t0)
 	sw	t0, 260(sp)
-	addi	s5, a0, 0
-	add	t0, t3, x0
+	addi	t5, a0, 0
+	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s4, a0, t0
-	lw	t0, 0(s4)
+	add	t3, a0, t0
+	lw	t0, 0(t3)
 	sw	t0, 236(sp)
 	lw	t1, 236(sp)
-	sw	t1, 0(s5)
-	add	t0, t3, x0
+	sw	t1, 0(t5)
+	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s3, a0, t0
+	add	s10, a0, t0
 	lw	t1, 260(sp)
-	sw	t1, 0(s3)
-	addi	s2, a2, 8
-	addi	a7, a2, 8
-	lw	t0, 0(a7)
-	sw	t0, 204(sp)
-	lw	t0, 204(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(s10)
+	addi	s9, a2, 8
+	addi	s8, a2, 8
+	lw	s7, 0(s8)
+	addiw	t0, s7, 1
 	sw	t0, 200(sp)
 	lw	t1, 200(sp)
-	sw	t1, 0(s2)
-	addi	a5, a2, 4
-	addi	a4, a2, 4
-	lw	t0, 0(a4)
-	sw	t0, 180(sp)
-	lw	t0, 180(sp)
-	addiw	t0, t0, 4
+	sw	t1, 0(s9)
+	addi	s5, a2, 4
+	addi	s4, a2, 4
+	lw	s3, 0(s4)
+	addiw	t0, s3, 4
 	sw	t0, 176(sp)
 	lw	t1, 176(sp)
-	sw	t1, 0(a5)
+	sw	t1, 0(s5)
 	sd	ra, 664(sp)
 	sd	a0, 616(sp)
 	sd	a1, 608(sp)
 	sd	a2, 600(sp)
+	sd	a3, 592(sp)
 	sd	a4, 584(sp)
 	sd	a5, 576(sp)
+	sd	a6, 568(sp)
 	sd	a7, 560(sp)
 	sd	t3, 472(sp)
 	sd	t4, 464(sp)
 	sd	t5, 456(sp)
 	ld	a0, 616(sp)
-	ld	a1, 472(sp)
+	ld	a1, 592(sp)
 	li	a2, 0
 	ld	a3, 600(sp)
 	call	fn.8
-	ld	t0, 472(sp)
-	addiw	s1, t0, -1
+	ld	t0, 592(sp)
+	addiw	a7, t0, -1
+	sd	a7, 560(sp)
 	ld	ra, 664(sp)
 	ld	a0, 616(sp)
 	ld	a1, 608(sp)
 	ld	a2, 600(sp)
+	ld	a3, 592(sp)
 	ld	a4, 584(sp)
 	ld	a5, 576(sp)
+	ld	a6, 568(sp)
 	ld	a7, 560(sp)
 	ld	t3, 472(sp)
 	ld	t4, 464(sp)
 	ld	t5, 456(sp)
-	add	t3, s1, x0
+	add	a3, a7, x0
 	j	.LBB21_29
 .LBB21_31:                               # %label_31
-	addi	s0, a2, 16
-	addi	t4, a2, 16
-	lw	t0, 0(t4)
-	sw	t0, 148(sp)
-	mulw	t4, a1, a1
-	lw	t0, 148(sp)
-	addw	t0, t0, t4
+	addi	a6, a2, 16
+	addi	a4, a2, 16
+	lw	a5, 0(a4)
+	mulw	a4, a1, a1
+	addw	t0, a5, a4
 	sw	t0, 140(sp)
 	lw	t1, 140(sp)
-	sw	t1, 0(s0)
+	sw	t1, 0(a6)
 	ld	s0, 632(sp)
 	ld	s1, 624(sp)
-	ld	s2, 552(sp)
 	ld	s3, 544(sp)
 	ld	s4, 536(sp)
 	ld	s5, 528(sp)
-	ld	s6, 520(sp)
 	ld	s7, 512(sp)
 	ld	s8, 504(sp)
 	ld	s9, 496(sp)
 	ld	s10, 488(sp)
-	ld	s11, 480(sp)
 	li	a0, 0
 	addi	sp, sp, 672
 	ret
@@ -5365,12 +5393,12 @@ fn.14:                                   # @fn.14
 	li	t6, 120720
 	add	t6, sp, t6
 	sd	s1, 0(t6)
+	li	t6, 120648
+	add	t6, sp, t6
+	sd	s2, 0(t6)
 	li	t6, 120640
 	add	t6, sp, t6
 	sd	s3, 0(t6)
-	li	t6, 120632
-	add	t6, sp, t6
-	sd	s4, 0(t6)
 	li	t6, 120624
 	add	t6, sp, t6
 	sd	s5, 0(t6)
@@ -5412,7 +5440,7 @@ fn.14:                                   # @fn.14
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 24
+	addi	s9, t0, 24
 	li	t6, 120760
 	add	t6, sp, t6
 	sd	ra, 0(t6)
@@ -5459,48 +5487,48 @@ fn.14:                                   # @fn.14
 	li	t6, 40472
 	add	t6, sp, t6
 	ld	t1, 0(t6)
-	add	a0, s10, x0
+	add	a0, s9, x0
 	add	a1, t1, x0
 	li	a2, 40000
 	call	builtin_memcpy
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 20
+	addi	s9, t0, 20
 	li	t6, 120704
 	add	t6, sp, t6
 	ld	t1, 0(t6)
-	sw	t1, 0(s10)
+	sw	t1, 0(s9)
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 16
+	addi	s9, t0, 16
 	li	t1, 0
-	sb	t1, 0(s10)
+	sb	t1, 0(s9)
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 12
+	addi	s9, t0, 12
 	li	t1, 999999
-	sw	t1, 0(s10)
+	sw	t1, 0(s9)
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 8
+	addi	s9, t0, 8
 	li	t1, -999999
-	sw	t1, 0(s10)
+	sw	t1, 0(s9)
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 4
+	addi	s9, t0, 4
 	li	t1, 0
-	sw	t1, 0(s10)
+	sw	t1, 0(s9)
 	li	t6, 80504
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s10, t0, 0
+	addi	s9, t0, 0
 	li	t1, 0
-	sw	t1, 0(s10)
+	sw	t1, 0(s9)
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
@@ -5570,10 +5598,8 @@ fn.14:                                   # @fn.14
 	add	t6, sp, t6
 	ld	t0, 0(t6)
 	addi	a4, t0, 4
-	lw	t0, 0(a4)
-	sw	t0, 388(sp)
-	lw	t0, 388(sp)
-	divw	t0, t0, a1
+	lw	a4, 0(a4)
+	divw	t0, a4, a1
 	sw	t0, 384(sp)
 	lw	t1, 384(sp)
 	sw	t1, 0(a5)
@@ -5665,12 +5691,12 @@ fn.14:                                   # @fn.14
 	li	t6, 120720
 	add	t6, sp, t6
 	ld	s1, 0(t6)
+	li	t6, 120648
+	add	t6, sp, t6
+	ld	s2, 0(t6)
 	li	t6, 120640
 	add	t6, sp, t6
 	ld	s3, 0(t6)
-	li	t6, 120632
-	add	t6, sp, t6
-	ld	s4, 0(t6)
 	li	t6, 120624
 	add	t6, sp, t6
 	ld	s5, 0(t6)
@@ -5728,39 +5754,35 @@ fn.14:                                   # @fn.14
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s6, t0, 24
+	addi	s10, t0, 24
 	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s5, s6, t0
+	add	s8, s10, t0
 	lw	t1, 44(sp)
-	sw	t1, 0(s5)
+	sw	t1, 0(s8)
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s4, t0, 4
+	addi	s7, t0, 4
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s3, t0, 4
-	lw	t0, 0(s3)
-	sw	t0, 324(sp)
-	lw	t0, 324(sp)
+	addi	s6, t0, 4
+	lw	s5, 0(s6)
 	lw	t1, 44(sp)
-	addw	t0, t0, t1
+	addw	t0, s5, t1
 	sw	t0, 320(sp)
 	lw	t1, 320(sp)
-	sw	t1, 0(s4)
+	sw	t1, 0(s7)
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	s1, t0, 12
-	lw	t0, 0(s1)
-	sw	t0, 308(sp)
+	addi	s3, t0, 12
+	lw	s2, 0(s3)
 	lw	t0, 44(sp)
-	lw	t1, 308(sp)
-	slt	s0, t0, t1
-	add	t0, s0, x0
+	slt	s1, t0, s2
+	add	t0, s1, x0
 	beq	x0, t0, .LBB22_29_jump_0
 	j	.LBB22_176
 .LBB22_29_jump_0:                               # %label_29_jump_0
@@ -5776,7 +5798,7 @@ fn.14:                                   # @fn.14
 	add	t0, t0, x0
 	sw	t0, 292(sp)
 	lw	t0, 292(sp)
-	add	s7, t0, x0
+	add	s11, t0, x0
 	j	.LBB22_39
 .LBB22_38:                               # %label_38
 	xori	t0, a0, 2
@@ -5788,7 +5810,7 @@ fn.14:                                   # @fn.14
 .LBB22_38_jump_0:                               # %label_38_jump_0
 	j	.LBB22_47
 .LBB22_39:                               # %label_39
-	add	t0, s7, x0
+	add	t0, s11, x0
 	sw	t0, 44(sp)
 	j	.LBB22_29
 .LBB22_46:                               # %label_46
@@ -5805,7 +5827,8 @@ fn.14:                                   # @fn.14
 	add	t0, t0, x0
 	sw	t0, 272(sp)
 	lw	t0, 272(sp)
-	add	s8, t0, x0
+	add	t0, t0, x0
+	sw	t0, 36(sp)
 	j	.LBB22_48
 .LBB22_47:                               # %label_47
 	xori	t0, a0, 3
@@ -5817,7 +5840,8 @@ fn.14:                                   # @fn.14
 .LBB22_47_jump_0:                               # %label_47_jump_0
 	j	.LBB22_58
 .LBB22_48:                               # %label_48
-	add	s7, s8, x0
+	lw	t0, 36(sp)
+	add	s11, t0, x0
 	j	.LBB22_39
 .LBB22_57:                               # %label_57
 	li	t1, 2
@@ -5841,7 +5865,9 @@ fn.14:                                   # @fn.14
 .LBB22_58_jump_0:                               # %label_58_jump_0
 	j	.LBB22_80
 .LBB22_59:                               # %label_59
-	add	s8, s9, x0
+	lw	t0, 28(sp)
+	add	t0, t0, x0
+	sw	t0, 36(sp)
 	j	.LBB22_48
 .LBB22_64:                               # %label_64
 	li	t1, 4
@@ -5872,7 +5898,8 @@ fn.14:                                   # @fn.14
 	add	t0, t0, x0
 	sw	t0, 236(sp)
 	lw	t0, 236(sp)
-	add	s9, t0, x0
+	add	t0, t0, x0
+	sw	t0, 28(sp)
 	j	.LBB22_59
 .LBB22_79:                               # %label_79
 	li	t1, 2
@@ -5896,7 +5923,9 @@ fn.14:                                   # @fn.14
 .LBB22_80_jump_0:                               # %label_80_jump_0
 	j	.LBB22_106
 .LBB22_81:                               # %label_81
-	add	s9, s11, x0
+	lw	t0, 20(sp)
+	add	t0, t0, x0
+	sw	t0, 28(sp)
 	j	.LBB22_59
 .LBB22_86:                               # %label_86
 	li	t1, 2
@@ -5938,7 +5967,8 @@ fn.14:                                   # @fn.14
 	add	t0, t0, x0
 	sw	t0, 192(sp)
 	lw	t0, 192(sp)
-	add	s11, t0, x0
+	add	t0, t0, x0
+	sw	t0, 20(sp)
 	j	.LBB22_81
 .LBB22_105:                               # %label_105
 	li	t1, 2
@@ -5979,7 +6009,8 @@ fn.14:                                   # @fn.14
 	j	.LBB22_120
 .LBB22_107:                               # %label_107
 	lw	t0, 16(sp)
-	add	s11, t0, x0
+	add	t0, t0, x0
+	sw	t0, 20(sp)
 	j	.LBB22_81
 .LBB22_119:                               # %label_119
 	li	t1, 10
@@ -6081,19 +6112,17 @@ fn.14:                                   # @fn.14
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	t5, t0, 12
+	addi	s0, t0, 12
 	lw	t1, 44(sp)
-	sw	t1, 0(t5)
+	sw	t1, 0(s0)
 .LBB22_177:                               # %label_177
 	li	t6, 120536
 	add	t6, sp, t6
 	ld	t0, 0(t6)
-	addi	t4, t0, 8
-	lw	t0, 0(t4)
-	sw	t0, 68(sp)
+	addi	t5, t0, 8
+	lw	t4, 0(t5)
 	lw	t0, 44(sp)
-	lw	t1, 68(sp)
-	slt	t3, t1, t0
+	slt	t3, t4, t0
 	add	t0, t3, x0
 	beqz	t0, .LBB22_185
 .LBB22_184:                               # %label_184
@@ -6123,50 +6152,44 @@ fn.15:                                   # @fn.15
 	sd	s4, 392(sp)
 	sd	s5, 384(sp)
 	sd	s6, 376(sp)
-	sd	s7, 368(sp)
 	sd	s8, 360(sp)
 	sd	s9, 352(sp)
 	sd	s10, 344(sp)
-	sd	s11, 336(sp)
 	j	.LBB23_0
 .LBB23_0:                               # %label_0
-	addi	s2, a2, 0
-	addi	s3, a2, 0
-	lw	t0, 0(s3)
-	sw	t0, 284(sp)
-	lw	t0, 284(sp)
-	addiw	t0, t0, 1
+	addi	a3, a2, 0
+	addi	a4, a2, 0
+	lw	a4, 0(a4)
+	addiw	t0, a4, 1
 	sw	t0, 280(sp)
 	lw	t1, 280(sp)
-	sw	t1, 0(s2)
-	li	s10, 0
-	li	s8, 0
-	li	s5, 0
-	li	s2, 0
+	sw	t1, 0(a3)
+	li	s0, 0
+	li	t4, 0
+	li	a6, 0
+	li	a3, 0
 .LBB23_13:                               # %label_13
 	addiw	t0, a1, -1
 	sw	t0, 276(sp)
 	lw	t1, 276(sp)
-	slt	t0, s10, t1
+	slt	t0, s0, t1
 	sb	t0, 275(sp)
 	lbu	t0, 275(sp)
 	beqz	t0, .LBB23_15
 .LBB23_14:                               # %label_14
-	li	s9, 0
-	li	s6, 0
-	add	s3, s2, x0
+	li	t5, 0
+	li	a7, 0
+	add	a4, a3, x0
 	j	.LBB23_22
 .LBB23_15:                               # %label_15
-	addi	a3, a2, 16
-	addi	s11, a2, 16
-	lw	t0, 0(s11)
-	sw	t0, 252(sp)
-	mulw	s11, a1, a1
-	lw	t0, 252(sp)
-	addw	t0, t0, s11
+	addi	s3, a2, 16
+	addi	s1, a2, 16
+	lw	s2, 0(s1)
+	mulw	s1, a1, a1
+	addw	t0, s2, s1
 	sw	t0, 244(sp)
 	lw	t1, 244(sp)
-	sw	t1, 0(a3)
+	sw	t1, 0(s3)
 	ld	s0, 488(sp)
 	ld	s1, 480(sp)
 	ld	s2, 408(sp)
@@ -6174,22 +6197,20 @@ fn.15:                                   # @fn.15
 	ld	s4, 392(sp)
 	ld	s5, 384(sp)
 	ld	s6, 376(sp)
-	ld	s7, 368(sp)
 	ld	s8, 360(sp)
 	ld	s9, 352(sp)
 	ld	s10, 344(sp)
-	ld	s11, 336(sp)
 	li	a0, 0
 	addi	sp, sp, 528
 	ret
 .LBB23_22:                               # %label_22
-	subw	t0, a1, s10
+	subw	t0, a1, s0
 	sw	t0, 240(sp)
 	lw	t0, 240(sp)
 	addiw	t0, t0, -1
 	sw	t0, 236(sp)
 	lw	t1, 236(sp)
-	slt	t0, s9, t1
+	slt	t0, t5, t1
 	sb	t0, 235(sp)
 	lbu	t0, 235(sp)
 	beqz	t0, .LBB23_24
@@ -6220,7 +6241,7 @@ fn.15:                                   # @fn.15
 	ld	t0, 200(sp)
 	lw	t1, 184(sp)
 	sw	t1, 0(t0)
-	add	t0, s9, x0
+	add	t0, t5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -6228,7 +6249,7 @@ fn.15:                                   # @fn.15
 	ld	t0, 176(sp)
 	lw	t0, 0(t0)
 	sw	t0, 172(sp)
-	addiw	t0, s9, 1
+	addiw	t0, t5, 1
 	sw	t0, 168(sp)
 	lw	t0, 168(sp)
 	li	t1, 4
@@ -6242,8 +6263,8 @@ fn.15:                                   # @fn.15
 	lw	t1, 156(sp)
 	slt	t0, t1, t0
 	sb	t0, 155(sp)
-	add	s7, s6, x0
-	add	s4, s3, x0
+	add	t3, a7, x0
+	add	a5, a4, x0
 	lbu	t0, 155(sp)
 	beq	x0, t0, .LBB23_23_jump_0
 	j	.LBB23_53
@@ -6251,14 +6272,14 @@ fn.15:                                   # @fn.15
 	j	.LBB23_54
 .LBB23_24:                               # %label_24
 	li	t0, 1
-	subw	a5, t0, s6
-	add	t0, a5, x0
+	subw	s5, t0, a7
+	add	t0, s5, x0
 	beq	x0, t0, .LBB23_24_jump_0
 	j	.LBB23_89
 .LBB23_24_jump_0:                               # %label_24_jump_0
 	j	.LBB23_90
 .LBB23_53:                               # %label_53
-	add	t0, s9, x0
+	add	t0, t5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -6266,12 +6287,12 @@ fn.15:                                   # @fn.15
 	ld	t0, 144(sp)
 	lw	t0, 0(t0)
 	sw	t0, 140(sp)
-	add	t0, s9, x0
+	add	t0, t5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
 	sd	t2, 128(sp)
-	addiw	t0, s9, 1
+	addiw	t0, t5, 1
 	sw	t0, 124(sp)
 	lw	t0, 124(sp)
 	li	t1, 4
@@ -6284,7 +6305,7 @@ fn.15:                                   # @fn.15
 	ld	t0, 128(sp)
 	lw	t1, 108(sp)
 	sw	t1, 0(t0)
-	addiw	t0, s9, 1
+	addiw	t0, t5, 1
 	sw	t0, 104(sp)
 	lw	t0, 104(sp)
 	li	t1, 4
@@ -6294,41 +6315,43 @@ fn.15:                                   # @fn.15
 	ld	t0, 96(sp)
 	lw	t1, 140(sp)
 	sw	t1, 0(t0)
-	addi	s1, a2, 8
-	addi	s0, a2, 8
-	lw	t0, 0(s0)
+	addi	t0, a2, 8
+	sd	t0, 88(sp)
+	addi	t0, a2, 8
+	sd	t0, 80(sp)
+	ld	t0, 80(sp)
+	lw	t0, 0(t0)
 	sw	t0, 76(sp)
 	lw	t0, 76(sp)
 	addiw	t0, t0, 1
 	sw	t0, 72(sp)
+	ld	t0, 88(sp)
 	lw	t1, 72(sp)
-	sw	t1, 0(s1)
-	addi	t4, a2, 4
-	addi	t3, a2, 4
-	lw	t0, 0(t3)
-	sw	t0, 52(sp)
-	lw	t0, 52(sp)
-	addiw	t0, t0, 4
+	sw	t1, 0(t0)
+	addi	s10, a2, 4
+	addi	s9, a2, 4
+	lw	s8, 0(s9)
+	addiw	t0, s8, 4
 	sw	t0, 48(sp)
 	lw	t1, 48(sp)
-	sw	t1, 0(t4)
-	li	s7, 1
+	sw	t1, 0(s10)
+	li	t3, 1
 	lw	t0, 140(sp)
-	add	s4, t0, x0
+	add	a5, t0, x0
 .LBB23_54:                               # %label_54
-	addiw	a6, s9, 1
-	add	s9, a6, x0
-	add	s6, s7, x0
-	add	s3, s4, x0
+	addiw	s6, t5, 1
+	add	t5, s6, x0
+	add	a7, t3, x0
+	add	a4, a5, x0
 	j	.LBB23_22
 .LBB23_89:                               # %label_89
 	j	.LBB23_15
 .LBB23_90:                               # %label_90
-	addiw	a4, s10, 1
-	add	s10, a4, x0
-	add	s8, s9, x0
-	add	s5, s6, x0
-	add	s2, s3, x0
+	addiw	s4, s0, 1
+	add	s0, s4, x0
+	add	t4, t5, x0
+	add	a6, a7, x0
+	add	a3, a4, x0
 	j	.LBB23_13
 .Lfunc_end23:
 	.size	fn.15, .Lfunc_end23-fn.15
@@ -6340,23 +6363,22 @@ fn.16:                                   # @fn.16
 # %bb.0:                                # %alloca
 	addi	sp, sp, -272
 	sd	s0, 232(sp)
+	sd	s1, 224(sp)
 	j	.LBB24_0
 .LBB24_0:                               # %label_0
 	li	a4, 0
 	li	a3, 0
 .LBB24_8:                               # %label_8
-	slt	s0, a3, a1
-	add	t0, s0, x0
+	slt	s1, a3, a1
+	add	t0, s1, x0
 	beqz	t0, .LBB24_10
 .LBB24_9:                               # %label_9
 	add	t0, a3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t5, a0, t0
-	lw	t0, 0(t5)
-	sw	t0, 28(sp)
-	lw	t0, 28(sp)
-	subw	t4, t0, a2
+	add	s0, a0, t0
+	lw	t5, 0(s0)
+	subw	t4, t5, a2
 	mulw	t3, t4, t4
 	addw	a7, a4, t3
 	addiw	a6, a3, 1
@@ -6368,6 +6390,7 @@ fn.16:                                   # @fn.16
 	sw	t0, 8(sp)
 	lw	a0, 8(sp)
 	ld	s0, 232(sp)
+	ld	s1, 224(sp)
 	addi	sp, sp, 272
 	ret
 .Lfunc_end24:
@@ -6380,14 +6403,13 @@ fn.17:                                   # @fn.17
 # %bb.0:                                # %alloca
 	addi	sp, sp, -576
 	sd	s0, 536(sp)
-	sd	s1, 528(sp)
 	sd	s2, 456(sp)
-	sd	s3, 448(sp)
 	sd	s4, 440(sp)
 	sd	s5, 432(sp)
 	sd	s6, 424(sp)
-	sd	s8, 408(sp)
+	sd	s7, 416(sp)
 	sd	s9, 400(sp)
+	sd	s10, 392(sp)
 	sd	s11, 384(sp)
 	j	.LBB25_0
 .LBB25_0:                               # %label_0
@@ -6395,31 +6417,30 @@ fn.17:                                   # @fn.17
 	li	t1, 4
 	mul	t0, t0, t1
 	add	a4, a0, t0
-	lw	t0, 0(a4)
-	sw	t0, 340(sp)
-	addiw	a6, a1, -1
-	addi	a5, a3, 4
+	lw	a6, 0(a4)
+	addiw	a5, a1, -1
 	addi	a4, a3, 4
-	lw	t0, 0(a4)
-	sw	t0, 316(sp)
-	lw	t0, 316(sp)
-	addiw	t0, t0, 1
+	addi	s7, a3, 4
+	lw	s7, 0(s7)
+	addiw	t0, s7, 1
 	sw	t0, 312(sp)
 	lw	t1, 312(sp)
-	sw	t1, 0(a5)
+	sw	t1, 0(a4)
 	li	a4, 0
-	add	s1, a1, x0
-	add	a5, a6, x0
+	add	t3, a1, x0
+	add	s7, a5, x0
 .LBB25_24:                               # %label_24
-	slt	t0, s1, a2
+	slt	t0, t3, a2
 	sb	t0, 311(sp)
 	lbu	t0, 311(sp)
 	beqz	t0, .LBB25_26
 .LBB25_25:                               # %label_25
 	addi	t0, a3, 12
 	sd	t0, 296(sp)
-	addi	s11, a3, 12
-	lw	t0, 0(s11)
+	addi	t0, a3, 12
+	sd	t0, 288(sp)
+	ld	t0, 288(sp)
+	lw	t0, 0(t0)
 	sw	t0, 284(sp)
 	lw	t0, 284(sp)
 	addiw	t0, t0, 1
@@ -6427,143 +6448,150 @@ fn.17:                                   # @fn.17
 	ld	t0, 296(sp)
 	lw	t1, 280(sp)
 	sw	t1, 0(t0)
-	addi	s9, a3, 4
-	addi	s8, a3, 4
-	lw	t0, 0(s8)
+	addi	t0, a3, 4
+	sd	t0, 272(sp)
+	addi	t0, a3, 4
+	sd	t0, 264(sp)
+	ld	t0, 264(sp)
+	lw	t0, 0(t0)
 	sw	t0, 260(sp)
 	lw	t0, 260(sp)
 	addiw	t0, t0, 1
 	sw	t0, 256(sp)
+	ld	t0, 272(sp)
 	lw	t1, 256(sp)
-	sw	t1, 0(s9)
-	add	t0, s1, x0
+	sw	t1, 0(t0)
+	add	t0, t3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s6, a0, t0
-	lw	t0, 0(s6)
+	add	t2, a0, t0
+	sd	t2, 248(sp)
+	ld	t0, 248(sp)
+	lw	t0, 0(t0)
 	sw	t0, 244(sp)
 	lw	t0, 244(sp)
-	lw	t1, 340(sp)
-	slt	t0, t1, t0
-	xori	s5, t0, 1
-	add	s2, a5, x0
+	slt	t0, a6, t0
+	xori	t0, t0, 1
+	sb	t0, 243(sp)
+	add	t4, s7, x0
 	add	a7, a4, x0
-	add	t0, s5, x0
+	lbu	t0, 243(sp)
 	beq	x0, t0, .LBB25_25_jump_0
 	j	.LBB25_48
 .LBB25_25_jump_0:                               # %label_25_jump_0
 	j	.LBB25_49
 .LBB25_26:                               # %label_26
-	addiw	t3, a5, 1
-	add	t0, t3, x0
+	addiw	t5, s7, 1
+	add	t0, t5, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t3, a0, t0
-	lw	t0, 0(t3)
+	add	t5, a0, t0
+	lw	t0, 0(t5)
 	sw	t0, 220(sp)
-	addiw	t3, a5, 1
-	add	t0, t3, x0
+	addiw	t5, s7, 1
+	add	t0, t5, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t4, a0, t0
+	add	s0, a0, t0
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t3, a0, t0
-	lw	t0, 0(t3)
+	add	t5, a0, t0
+	lw	t0, 0(t5)
 	sw	t0, 196(sp)
 	lw	t1, 196(sp)
-	sw	t1, 0(t4)
+	sw	t1, 0(s0)
 	add	t0, a2, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t3, a0, t0
+	add	t5, a0, t0
 	lw	t1, 220(sp)
-	sw	t1, 0(t3)
-	addi	t4, a3, 8
-	addi	t3, a3, 8
-	lw	t0, 0(t3)
-	sw	t0, 164(sp)
-	lw	t0, 164(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(t5)
+	addi	t5, a3, 8
+	addi	s0, a3, 8
+	lw	s0, 0(s0)
+	addiw	t0, s0, 1
 	sw	t0, 160(sp)
 	lw	t1, 160(sp)
-	sw	t1, 0(t4)
-	addi	t4, a3, 4
-	addi	t3, a3, 4
-	lw	t0, 0(t3)
-	sw	t0, 140(sp)
-	lw	t0, 140(sp)
-	addiw	t0, t0, 4
+	sw	t1, 0(t5)
+	addi	t5, a3, 4
+	addi	s0, a3, 4
+	lw	s0, 0(s0)
+	addiw	t0, s0, 4
 	sw	t0, 136(sp)
 	lw	t1, 136(sp)
-	sw	t1, 0(t4)
-	addiw	t0, a5, 1
+	sw	t1, 0(t5)
+	addiw	t0, s7, 1
 	sw	t0, 132(sp)
 	lw	a0, 132(sp)
 	ld	s0, 536(sp)
-	ld	s1, 528(sp)
 	ld	s2, 456(sp)
-	ld	s3, 448(sp)
 	ld	s4, 440(sp)
 	ld	s5, 432(sp)
 	ld	s6, 424(sp)
-	ld	s8, 408(sp)
+	ld	s7, 416(sp)
 	ld	s9, 400(sp)
+	ld	s10, 392(sp)
 	ld	s11, 384(sp)
 	addi	sp, sp, 576
 	ret
 .LBB25_48:                               # %label_48
-	addiw	s4, a5, 1
-	add	t0, s4, x0
+	addiw	t0, s7, 1
+	sw	t0, 128(sp)
+	lw	t0, 128(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t5, a0, t0
-	lw	t0, 0(t5)
+	add	t2, a0, t0
+	sd	t2, 120(sp)
+	ld	t0, 120(sp)
+	lw	t0, 0(t0)
 	sw	t0, 116(sp)
-	add	t0, s4, x0
+	lw	t0, 128(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s0, a0, t0
-	add	t0, s1, x0
+	add	t2, a0, t0
+	sd	t2, 104(sp)
+	add	t0, t3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t5, a0, t0
-	lw	t0, 0(t5)
+	add	t2, a0, t0
+	sd	t2, 96(sp)
+	ld	t0, 96(sp)
+	lw	t0, 0(t0)
 	sw	t0, 92(sp)
+	ld	t0, 104(sp)
 	lw	t1, 92(sp)
-	sw	t1, 0(s0)
-	add	t0, s1, x0
+	sw	t1, 0(t0)
+	add	t0, t3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t5, a0, t0
+	add	t2, a0, t0
+	sd	t2, 80(sp)
+	ld	t0, 80(sp)
 	lw	t1, 116(sp)
-	sw	t1, 0(t5)
-	addi	s0, a3, 8
-	addi	t5, a3, 8
-	lw	t0, 0(t5)
-	sw	t0, 60(sp)
-	lw	t0, 60(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(t0)
+	addi	s11, a3, 8
+	addi	s10, a3, 8
+	lw	s9, 0(s10)
+	addiw	t0, s9, 1
 	sw	t0, 56(sp)
 	lw	t1, 56(sp)
-	sw	t1, 0(s0)
-	addi	s0, a3, 4
-	addi	t5, a3, 4
-	lw	t0, 0(t5)
-	sw	t0, 36(sp)
-	lw	t0, 36(sp)
-	addiw	t0, t0, 4
+	sw	t1, 0(s11)
+	addi	s6, a3, 4
+	addi	s5, a3, 4
+	lw	s4, 0(s5)
+	addiw	t0, s4, 4
 	sw	t0, 32(sp)
 	lw	t1, 32(sp)
-	sw	t1, 0(s0)
-	add	s2, s4, x0
+	sw	t1, 0(s6)
+	lw	t0, 128(sp)
+	add	t4, t0, x0
 	lw	t0, 116(sp)
 	add	a7, t0, x0
 .LBB25_49:                               # %label_49
-	addiw	s3, s1, 1
-	add	s1, s3, x0
-	add	a5, s2, x0
+	addiw	s2, t3, 1
+	add	t3, s2, x0
+	add	s7, t4, x0
 	add	a4, a7, x0
 	j	.LBB25_24
 .Lfunc_end25:
@@ -6575,6 +6603,7 @@ fn.17:                                   # @fn.17
 fn.18:                                   # @fn.18
 # %bb.0:                                # %alloca
 	addi	sp, sp, -512
+	sd	s0, 472(sp)
 	sd	s1, 464(sp)
 	sd	s2, 392(sp)
 	sd	s3, 384(sp)
@@ -6584,28 +6613,23 @@ fn.18:                                   # @fn.18
 	sd	s8, 344(sp)
 	sd	s9, 336(sp)
 	sd	s10, 328(sp)
-	sd	s11, 320(sp)
 	j	.LBB26_0
 .LBB26_0:                               # %label_0
-	addi	t0, a2, 0
-	sd	t0, 280(sp)
-	addi	s7, a2, 0
-	lw	t0, 0(s7)
-	sw	t0, 268(sp)
-	lw	t0, 268(sp)
-	addiw	t0, t0, 1
+	addi	a3, a2, 0
+	addi	s10, a2, 0
+	lw	s10, 0(s10)
+	addiw	t0, s10, 1
 	sw	t0, 264(sp)
-	ld	t0, 280(sp)
 	lw	t1, 264(sp)
-	sw	t1, 0(t0)
-	li	s9, 1
+	sw	t1, 0(a3)
+	li	a5, 1
 .LBB26_13:                               # %label_13
-	slt	t0, s9, a1
+	slt	t0, a5, a1
 	sb	t0, 263(sp)
 	lbu	t0, 263(sp)
 	beqz	t0, .LBB26_15
 .LBB26_14:                               # %label_14
-	add	t0, s9, x0
+	add	t0, a5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -6613,7 +6637,7 @@ fn.18:                                   # @fn.18
 	ld	t0, 248(sp)
 	lw	t0, 0(t0)
 	sw	t0, 244(sp)
-	addiw	t0, s9, -1
+	addiw	t0, a5, -1
 	sw	t0, 240(sp)
 	addi	t0, a2, 4
 	sd	t0, 232(sp)
@@ -6629,19 +6653,18 @@ fn.18:                                   # @fn.18
 	lw	t1, 216(sp)
 	sw	t1, 0(t0)
 	lw	t0, 240(sp)
-	add	s8, t0, x0
+	add	a4, t0, x0
 	j	.LBB26_33
 .LBB26_15:                               # %label_15
-	addi	a3, a2, 16
-	addi	s10, a2, 16
-	lw	t0, 0(s10)
-	sw	t0, 196(sp)
-	mulw	s10, a1, a1
-	lw	t0, 196(sp)
-	addw	t0, t0, s10
+	addi	t3, a2, 16
+	addi	a6, a2, 16
+	lw	a7, 0(a6)
+	mulw	a6, a1, a1
+	addw	t0, a7, a6
 	sw	t0, 188(sp)
 	lw	t1, 188(sp)
-	sw	t1, 0(a3)
+	sw	t1, 0(t3)
+	ld	s0, 472(sp)
 	ld	s1, 464(sp)
 	ld	s2, 392(sp)
 	ld	s3, 384(sp)
@@ -6651,12 +6674,11 @@ fn.18:                                   # @fn.18
 	ld	s8, 344(sp)
 	ld	s9, 336(sp)
 	ld	s10, 328(sp)
-	ld	s11, 320(sp)
 	li	a0, 0
 	addi	sp, sp, 512
 	ret
 .LBB26_33:                               # %label_33
-	slti	t0, s8, 0
+	slti	t0, a4, 0
 	xori	t0, t0, 1
 	sb	t0, 187(sp)
 	lbu	t0, 187(sp)
@@ -6680,8 +6702,10 @@ fn.18:                                   # @fn.18
 	sw	t1, 0(t0)
 	addi	t0, a2, 4
 	sd	t0, 152(sp)
-	addi	s11, a2, 4
-	lw	t0, 0(s11)
+	addi	t0, a2, 4
+	sd	t0, 144(sp)
+	ld	t0, 144(sp)
+	lw	t0, 0(t0)
 	sw	t0, 140(sp)
 	lw	t0, 140(sp)
 	addiw	t0, t0, 2
@@ -6689,53 +6713,54 @@ fn.18:                                   # @fn.18
 	ld	t0, 152(sp)
 	lw	t1, 136(sp)
 	sw	t1, 0(t0)
-	addiw	s4, s8, 1
-	add	t0, s4, x0
+	addiw	t0, a4, 1
+	sw	t0, 132(sp)
+	lw	t0, 132(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s5, a0, t0
-	add	t0, s8, x0
+	add	t2, a0, t0
+	sd	t2, 120(sp)
+	add	t0, a4, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s3, a0, t0
-	lw	t0, 0(s3)
+	add	t2, a0, t0
+	sd	t2, 112(sp)
+	ld	t0, 112(sp)
+	lw	t0, 0(t0)
 	sw	t0, 108(sp)
+	ld	t0, 120(sp)
 	lw	t1, 108(sp)
-	sw	t1, 0(s5)
-	addi	s2, a2, 4
-	addi	s1, a2, 4
-	lw	t0, 0(s1)
-	sw	t0, 84(sp)
-	lw	t0, 84(sp)
-	addiw	t0, t0, 2
+	sw	t1, 0(t0)
+	addi	s9, a2, 4
+	addi	s8, a2, 4
+	lw	s7, 0(s8)
+	addiw	t0, s7, 2
 	sw	t0, 80(sp)
 	lw	t1, 80(sp)
-	sw	t1, 0(s2)
-	addiw	t5, s8, -1
-	add	s8, t5, x0
+	sw	t1, 0(s9)
+	addiw	s5, a4, -1
+	add	a4, s5, x0
 	j	.LBB26_33
 .LBB26_35:                               # %label_35
-	addiw	t3, s8, 1
-	add	t0, t3, x0
+	addiw	s3, a4, 1
+	add	t0, s3, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	t4, a0, t0
+	add	s4, a0, t0
 	lw	t1, 244(sp)
-	sw	t1, 0(t4)
-	addi	a7, a2, 4
-	addi	a6, a2, 4
-	lw	t0, 0(a6)
-	sw	t0, 44(sp)
-	lw	t0, 44(sp)
-	addiw	t0, t0, 1
+	sw	t1, 0(s4)
+	addi	s2, a2, 4
+	addi	s1, a2, 4
+	lw	s0, 0(s1)
+	addiw	t0, s0, 1
 	sw	t0, 40(sp)
 	lw	t1, 40(sp)
-	sw	t1, 0(a7)
-	addiw	a4, s9, 1
-	add	s9, a4, x0
+	sw	t1, 0(s2)
+	addiw	t4, a5, 1
+	add	a5, t4, x0
 	j	.LBB26_13
 .LBB26_38:                               # %label_38
-	add	t0, s8, x0
+	add	t0, a4, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -6776,25 +6801,24 @@ fn.19:                                   # @fn.19
 	addi	sp, sp, -560
 	sd	s0, 520(sp)
 	sd	s1, 512(sp)
+	sd	s2, 440(sp)
 	j	.LBB27_0
 .LBB27_0:                               # %label_0
+	addi	s2, a3, 0
 	addi	a7, a3, 0
-	addi	a6, a3, 0
-	lw	t0, 0(a6)
-	sw	t0, 188(sp)
-	lw	t0, 188(sp)
-	addiw	t0, t0, 1
+	lw	a7, 0(a7)
+	addiw	t0, a7, 1
 	sw	t0, 184(sp)
 	lw	t1, 184(sp)
-	sw	t1, 0(a7)
-	slt	a6, a1, a2
-	add	t0, a6, x0
+	sw	t1, 0(s2)
+	slt	a7, a1, a2
+	add	t0, a7, x0
 	beqz	t0, .LBB27_18
 .LBB27_17:                               # %label_17
-	subw	a4, a2, a1
+	subw	a5, a2, a1
 	li	t1, 2
-	divw	a4, a4, t1
-	addw	a5, a1, a4
+	divw	a5, a5, t1
+	addw	a6, a1, a5
 	sd	ra, 552(sp)
 	sd	a0, 504(sp)
 	sd	a1, 496(sp)
@@ -6806,20 +6830,20 @@ fn.19:                                   # @fn.19
 	sd	a7, 448(sp)
 	ld	a0, 504(sp)
 	ld	a1, 496(sp)
-	ld	a2, 464(sp)
+	ld	a2, 456(sp)
 	ld	a3, 480(sp)
 	call	fn.19
-	ld	t0, 464(sp)
-	addiw	a4, t0, 1
-	sd	a4, 472(sp)
+	ld	t0, 456(sp)
+	addiw	a5, t0, 1
+	sd	a5, 464(sp)
 	ld	a0, 504(sp)
-	ld	a1, 472(sp)
+	ld	a1, 464(sp)
 	ld	a2, 488(sp)
 	ld	a3, 480(sp)
 	call	fn.19
 	ld	a0, 504(sp)
 	ld	a1, 496(sp)
-	ld	a2, 464(sp)
+	ld	a2, 456(sp)
 	ld	a3, 488(sp)
 	ld	a4, 480(sp)
 	call	fn.22
@@ -6833,19 +6857,18 @@ fn.19:                                   # @fn.19
 	ld	a6, 456(sp)
 	ld	a7, 448(sp)
 .LBB27_18:                               # %label_18
-	addi	s1, a3, 16
+	addi	a4, a3, 16
 	addi	s0, a3, 16
-	lw	t0, 0(s0)
-	sw	t0, 140(sp)
+	lw	s1, 0(s0)
 	subw	s0, a2, a1
 	addiw	s0, s0, 1
-	lw	t0, 140(sp)
-	addw	t0, t0, s0
+	addw	t0, s1, s0
 	sw	t0, 128(sp)
 	lw	t1, 128(sp)
-	sw	t1, 0(s1)
+	sw	t1, 0(a4)
 	ld	s0, 520(sp)
 	ld	s1, 512(sp)
+	ld	s2, 440(sp)
 	li	a0, 0
 	addi	sp, sp, 560
 	ret
@@ -6860,19 +6883,18 @@ fn.20:                                   # @fn.20
 	addi	sp, sp, -560
 	sd	s0, 520(sp)
 	sd	s1, 512(sp)
+	sd	s2, 440(sp)
 	j	.LBB28_0
 .LBB28_0:                               # %label_0
+	addi	s2, a3, 0
 	addi	a7, a3, 0
-	addi	a6, a3, 0
-	lw	t0, 0(a6)
-	sw	t0, 188(sp)
-	lw	t0, 188(sp)
-	addiw	t0, t0, 1
+	lw	a7, 0(a7)
+	addiw	t0, a7, 1
 	sw	t0, 184(sp)
 	lw	t1, 184(sp)
-	sw	t1, 0(a7)
-	slt	a6, a1, a2
-	add	t0, a6, x0
+	sw	t1, 0(s2)
+	slt	a7, a1, a2
+	add	t0, a7, x0
 	beqz	t0, .LBB28_18
 .LBB28_17:                               # %label_17
 	sd	ra, 552(sp)
@@ -6889,21 +6911,21 @@ fn.20:                                   # @fn.20
 	ld	a2, 488(sp)
 	ld	a3, 480(sp)
 	call	fn.17
-	add	a5, a0, x0
+	add	a6, a0, x0
+	sd	a6, 456(sp)
+	ld	t0, 456(sp)
+	addiw	a5, t0, -1
 	sd	a5, 464(sp)
-	ld	t0, 464(sp)
-	addiw	a4, t0, -1
-	sd	a4, 472(sp)
 	ld	a0, 504(sp)
 	ld	a1, 496(sp)
-	ld	a2, 472(sp)
+	ld	a2, 464(sp)
 	ld	a3, 480(sp)
 	call	fn.20
-	ld	t0, 464(sp)
-	addiw	a4, t0, 1
-	sd	a4, 472(sp)
+	ld	t0, 456(sp)
+	addiw	a5, t0, 1
+	sd	a5, 464(sp)
 	ld	a0, 504(sp)
-	ld	a1, 472(sp)
+	ld	a1, 464(sp)
 	ld	a2, 488(sp)
 	ld	a3, 480(sp)
 	call	fn.20
@@ -6917,19 +6939,18 @@ fn.20:                                   # @fn.20
 	ld	a6, 456(sp)
 	ld	a7, 448(sp)
 .LBB28_18:                               # %label_18
-	addi	s1, a3, 16
+	addi	a4, a3, 16
 	addi	s0, a3, 16
-	lw	t0, 0(s0)
-	sw	t0, 148(sp)
+	lw	s1, 0(s0)
 	subw	s0, a2, a1
 	addiw	s0, s0, 1
-	lw	t0, 148(sp)
-	addw	t0, t0, s0
+	addw	t0, s1, s0
 	sw	t0, 136(sp)
 	lw	t1, 136(sp)
-	sw	t1, 0(s1)
+	sw	t1, 0(a4)
 	ld	s0, 520(sp)
 	ld	s1, 512(sp)
+	ld	s2, 440(sp)
 	li	a0, 0
 	addi	sp, sp, 560
 	ret
@@ -6982,62 +7003,72 @@ fn.22:                                   # @fn.22
 	addi	sp, sp, -688
 	sd	s0, 648(sp)
 	sd	s1, 640(sp)
-	sd	s2, 568(sp)
 	sd	s3, 560(sp)
 	sd	s4, 552(sp)
 	sd	s5, 544(sp)
-	sd	s6, 536(sp)
 	sd	s7, 528(sp)
 	sd	s8, 520(sp)
-	sd	s9, 512(sp)
 	sd	s10, 504(sp)
 	sd	s11, 496(sp)
 	j	.LBB30_0
 .LBB30_0:                               # %label_0
-	subw	s2, a2, a1
-	addiw	s4, s2, 1
-	subw	s3, a3, a2
+	subw	s11, a2, a1
+	addiw	t0, s11, 1
+	sw	t0, 456(sp)
+	subw	t0, a3, a2
+	sw	t0, 452(sp)
+	lw	t1, 456(sp)
 	li	t0, 10000
-	subw	s2, t0, s4
-	li	s7, 0
+	subw	s11, t0, t1
+	li	a7, 0
 .LBB30_26:                               # %label_26
-	slt	t0, s7, s4
+	lw	t1, 456(sp)
+	slt	t0, a7, t1
 	sb	t0, 447(sp)
 	lbu	t0, 447(sp)
 	beqz	t0, .LBB30_28
 .LBB30_27:                               # %label_27
-	addw	s1, s2, s7
-	add	t0, s1, x0
+	addw	t0, s11, a7
+	sw	t0, 440(sp)
+	lw	t0, 440(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s11, a0, t0
-	addw	t5, a1, s7
-	add	t0, t5, x0
+	add	t2, a0, t0
+	sd	t2, 432(sp)
+	addw	t0, a1, a7
+	sw	t0, 428(sp)
+	lw	t0, 428(sp)
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s0, a0, t0
-	lw	t0, 0(s0)
+	add	t2, a0, t0
+	sd	t2, 416(sp)
+	ld	t0, 416(sp)
+	lw	t0, 0(t0)
 	sw	t0, 412(sp)
+	ld	t0, 432(sp)
 	lw	t1, 412(sp)
-	sw	t1, 0(s11)
-	addi	t4, a4, 4
-	addi	t3, a4, 4
-	lw	t0, 0(t3)
-	sw	t0, 388(sp)
-	lw	t0, 388(sp)
-	addiw	t0, t0, 2
+	sw	t1, 0(t0)
+	addi	t0, a4, 4
+	sd	t0, 400(sp)
+	addi	t0, a4, 4
+	sd	t0, 392(sp)
+	ld	t0, 392(sp)
+	lw	s10, 0(t0)
+	addiw	t0, s10, 2
 	sw	t0, 384(sp)
+	ld	t0, 400(sp)
 	lw	t1, 384(sp)
-	sw	t1, 0(t4)
-	addiw	a6, s7, 1
-	add	s7, a6, x0
+	sw	t1, 0(t0)
+	addiw	s8, a7, 1
+	add	a7, s8, x0
 	j	.LBB30_26
 .LBB30_28:                               # %label_28
+	li	t3, 0
 	li	s8, 0
-	li	a7, 0
-	add	a6, a1, x0
+	add	a7, a1, x0
 .LBB30_52:                               # %label_52
-	slt	t0, s8, s4
+	lw	t1, 456(sp)
+	slt	t0, t3, t1
 	sb	t0, 379(sp)
 	lbu	t0, 379(sp)
 	beq	x0, t0, .LBB30_52_jump_0
@@ -7071,7 +7102,7 @@ fn.22:                                   # @fn.22
 	ld	t0, 344(sp)
 	lw	t1, 328(sp)
 	sw	t1, 0(t0)
-	addw	t0, s2, s8
+	addw	t0, s11, t3
 	sw	t0, 324(sp)
 	lw	t0, 324(sp)
 	li	t1, 4
@@ -7084,7 +7115,7 @@ fn.22:                                   # @fn.22
 	addiw	t0, a2, 1
 	sw	t0, 304(sp)
 	lw	t0, 304(sp)
-	addw	t0, t0, a7
+	addw	t0, t0, s8
 	sw	t0, 300(sp)
 	lw	t0, 300(sp)
 	li	t1, 4
@@ -7105,12 +7136,12 @@ fn.22:                                   # @fn.22
 .LBB30_53_jump_0:                               # %label_53_jump_0
 	j	.LBB30_94
 .LBB30_54:                               # %label_54
-	add	t0, s8, x0
-	sw	t0, 28(sp)
-	add	t3, a6, x0
+	add	t5, t3, x0
+	add	a5, a7, x0
 	j	.LBB30_127
 .LBB30_58:                               # %label_58
-	slt	t0, a7, s3
+	lw	t1, 452(sp)
+	slt	t0, s8, t1
 	sb	t0, 282(sp)
 	lbu	t0, 282(sp)
 	sb	t0, 281(sp)
@@ -7131,12 +7162,12 @@ fn.22:                                   # @fn.22
 .LBB30_60_jump_0:                               # %label_60_jump_0
 	j	.LBB30_54
 .LBB30_93:                               # %label_93
-	add	t0, a6, x0
+	add	t0, a7, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
 	sd	t2, 272(sp)
-	addw	t0, s2, s8
+	addw	t0, s11, t3
 	sw	t0, 268(sp)
 	lw	t0, 268(sp)
 	li	t1, 4
@@ -7149,14 +7180,14 @@ fn.22:                                   # @fn.22
 	ld	t0, 272(sp)
 	lw	t1, 252(sp)
 	sw	t1, 0(t0)
-	addiw	t0, s8, 1
+	addiw	t0, t3, 1
 	sw	t0, 248(sp)
 	lw	t0, 248(sp)
-	add	s9, t0, x0
-	add	s5, a7, x0
+	add	t4, t0, x0
+	add	a5, s8, x0
 	j	.LBB30_95
 .LBB30_94:                               # %label_94
-	add	t0, a6, x0
+	add	t0, a7, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
@@ -7164,7 +7195,7 @@ fn.22:                                   # @fn.22
 	addiw	t0, a2, 1
 	sw	t0, 236(sp)
 	lw	t0, 236(sp)
-	addw	t0, t0, a7
+	addw	t0, t0, s8
 	sw	t0, 232(sp)
 	lw	t0, 232(sp)
 	li	t1, 4
@@ -7177,11 +7208,11 @@ fn.22:                                   # @fn.22
 	ld	t0, 240(sp)
 	lw	t1, 220(sp)
 	sw	t1, 0(t0)
-	addiw	t0, a7, 1
+	addiw	t0, s8, 1
 	sw	t0, 216(sp)
 	lw	t0, 216(sp)
-	add	s5, t0, x0
-	add	s9, s8, x0
+	add	a5, t0, x0
+	add	t4, t3, x0
 .LBB30_95:                               # %label_95
 	addi	t0, a4, 4
 	sd	t0, 208(sp)
@@ -7196,27 +7227,26 @@ fn.22:                                   # @fn.22
 	ld	t0, 208(sp)
 	lw	t1, 192(sp)
 	sw	t1, 0(t0)
-	addiw	t0, a6, 1
+	addiw	t0, a7, 1
 	sw	t0, 188(sp)
 	lw	t0, 188(sp)
-	add	a6, t0, x0
-	add	s8, s9, x0
-	add	a7, s5, x0
+	add	a7, t0, x0
+	add	t3, t4, x0
+	add	s8, a5, x0
 	j	.LBB30_52
 .LBB30_127:                               # %label_127
-	lw	t0, 28(sp)
-	slt	t0, t0, s4
+	lw	t1, 456(sp)
+	slt	t0, t5, t1
 	sb	t0, 187(sp)
 	lbu	t0, 187(sp)
 	beqz	t0, .LBB30_129
 .LBB30_128:                               # %label_128
-	add	t0, t3, x0
+	add	t0, a5, x0
 	li	t1, 4
 	mul	t0, t0, t1
 	add	t2, a0, t0
 	sd	t2, 176(sp)
-	lw	t1, 28(sp)
-	addw	t0, s2, t1
+	addw	t0, s11, t5
 	sw	t0, 172(sp)
 	lw	t0, 172(sp)
 	li	t1, 4
@@ -7242,65 +7272,65 @@ fn.22:                                   # @fn.22
 	ld	t0, 144(sp)
 	lw	t1, 128(sp)
 	sw	t1, 0(t0)
-	lw	t0, 28(sp)
-	addiw	t0, t0, 1
+	addiw	t0, t5, 1
 	sw	t0, 124(sp)
-	addiw	t0, t3, 1
+	addiw	t0, a5, 1
 	sw	t0, 120(sp)
 	lw	t0, 124(sp)
-	add	t0, t0, x0
-	sw	t0, 28(sp)
+	add	t5, t0, x0
 	lw	t0, 120(sp)
-	add	t3, t0, x0
+	add	a5, t0, x0
 	j	.LBB30_127
 .LBB30_129:                               # %label_129
-	add	s6, a7, x0
-	add	a6, t3, x0
+	add	a6, s8, x0
+	add	a7, a5, x0
 .LBB30_152:                               # %label_152
-	slt	t0, s6, s3
+	lw	t1, 452(sp)
+	slt	t0, a6, t1
 	sb	t0, 119(sp)
 	lbu	t0, 119(sp)
 	beqz	t0, .LBB30_154
 .LBB30_153:                               # %label_153
-	add	t0, a6, x0
+	add	t0, a7, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	a5, a0, t0
-	addiw	s10, a2, 1
-	addw	s10, s10, s6
-	add	t0, s10, x0
+	add	t2, a0, t0
+	sd	t2, 104(sp)
+	addiw	t0, a2, 1
+	sw	t0, 100(sp)
+	lw	t0, 100(sp)
+	addw	s7, t0, a6
+	add	t0, s7, x0
 	li	t1, 4
 	mul	t0, t0, t1
-	add	s10, a0, t0
-	lw	t0, 0(s10)
+	add	t2, a0, t0
+	sd	t2, 88(sp)
+	ld	t0, 88(sp)
+	lw	t0, 0(t0)
 	sw	t0, 84(sp)
+	ld	t0, 104(sp)
 	lw	t1, 84(sp)
-	sw	t1, 0(a5)
-	addi	a5, a4, 4
-	addi	s10, a4, 4
-	lw	t0, 0(s10)
-	sw	t0, 60(sp)
-	lw	t0, 60(sp)
-	addiw	t0, t0, 2
+	sw	t1, 0(t0)
+	addi	s5, a4, 4
+	addi	s4, a4, 4
+	lw	s3, 0(s4)
+	addiw	t0, s3, 2
 	sw	t0, 56(sp)
 	lw	t1, 56(sp)
-	sw	t1, 0(a5)
-	addiw	s10, s6, 1
-	addiw	a5, a6, 1
-	add	s6, s10, x0
-	add	a6, a5, x0
+	sw	t1, 0(s5)
+	addiw	s1, a6, 1
+	addiw	s0, a7, 1
+	add	a6, s1, x0
+	add	a7, s0, x0
 	j	.LBB30_152
 .LBB30_154:                               # %label_154
 	ld	s0, 648(sp)
 	ld	s1, 640(sp)
-	ld	s2, 568(sp)
 	ld	s3, 560(sp)
 	ld	s4, 552(sp)
 	ld	s5, 544(sp)
-	ld	s6, 536(sp)
 	ld	s7, 528(sp)
 	ld	s8, 520(sp)
-	ld	s9, 512(sp)
 	ld	s10, 504(sp)
 	ld	s11, 496(sp)
 	li	a0, 0
