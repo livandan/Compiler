@@ -1192,6 +1192,9 @@ void CodeGenerator::Generate() {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushArithmetic_I(r_addi_, result_reg, pointer_reg, offset);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+              }
             } else {
               r_block.PushArithmetic_I(r_addi_, 5, pointer_reg, offset);
               r_block.PushMemory_S(r_sd_, 5, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
@@ -1236,6 +1239,9 @@ void CodeGenerator::Generate() {
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               int result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
               r_block.PushArithmetic_R(r_add_, result_reg, pointer_reg, 5);
+              if (registers_saved_[i] && IsCallerSavedReg(result_reg)) {
+                r_block.PushMemory_S(r_sd_, result_reg, RegSavedLocation(i, result_reg), 2);
+              }
             } else {
               // result is on stack; we need a scratch for the add result.
               // reg 5 holds the offset, reg 6 holds the pointer (or it's the home reg).

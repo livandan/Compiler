@@ -144,21 +144,6 @@ void RegisterAllocator::ClassifyVariables() {
     for (const auto &inst : block.instructions_) {
       int result_id = inst.result_id_;
 
-      if (inst.instruction_type_ == load_ || inst.instruction_type_ == ptr_load_) {
-        if (result_id > 0) {
-          BitSet(is_stack_bound_, result_id);
-        }
-        continue;
-      }
-
-      if (inst.instruction_type_ == get_element_ptr_by_value_ ||
-          inst.instruction_type_ == get_element_ptr_by_variable_) {
-        if (result_id > 0) {
-          BitSet(is_stack_bound_, result_id);
-        }
-        continue;
-      }
-
       if (result_id > 0 && !BitTest(is_stack_bound_, result_id)) {
         switch (inst.instruction_type_) {
           case two_var_binary_operation_:
@@ -179,6 +164,26 @@ void RegisterAllocator::ClassifyVariables() {
             } else {
               BitSet(is_stack_bound_, result_id);
             }
+            break;
+          case load_:
+            // Load results stay on the stack for now — promoting them to
+            // registers exposes a liveness/interference bug with loop-invariant
+            // variables (observed in IR-1 test 27). The allocator incorrectly
+            // reuses the same register for a load result and a live
+            // loop-invariant variable across the loop back edge.
+            BitSet(is_stack_bound_, result_id);
+            break;
+          case ptr_load_:
+            // Always loads a pointer (8 bytes).
+            BitSet(is_allocatable_, result_id);
+            var_size_[result_id] = 8;
+            break;
+          case get_element_ptr_by_value_:
+          case get_element_ptr_by_variable_:
+            // GEP produces a pointer (8 bytes). result_type_ here is the
+            // *aggregate* type being indexed, not the pointer result type.
+            BitSet(is_allocatable_, result_id);
+            var_size_[result_id] = 8;
             break;
           default:
             BitSet(is_stack_bound_, result_id);
@@ -450,7 +455,6 @@ void RegisterAllocator::ComputeLiveness() {
 // ============================================================================
 
 void RegisterAllocator::BuildInterferenceGraph() {
-
   // Within each block: walk instructions backwards.
   for (const auto &[block_id, block] : ir_func_.blocks_) {
     // Start with variables live-out of this block, filtered by allocatable.
@@ -719,6 +723,7 @@ void RegisterAllocator::BuildInterferenceGraph() {
     auto last = std::unique(adj.begin(), adj.end());
     adj.erase(last, adj.end());
   }
+
 }
 
 // ============================================================================
