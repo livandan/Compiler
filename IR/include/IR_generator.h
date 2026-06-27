@@ -3,6 +3,7 @@
 
 #include "visitor_frame.h"
 #include "node.h"
+#include "expression.h"
 #include <set>
 
 enum IRInstructionType {
@@ -389,6 +390,9 @@ private:
   void RecursiveInitialize(const Node *expression_ptr, int ptr_id);
   void DeclareItems(const std::shared_ptr<ScopeNode> &new_scope);
   int GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr<IntegratedType> &expected_type);
+  void CollectLogicalOperands(Expression *expression_ptr, Infix op, std::vector<Node *> &operands) const;
+  int EnsureValue(Node *expression_ptr);
+  void EmitLogicalChain(Expression *expression_ptr, Infix op);
   int GetPreviousBlockHelper(int func_id, int start_block, int target_block, std::set<int> &visited_block) const;
   [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);

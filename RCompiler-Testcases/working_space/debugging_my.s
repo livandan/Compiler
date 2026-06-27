@@ -101,19 +101,55 @@ builtin_memcpy:
 	.type	main,@function
 main:                                   # @main
 # %bb.0:                                # %alloca
-	addi	sp, sp, -16
+	addi	sp, sp, -176
+	sd	s0, 152(sp)
+	sd	s1, 160(sp)
 	j	.LBB8_0
 .LBB8_0:                               # %label_0
-	li	a0, 4
+	sd	ra, 128(sp)
+	sd	a0, 136(sp)
+	sd	a1, 144(sp)
+	call	getInt
 	add	a0, a0, x0
-	li	t1, 3
-	slt	a0, t1, a0
+	sd	a0, 136(sp)
+	sd	a0, 136(sp)
+	call	getInt
+	add	a1, a0, x0
+	sd	a1, 144(sp)
+	sd	a1, 144(sp)
+	ld	t0, 136(sp)
+	xori	t0, t0, 1
+	sltiu	a0, t0, 1
+	sd	a0, 136(sp)
+	ld	ra, 128(sp)
+	ld	a0, 136(sp)
+	ld	a1, 144(sp)
 	add	t0, a0, x0
 	beqz	t0, .LBB8_7
 .LBB8_6:                               # %label_6
+	li	s0, 1
+	j	.LBB8_12
 .LBB8_7:                               # %label_7
+	xori	t0, a1, 2
+	sltu	s1, x0, t0
+	add	t0, s1, x0
+	bnez	t0, .LBB8_11
+.LBB8_10:                               # %label_10
+	li	s0, 0
+	j	.LBB8_12
+.LBB8_11:                               # %label_11
+	li	s0, 1
+.LBB8_12:                               # %label_12
+	add	t0, s0, x0
+	beqz	t0, .LBB8_15
+.LBB8_14:                               # %label_14
+	j	.LBB8_16
+.LBB8_15:                               # %label_15
+.LBB8_16:                               # %label_16
+	ld	s0, 152(sp)
+	ld	s1, 160(sp)
 	li	a0, 0
-	addi	sp, sp, 16
+	addi	sp, sp, 176
 	ret
 .Lfunc_end8:
 	.size	main, .Lfunc_end8-main

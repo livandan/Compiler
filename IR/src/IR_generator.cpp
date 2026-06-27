@@ -349,6 +349,119 @@ int IRVisitor::GetBlockValue(Node *visited_statements_ptr, const std::shared_ptr
   return variable_id;
 }
 
+void IRVisitor::CollectLogicalOperands(Expression *expression_ptr, const Infix op,
+    std::vector<Node *> &operands) const {
+  if (expression_ptr->GetExprInfix() == op && expression_ptr->children_.size() == 2) {
+    CollectLogicalOperands(dynamic_cast<Expression *>(expression_ptr->children_[0]), op, operands);
+    CollectLogicalOperands(dynamic_cast<Expression *>(expression_ptr->children_[1]), op, operands);
+    return;
+  }
+  operands.push_back(expression_ptr);
+}
+
+int IRVisitor::EnsureValue(Node *expression_ptr) {
+  expression_ptr->Accept(this);
+  if (expression_ptr->IR_ID_ == -1 && expression_ptr->IR_var_ID_ != -1) {
+    expression_ptr->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
+    functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
+        expression_ptr->IR_ID_, expression_ptr->integrated_type_, expression_ptr->IR_var_ID_);
+  }
+  return expression_ptr->IR_ID_;
+}
+
+void IRVisitor::EmitLogicalChain(Expression *expression_ptr, const Infix op) {
+  auto &function = functions_[wrapping_functions_.back()];
+  const bool is_and = op == logic_and;
+  const int short_value = is_and ? 0 : 1;
+  const int final_value = is_and ? 1 : 0;
+  std::vector<Node *> operands;
+  CollectLogicalOperands(expression_ptr, op, operands);
+  if (operands.empty()) {
+    IRThrow("Empty logical expression.");
+  }
+
+  std::vector<int> short_result_blocks;
+  int final_result_block = -1;
+
+  for (int i = 0; i < operands.size(); ++i) {
+    auto *operand = operands[i];
+    if (operand->integrated_type_->is_const) {
+      if (operand->value_.int_value == short_value) {
+        const int result_block = function.var_id_++;
+        function.blocks_[result_block] = IRBlock();
+        function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
+        block_stack_.back() = result_block;
+        short_result_blocks.push_back(result_block);
+        break;
+      }
+      if (i + 1 == operands.size()) {
+        const int result_block = function.var_id_++;
+        function.blocks_[result_block] = IRBlock();
+        function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
+        block_stack_.back() = result_block;
+        final_result_block = result_block;
+      }
+      continue;
+    }
+
+    const int value_id = EnsureValue(operand);
+    const bool is_last = i + 1 == operands.size();
+    const int result_block = function.var_id_++;
+    function.blocks_[result_block] = IRBlock();
+    if (is_last) {
+      const int opposite_result_block = function.var_id_++;
+      function.blocks_[opposite_result_block] = IRBlock();
+      if (is_and) {
+        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, result_block, opposite_result_block);
+      } else {
+        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, opposite_result_block, result_block);
+      }
+      block_stack_.back() = result_block;
+      final_result_block = result_block;
+      block_stack_.back() = opposite_result_block;
+      short_result_blocks.push_back(opposite_result_block);
+    } else {
+      const int next_block = function.var_id_++;
+      function.blocks_[next_block] = IRBlock();
+      if (is_and) {
+        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, next_block, result_block);
+      } else {
+        function.blocks_[block_stack_.back()].AddConditionalBranch(value_id, result_block, next_block);
+      }
+      block_stack_.back() = result_block;
+      short_result_blocks.push_back(result_block);
+      block_stack_.back() = next_block;
+    }
+  }
+
+  if (final_result_block == -1 && short_result_blocks.empty()) {
+    const int result_block = function.var_id_++;
+    function.blocks_[result_block] = IRBlock();
+    function.blocks_[block_stack_.back()].AddUnconditionalBranch(result_block);
+    block_stack_.back() = result_block;
+    final_result_block = result_block;
+  }
+
+  const int merged_label = function.var_id_++;
+  for (const int block_id : short_result_blocks) {
+    function.blocks_[block_id].AddUnconditionalBranch(merged_label);
+  }
+  if (final_result_block != -1) {
+    function.blocks_[final_result_block].AddUnconditionalBranch(merged_label);
+  }
+  function.blocks_[merged_label] = IRBlock();
+  block_stack_.back() = merged_label;
+  expression_ptr->IR_ID_ = function.var_id_++;
+  for (const int block_id : short_result_blocks) {
+    function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
+        expression_ptr->integrated_type_, short_value, block_id, true);
+  }
+  if (final_result_block != -1) {
+    function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_,
+        expression_ptr->integrated_type_, final_value, final_result_block, true);
+  }
+}
+
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
     std::set<int> &visited_block) const {
   const auto &last_instruction = functions_[func_id].blocks_.at(start_block).instructions_.back();
@@ -1578,195 +1691,12 @@ void IRVisitor::Visit(Expression *expression_ptr) {
         }
         case logic_or: {
           status = 2;
-          if (expression_ptr->children_[0]->integrated_type_->is_const) {
-            if (expression_ptr->children_[0]->value_.int_value == 1) {
-              // true || _ = true
-              expression_ptr->IR_ID_ = function.var_id_++;
-              function.blocks_[block_stack_.back()].AddSelect(0b111, expression_ptr->IR_ID_, 1,
-                  expression_ptr->children_[0]->integrated_type_, 1,
-                  expression_ptr->children_[0]->integrated_type_, 1);
-            } else {
-              // false || _ = _
-              expression_ptr->children_[1]->Accept(this);
-              if (expression_ptr->children_[1]->IR_ID_ == -1 &&
-                  expression_ptr->children_[1]->IR_var_ID_ != -1) {
-                expression_ptr->children_[1]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-                functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                    expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                    expression_ptr->children_[1]->IR_var_ID_);
-              }
-              expression_ptr->IR_ID_ = function.var_id_++;
-              function.blocks_[block_stack_.back()].AddSelect(0b100, expression_ptr->IR_ID_, 1,
-                  expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_,
-                  expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_);
-            }
-          } else {
-            expression_ptr->children_[0]->Accept(this);
-            if (expression_ptr->children_[0]->IR_ID_ == -1 &&
-                expression_ptr->children_[0]->IR_var_ID_ != -1) {
-              expression_ptr->children_[0]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-              functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                  expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[0]->integrated_type_,
-                  expression_ptr->children_[0]->IR_var_ID_);
-            }
-            // a || b : if a == true, expression = true; if a == false, expression = b.
-            const int if_true_block_label = function.var_id_++;
-            function.blocks_[if_true_block_label] = IRBlock();
-            const int if_false_block_label = function.var_id_++;
-            function.blocks_[if_false_block_label] = IRBlock();
-            const int merged_label = function.var_id_++;
-            function.blocks_[merged_label] = IRBlock();
-            function.blocks_[block_stack_.back()].AddConditionalBranch(expression_ptr->children_[0]->IR_ID_,
-                if_true_block_label, if_false_block_label);
-            // in if_true_block
-            block_stack_.back() = if_true_block_label;
-            const int true_block_ans_id = function.var_id_++;
-            function.blocks_[block_stack_.back()].AddSelect(0b111, true_block_ans_id, 1,
-                expression_ptr->children_[0]->integrated_type_, 1,
-                expression_ptr->children_[0]->integrated_type_, 1);
-            function.blocks_[block_stack_.back()].AddUnconditionalBranch(merged_label);
-            // in if_false_block
-            block_stack_.back() = if_false_block_label;
-            const int false_block_ans_id = function.var_id_++;
-            if (expression_ptr->children_[1]->integrated_type_->is_const) {
-              if (expression_ptr->children_[1]->value_.int_value == 0) {
-                function.blocks_[block_stack_.back()].AddSelect(0b111, false_block_ans_id, 1,
-                    expression_ptr->children_[1]->integrated_type_, 0,
-                    expression_ptr->children_[1]->integrated_type_, 0);
-              } else {
-                function.blocks_[block_stack_.back()].AddSelect(0b111, false_block_ans_id, 1,
-                    expression_ptr->children_[1]->integrated_type_, 1,
-                    expression_ptr->children_[1]->integrated_type_, 1);
-              }
-            } else {
-              expression_ptr->children_[1]->Accept(this);
-              if (expression_ptr->children_[1]->IR_ID_ == -1 &&
-                  expression_ptr->children_[1]->IR_var_ID_ != -1) {
-                expression_ptr->children_[1]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-                functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                    expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                    expression_ptr->children_[1]->IR_var_ID_);
-              }
-              // function.blocks_[block_stack_.back()].AddVarConstIcmp(false_block_ans_id,
-              //     equal_, expression_ptr->children_[1]->integrated_type_,
-              //     expression_ptr->children_[1]->IR_ID_, 1);
-              function.blocks_[block_stack_.back()].AddSelect(0b011, false_block_ans_id,
-                  expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                  1, expression_ptr->children_[1]->integrated_type_, 0);
-            }
-            function.blocks_[block_stack_.back()].AddUnconditionalBranch(merged_label);
-            // merge
-            block_stack_.back() = merged_label;
-            expression_ptr->IR_ID_ = function.var_id_++;
-            const int if_true_end_block = GetPreviousBlock(wrapping_functions_.back(), if_true_block_label,
-                merged_label);
-            const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
-                merged_label);
-            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, if_true_end_block, false);
-            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                false_block_ans_id, if_false_end_block, false);
-            // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
-            //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-            //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
-            //     false_block_ans_id);
-          }
+          EmitLogicalChain(expression_ptr, logic_or);
           break;
         }
         case logic_and: {
           status = 2;
-          if (expression_ptr->children_[0]->integrated_type_->is_const) {
-            if (expression_ptr->children_[0]->value_.int_value == 1) {
-              // true && _ = _
-              expression_ptr->children_[1]->Accept(this);
-              if (expression_ptr->children_[1]->IR_ID_ == -1 &&
-                  expression_ptr->children_[1]->IR_var_ID_ != -1) {
-                expression_ptr->children_[1]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-                functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                    expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                    expression_ptr->children_[1]->IR_var_ID_);
-              }
-              expression_ptr->IR_ID_ = function.var_id_++;
-              function.blocks_[block_stack_.back()].AddSelect(0b100, expression_ptr->IR_ID_, 1,
-                  expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_,
-                  expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_);
-            } else {
-              // false && _ = false
-              expression_ptr->IR_ID_ = function.var_id_++;
-              function.blocks_[block_stack_.back()].AddSelect(0b111, expression_ptr->IR_ID_, 1,
-                  expression_ptr->children_[0]->integrated_type_, 0,
-                  expression_ptr->children_[0]->integrated_type_, 0);
-            }
-          } else {
-            expression_ptr->children_[0]->Accept(this);
-            if (expression_ptr->children_[0]->IR_ID_ == -1 &&
-                expression_ptr->children_[0]->IR_var_ID_ != -1) {
-              expression_ptr->children_[0]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-              functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                  expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[0]->integrated_type_,
-                  expression_ptr->children_[0]->IR_var_ID_);
-            }
-            // a && b : if a == true, expression = b; if a == false, expression = false.
-            const int if_true_block_label = function.var_id_++;
-            function.blocks_[if_true_block_label] = IRBlock();
-            const int if_false_block_label = function.var_id_++;
-            function.blocks_[if_false_block_label] = IRBlock();
-            const int merged_label = function.var_id_++;
-            function.blocks_[merged_label] = IRBlock();
-            function.blocks_[block_stack_.back()].AddConditionalBranch(expression_ptr->children_[0]->IR_ID_,
-                if_true_block_label, if_false_block_label);
-            // in if_true_block
-            block_stack_.back() = if_true_block_label;
-            const int true_block_ans_id = function.var_id_++;
-            if (expression_ptr->children_[1]->integrated_type_->is_const) {
-              if (expression_ptr->children_[1]->value_.int_value == 0) {
-                function.blocks_[block_stack_.back()].AddSelect(0b111, true_block_ans_id, 1,
-                    expression_ptr->children_[1]->integrated_type_, 0,
-                    expression_ptr->children_[1]->integrated_type_, 0);
-              } else {
-                function.blocks_[block_stack_.back()].AddSelect(0b111, true_block_ans_id, 1,
-                    expression_ptr->children_[1]->integrated_type_, 1,
-                    expression_ptr->children_[1]->integrated_type_, 1);
-              }
-            } else {
-              expression_ptr->children_[1]->Accept(this);
-              if (expression_ptr->children_[1]->IR_ID_ == -1 &&
-                  expression_ptr->children_[1]->IR_var_ID_ != -1) {
-                expression_ptr->children_[1]->IR_ID_ = functions_[wrapping_functions_.back()].var_id_++;
-                functions_[wrapping_functions_.back()].blocks_[block_stack_.back()].AddLoad(
-                    expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                    expression_ptr->children_[1]->IR_var_ID_);
-              }
-              // function.blocks_[block_stack_.back()].AddVarConstIcmp(true_block_ans_id, equal_,
-              //     expression_ptr->children_[1]->integrated_type_, expression_ptr->children_[1]->IR_ID_, 1);
-              function.blocks_[block_stack_.back()].AddSelect(0b011, true_block_ans_id,
-                  expression_ptr->children_[1]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                  1, expression_ptr->children_[1]->integrated_type_, 0);
-            }
-            function.blocks_[block_stack_.back()].AddUnconditionalBranch(merged_label);
-            // in if_false_block
-            block_stack_.back() = if_false_block_label;
-            const int false_block_ans_id = function.var_id_++;
-            function.blocks_[block_stack_.back()].AddSelect(0b111, false_block_ans_id, 1,
-                expression_ptr->children_[0]->integrated_type_, 0,
-                expression_ptr->children_[0]->integrated_type_, 0);
-            function.blocks_[block_stack_.back()].AddUnconditionalBranch(merged_label);
-            // merge
-            block_stack_.back() = merged_label;
-            expression_ptr->IR_ID_ = function.var_id_++;
-            const int if_true_end_block = GetPreviousBlock(wrapping_functions_.back(), if_true_block_label,
-                merged_label);
-            const int if_false_end_block = GetPreviousBlock(wrapping_functions_.back(), if_false_block_label,
-                merged_label);
-            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                true_block_ans_id, if_true_end_block, false);
-            function.blocks_[block_stack_.back()].AddPhi(expression_ptr->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-                false_block_ans_id, if_false_end_block, false);
-            // function.blocks_[block_stack_.back()].AddSelect(0b000, expression_ptr->IR_ID_,
-            //     expression_ptr->children_[0]->IR_ID_, expression_ptr->children_[1]->integrated_type_,
-            //     true_block_ans_id, expression_ptr->children_[1]->integrated_type_,
-            //     false_block_ans_id);
-          }
+          EmitLogicalChain(expression_ptr, logic_and);
           break;
         }
         case assign: {
