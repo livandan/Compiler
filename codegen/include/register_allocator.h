@@ -22,9 +22,12 @@ private:
   // Step 1: Build CFG and compute liveness
   void BuildCFG();
   void ComputeLiveness();
+  void LimitRegisterAllocationCandidates();
+  void RebuildAllocatableNodes();
 
   // Step 2: Build the interference graph
   void BuildInterferenceGraph();
+  void AddInterference(int lhs, int rhs);
 
   // Step 3: Chaitin-Briggs graph coloring
   void ColorGraph();
@@ -103,9 +106,13 @@ private:
   std::vector<uint64_t> is_allocatable_;
   std::vector<uint64_t> is_stack_bound_;
   std::vector<int> var_size_;           // 0 = not set, 4 or 8
+  std::vector<int> allocatable_nodes_;
 
   // ---- Interference graph: adjacency lists ----
   std::vector<std::vector<int>> interference_;
+  // Used only while initially building interference_ to avoid inserting the
+  // same edge many times before the final adjacency-list cleanup.
+  std::vector<std::vector<uint64_t>> interference_bits_;
   std::vector<std::vector<int>> move_edges_;
 
   // ---- Chaitin-Briggs worklists (bitsets + plain vectors) ----

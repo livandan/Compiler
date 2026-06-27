@@ -33,6 +33,7 @@ RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
 void RegisterAllocator::Run() {
   ClassifyVariables();
   BuildCFG();
+  LimitRegisterAllocationCandidates();
   ComputeLiveness();
   BuildInterferenceGraph();
   ColorGraph();
@@ -75,9 +76,11 @@ void RegisterAllocator::InitializeVectors() {
   is_allocatable_ = MakeBitSet();
   is_stack_bound_ = MakeBitSet();
   var_size_.assign(n, 0);
+  allocatable_nodes_.clear();
 
   // Interference graph
   interference_.assign(n, {});
+  interference_bits_.assign(n, MakeBitSet());
   move_edges_.assign(n, {});
 
   // Coloring state
@@ -118,6 +121,15 @@ bool RegisterAllocator::IsScalarType(const std::shared_ptr<IntegratedType> &type
       return true;
     default:
       return false;
+  }
+}
+
+void RegisterAllocator::RebuildAllocatableNodes() {
+  allocatable_nodes_.clear();
+  for (int v = 0; v <= max_var_id_; ++v) {
+    if (BitTest(is_allocatable_, v)) {
+      allocatable_nodes_.push_back(v);
+    }
   }
 }
 
@@ -203,6 +215,7 @@ void RegisterAllocator::ClassifyVariables() {
       }
     }
   }
+  RebuildAllocatableNodes();
 }
 
 // ============================================================================
@@ -235,11 +248,202 @@ void RegisterAllocator::BuildCFG() {
   }
 }
 
+void RegisterAllocator::LimitRegisterAllocationCandidates() {
+  int instruction_count = 0;
+  int move_count = 0;
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    instruction_count += static_cast<int>(block.instructions_.size());
+    instruction_count += static_cast<int>(block.phi_instructions_.size());
+  }
+  for (const auto &[block_id, block] : riscv_func_.blocks_) {
+    move_count += static_cast<int>(block.move_instructions_.size());
+  }
+
+  const long long scale =
+      static_cast<long long>(max_var_id_) * static_cast<long long>(ir_func_.blocks_.size());
+  if (max_var_id_ <= 12000 && instruction_count + move_count <= 18000 && scale <= 500000) {
+    RebuildAllocatableNodes();
+    return;
+  }
+
+  // Full graph coloring is expensive on generated stress programs because
+  // liveness and interference are proportional to the number of tracked SSA
+  // temporaries.  Still allocate registers, but only for the best scalar
+  // candidates; all other values keep their existing stack homes.
+  constexpr int kMaxCandidates = 1024;
+  std::vector<int> score(max_var_id_ + 1, 0);
+  auto add_use_score = [&](int id, int amount = 1) {
+    if (id > 0 && BitTest(is_allocatable_, id)) {
+      score[id] += amount;
+    }
+  };
+  auto add_def_score = [&](int id, int amount = 1) {
+    if (id > 0 && BitTest(is_allocatable_, id)) {
+      score[id] += amount;
+    }
+  };
+
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    for (const auto &inst : block.instructions_) {
+      switch (inst.instruction_type_) {
+        case two_var_binary_operation_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case var_const_binary_operation_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case const_var_binary_operation_:
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case conditional_br_:
+          add_use_score(inst.condition_id_, 4);
+          break;
+        case variable_ret_:
+          add_use_score(inst.result_id_, 4);
+          break;
+        case load_:
+        case ptr_load_:
+          add_use_score(inst.pointer_);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case variable_store_:
+        case ptr_store_:
+          add_use_score(inst.result_id_, 4);
+          add_use_score(inst.pointer_);
+          break;
+        case value_store_:
+          add_use_score(inst.pointer_);
+          break;
+        case get_element_ptr_by_value_:
+          add_use_score(inst.pointer_, 2);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case get_element_ptr_by_variable_:
+          add_use_score(inst.pointer_, 2);
+          add_use_score(inst.index_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case two_var_icmp_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case var_const_icmp_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case const_var_icmp_:
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case non_void_call_:
+        case void_call_:
+        case builtin_call_:
+          for (const auto &arg : inst.function_call_arguments_) {
+            if (arg.is_variable_) add_use_score(arg.value_, 4);
+          }
+          if (inst.instruction_type_ == non_void_call_ ||
+              (inst.instruction_type_ == builtin_call_ && inst.function_name_ == 2)) {
+            add_def_score(inst.result_id_, 2);
+          }
+          break;
+        case value_select_ii_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case value_select_iv_:
+          add_use_score(inst.operand_1_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case value_select_vi_:
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case value_select_vv_:
+          add_def_score(inst.result_id_, 2);
+          break;
+        case variable_select_ii_:
+          add_use_score(inst.condition_id_, 4);
+          add_use_score(inst.operand_1_id_, 3);
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case variable_select_vv_:
+          add_use_score(inst.condition_id_, 4);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case variable_select_iv_:
+          add_use_score(inst.condition_id_, 4);
+          add_use_score(inst.operand_1_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case variable_select_vi_:
+          add_use_score(inst.condition_id_, 4);
+          add_use_score(inst.operand_2_id_, 3);
+          add_def_score(inst.result_id_, 2);
+          break;
+        case builtin_memset_:
+          add_use_score(inst.pointer_);
+          break;
+        case builtin_memcpy_:
+          add_use_score(inst.destination_);
+          add_use_score(inst.pointer_);
+          break;
+        default:
+          break;
+      }
+    }
+    for (const auto &phi : block.phi_instructions_) {
+      add_def_score(phi.result_id, 3);
+      for (const auto &cond : phi.conditions) {
+        if (!cond.is_const) add_use_score(cond.var_id, 3);
+      }
+    }
+  }
+  for (const auto &[block_id, block] : riscv_func_.blocks_) {
+    for (const auto &mv : block.move_instructions_) {
+      add_def_score(mv.dest_, 3);
+      if (!mv.src_is_value_) add_use_score(mv.src_, 3);
+    }
+  }
+
+  std::vector<int> candidates = allocatable_nodes_;
+  if (static_cast<int>(candidates.size()) <= kMaxCandidates) {
+    return;
+  }
+  std::nth_element(candidates.begin(), candidates.begin() + kMaxCandidates,
+      candidates.end(), [&](int lhs, int rhs) {
+        if (score[lhs] != score[rhs]) return score[lhs] > score[rhs];
+        return lhs < rhs;
+      });
+  std::vector<uint64_t> keep = MakeBitSet();
+  for (int i = 0; i < kMaxCandidates; ++i) {
+    BitSet(keep, candidates[i]);
+  }
+  for (int v : allocatable_nodes_) {
+    if (!BitTest(keep, v)) {
+      BitClear(is_allocatable_, v);
+    }
+  }
+  RebuildAllocatableNodes();
+}
+
 // ============================================================================
 // Step 2: Compute liveness (bitset-based dataflow)
 // ============================================================================
 
 void RegisterAllocator::ComputeLiveness() {
+  auto set_if_allocatable = [&](std::vector<uint64_t> &bs, int id) {
+    if (id > 0 && BitTest(is_allocatable_, id)) {
+      BitSet(bs, id);
+    }
+  };
+
   // --- Phase 1: Compute per-block def/use bitsets ---
   for (const auto &[block_id, block] : ir_func_.blocks_) {
     std::vector<uint64_t> &defs = block_defs_[block_id];
@@ -249,147 +453,147 @@ void RegisterAllocator::ComputeLiveness() {
       // Collect uses and defs for this instruction.
       switch (inst.instruction_type_) {
         case two_var_binary_operation_:
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case var_const_binary_operation_:
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case const_var_binary_operation_:
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case conditional_br_:
-          if (inst.condition_id_ > 0) BitSet(uses, inst.condition_id_);
+          set_if_allocatable(uses, inst.condition_id_);
           break;
         case variable_ret_:
-          if (inst.result_id_ > 0) BitSet(uses, inst.result_id_);
+          set_if_allocatable(uses, inst.result_id_);
           break;
         case load_:
         case ptr_load_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.pointer_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case variable_store_:
-          if (inst.result_id_ > 0) BitSet(uses, inst.result_id_);
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.result_id_);
+          set_if_allocatable(uses, inst.pointer_);
           break;
         case value_store_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.pointer_);
           break;
         case ptr_store_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
-          if (inst.result_id_ > 0) BitSet(uses, inst.result_id_);
+          set_if_allocatable(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.result_id_);
           break;
         case get_element_ptr_by_value_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.pointer_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case get_element_ptr_by_variable_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
-          if (inst.index_ > 0) BitSet(uses, inst.index_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.index_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case two_var_icmp_:
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case var_const_icmp_:
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case const_var_icmp_:
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         case non_void_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
-            if (arg.is_variable_ && arg.value_ > 0) {
-              BitSet(uses, arg.value_);
+            if (arg.is_variable_) {
+              set_if_allocatable(uses, arg.value_);
             }
           }
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case void_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
-            if (arg.is_variable_ && arg.value_ > 0) {
-              BitSet(uses, arg.value_);
+            if (arg.is_variable_) {
+              set_if_allocatable(uses, arg.value_);
             }
           }
           break;
         }
         case builtin_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
-            if (arg.is_variable_ && arg.value_ > 0) {
-              BitSet(uses, arg.value_);
+            if (arg.is_variable_) {
+              set_if_allocatable(uses, arg.value_);
             }
           }
-          if (inst.function_name_ == 2 && inst.result_id_ > 0) {
-            BitSet(defs, inst.result_id_);
+          if (inst.function_name_ == 2) {
+            set_if_allocatable(defs, inst.result_id_);
           }
           break;
         }
         case value_select_ii_: {
           if (inst.condition_id_ == 0) {
-            if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
+            set_if_allocatable(uses, inst.operand_2_id_);
           } else {
-            if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
+            set_if_allocatable(uses, inst.operand_1_id_);
           }
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case value_select_iv_: {
-          if (inst.condition_id_ != 0 && inst.operand_1_id_ > 0) {
-            BitSet(uses, inst.operand_1_id_);
+          if (inst.condition_id_ != 0) {
+            set_if_allocatable(uses, inst.operand_1_id_);
           }
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case value_select_vi_: {
-          if (inst.condition_id_ == 0 && inst.operand_2_id_ > 0) {
-            BitSet(uses, inst.operand_2_id_);
+          if (inst.condition_id_ == 0) {
+            set_if_allocatable(uses, inst.operand_2_id_);
           }
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case value_select_vv_: {
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case variable_select_ii_: {
-          if (inst.condition_id_ > 0) BitSet(uses, inst.condition_id_);
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.condition_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case variable_select_vv_: {
-          if (inst.condition_id_ > 0) BitSet(uses, inst.condition_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.condition_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case variable_select_iv_: {
-          if (inst.condition_id_ > 0) BitSet(uses, inst.condition_id_);
-          if (inst.operand_1_id_ > 0) BitSet(uses, inst.operand_1_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.condition_id_);
+          set_if_allocatable(uses, inst.operand_1_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case variable_select_vi_: {
-          if (inst.condition_id_ > 0) BitSet(uses, inst.condition_id_);
-          if (inst.operand_2_id_ > 0) BitSet(uses, inst.operand_2_id_);
-          if (inst.result_id_ > 0) BitSet(defs, inst.result_id_);
+          set_if_allocatable(uses, inst.condition_id_);
+          set_if_allocatable(uses, inst.operand_2_id_);
+          set_if_allocatable(defs, inst.result_id_);
           break;
         }
         case builtin_memset_:
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.pointer_);
           break;
         case builtin_memcpy_:
-          if (inst.destination_ > 0) BitSet(uses, inst.destination_);
-          if (inst.pointer_ > 0) BitSet(uses, inst.pointer_);
+          set_if_allocatable(uses, inst.destination_);
+          set_if_allocatable(uses, inst.pointer_);
           break;
         default:
           break;
@@ -399,10 +603,10 @@ void RegisterAllocator::ComputeLiveness() {
     // Handle phi instructions: result is a def in this block.
     // Source operands are uses in the PREDECESSOR blocks.
     for (const auto &phi : block.phi_instructions_) {
-      if (phi.result_id > 0) BitSet(defs, phi.result_id);
+      set_if_allocatable(defs, phi.result_id);
       for (const auto &cond : phi.conditions) {
-        if (!cond.is_const && cond.var_id > 0) {
-          BitSet(block_uses_[cond.from_block_id], cond.var_id);
+        if (!cond.is_const) {
+          set_if_allocatable(block_uses_[cond.from_block_id], cond.var_id);
         }
       }
     }
@@ -457,6 +661,8 @@ void RegisterAllocator::ComputeLiveness() {
 // ============================================================================
 
 void RegisterAllocator::BuildInterferenceGraph() {
+  interference_bits_.assign(max_var_id_ + 1, MakeBitSet());
+
   // Within each block: walk instructions backwards.
   for (const auto &[block_id, block] : ir_func_.blocks_) {
     // Start with variables live-out of this block, filtered by allocatable.
@@ -498,9 +704,8 @@ void RegisterAllocator::BuildInterferenceGraph() {
           while (word) {
             int bit = __builtin_ctzll(word);
             int live = w * 64 + bit;
-            if (live != dest && live != own_src) {
-              interference_[dest].push_back(live);
-              interference_[live].push_back(dest);
+            if (live != own_src) {
+              AddInterference(dest, live);
             }
             word &= word - 1;
           }
@@ -598,10 +803,7 @@ void RegisterAllocator::BuildInterferenceGraph() {
           while (word) {
             int bit = __builtin_ctzll(word);
             int live = w * 64 + bit;
-            if (def != live) {
-              interference_[def].push_back(live);
-              interference_[live].push_back(def);
-            }
+            AddInterference(def, live);
             word &= word - 1;
           }
         }
@@ -613,23 +815,6 @@ void RegisterAllocator::BuildInterferenceGraph() {
       }
       for (int use : inst_uses) {
         BitSet(currently_live, use);
-      }
-    }
-
-    // At block start: handle phi definitions.
-    // Collect all phi result ids in this block for mutual interference.
-    std::vector<int> block_phi_results;
-    for (const auto &phi : block.phi_instructions_) {
-      if (phi.result_id > 0 && BitTest(is_allocatable_, phi.result_id)) {
-        block_phi_results.push_back(phi.result_id);
-      }
-    }
-    for (size_t i = 0; i < block_phi_results.size(); ++i) {
-      for (size_t j = i + 1; j < block_phi_results.size(); ++j) {
-        int r1 = block_phi_results[i];
-        int r2 = block_phi_results[j];
-        interference_[r1].push_back(r2);
-        interference_[r2].push_back(r1);
       }
     }
 
@@ -655,10 +840,7 @@ void RegisterAllocator::BuildInterferenceGraph() {
           if (live == phi_result) { word &= word - 1; continue; }
           bool is_source = false;
           for (int s : sources) { if (live == s) { is_source = true; break; } }
-          if (!is_source) {
-            interference_[phi_result].push_back(live);
-            interference_[live].push_back(phi_result);
-          }
+          if (!is_source) AddInterference(phi_result, live);
           word &= word - 1;
         }
       }
@@ -678,54 +860,73 @@ void RegisterAllocator::BuildInterferenceGraph() {
         BitSet(in_move_related_, src);
         BitSet(in_move_related_, dest);
         // Force interference between move source and destination.
-        interference_[src].push_back(dest);
-        interference_[dest].push_back(src);
+        AddInterference(src, dest);
       }
     }
-    // Cross-interference between moves in the same block.
-    for (size_t i = 0; i < r_block.move_instructions_.size(); ++i) {
-      const auto &mv_i = r_block.move_instructions_[i];
-      for (size_t j = i + 1; j < r_block.move_instructions_.size(); ++j) {
-        const auto &mv_j = r_block.move_instructions_[j];
-        int di = mv_i.dest_;
-        int dj = mv_j.dest_;
-        // dest of i interferes with src of j (if j is a var move).
-        if (!mv_j.src_is_value_) {
-          int sj = mv_j.src_;
-          if (di > 0 && sj > 0 &&
-              BitTest(is_allocatable_, di) && BitTest(is_allocatable_, sj) && di != sj) {
-            interference_[di].push_back(sj);
-            interference_[sj].push_back(di);
+    // Cross-interference between moves in the same block.  The previous
+    // pairwise loop generated O(m^2) duplicate edges for large phi fan-in.
+    // The constraints depend only on the unique source and destination sets.
+    std::vector<uint64_t> move_srcs = MakeBitSet();
+    std::vector<uint64_t> move_dests = MakeBitSet();
+    for (const auto &mv : r_block.move_instructions_) {
+      if (mv.dest_ > 0 && BitTest(is_allocatable_, mv.dest_)) {
+        BitSet(move_dests, mv.dest_);
+      }
+      if (!mv.src_is_value_ && mv.src_ > 0 && BitTest(is_allocatable_, mv.src_)) {
+        BitSet(move_srcs, mv.src_);
+      }
+    }
+    for (int w = 0; w < bitset_words_; ++w) {
+      uint64_t dest_word = move_dests[w];
+      while (dest_word) {
+        int dest_bit = __builtin_ctzll(dest_word);
+        int dest = w * 64 + dest_bit;
+        for (int sw = 0; sw < bitset_words_; ++sw) {
+          uint64_t src_word = move_srcs[sw];
+          while (src_word) {
+            int src_bit = __builtin_ctzll(src_word);
+            AddInterference(dest, sw * 64 + src_bit);
+            src_word &= src_word - 1;
           }
         }
-        // dest of j interferes with src of i (if i is a var move).
-        if (!mv_i.src_is_value_) {
-          int si = mv_i.src_;
-          if (dj > 0 && si > 0 &&
-              BitTest(is_allocatable_, dj) && BitTest(is_allocatable_, si) && dj != si) {
-            interference_[dj].push_back(si);
-            interference_[si].push_back(dj);
+        uint64_t later_dests = dest_word & ~(1ULL << dest_bit);
+        while (later_dests) {
+          int other_bit = __builtin_ctzll(later_dests);
+          AddInterference(dest, w * 64 + other_bit);
+          later_dests &= later_dests - 1;
+        }
+        for (int dw = w + 1; dw < bitset_words_; ++dw) {
+          uint64_t other_word = move_dests[dw];
+          while (other_word) {
+            int other_bit = __builtin_ctzll(other_word);
+            AddInterference(dest, dw * 64 + other_bit);
+            other_word &= other_word - 1;
           }
         }
-        // All destinations mutually interfere.
-        if (di > 0 && dj > 0 &&
-            BitTest(is_allocatable_, di) && BitTest(is_allocatable_, dj) && di != dj) {
-          interference_[di].push_back(dj);
-          interference_[dj].push_back(di);
-        }
+        dest_word &= dest_word - 1;
       }
     }
   }
 
-  // Deduplicate adjacency lists (cross-move interference can create duplicates).
-  for (int v = 0; v <= max_var_id_; ++v) {
+  // Keep adjacency order stable for coloring.  AddInterference already
+  // prevents duplicate edges, so this is linear in the selected candidate set.
+  for (int v : allocatable_nodes_) {
     auto &adj = interference_[v];
     if (adj.empty()) continue;
     std::sort(adj.begin(), adj.end());
-    auto last = std::unique(adj.begin(), adj.end());
-    adj.erase(last, adj.end());
   }
 
+}
+
+void RegisterAllocator::AddInterference(const int lhs, const int rhs) {
+  if (lhs <= 0 || rhs <= 0 || lhs == rhs) return;
+  if (lhs > max_var_id_ || rhs > max_var_id_) return;
+  if (!BitTest(is_allocatable_, lhs) || !BitTest(is_allocatable_, rhs)) return;
+  if (BitTest(interference_bits_[lhs], rhs)) return;
+  BitSet(interference_bits_[lhs], rhs);
+  BitSet(interference_bits_[rhs], lhs);
+  interference_[lhs].push_back(rhs);
+  interference_[rhs].push_back(lhs);
 }
 
 // ============================================================================
@@ -750,7 +951,7 @@ void RegisterAllocator::ColorGraph() {
   int K = static_cast<int>(allocatable_regs_.size());
 
   // Initialize worklist with all allocatable variables.
-  for (int v = 0; v <= max_var_id_; ++v) {
+  for (int v : allocatable_nodes_) {
     if (BitTest(is_allocatable_, v)) {
       BitSet(in_worklist_, v);
     }
@@ -758,7 +959,7 @@ void RegisterAllocator::ColorGraph() {
   select_stack_.clear();
 
   // Initialize cached degrees.
-  for (int v = 0; v <= max_var_id_; ++v) {
+  for (int v : allocatable_nodes_) {
     if (BitTest(in_worklist_, v)) {
       int deg = 0;
       for (int neighbor : interference_[v]) {
@@ -771,7 +972,7 @@ void RegisterAllocator::ColorGraph() {
   while (true) {
     // Check if worklist is empty
     bool any = false;
-    for (int v = 0; v <= max_var_id_; ++v) {
+    for (int v : allocatable_nodes_) {
       if (BitTest(in_worklist_, v)) { any = true; break; }
     }
     if (!any) break;
@@ -780,7 +981,7 @@ void RegisterAllocator::ColorGraph() {
     Simplify();
     // Check again
     any = false;
-    for (int v = 0; v <= max_var_id_; ++v) {
+    for (int v : allocatable_nodes_) {
       if (BitTest(in_worklist_, v)) { any = true; break; }
     }
     if (!any) break;
@@ -793,7 +994,7 @@ void RegisterAllocator::ColorGraph() {
     // After freeze, try simplify again.
     Simplify();
     any = false;
-    for (int v = 0; v <= max_var_id_; ++v) {
+    for (int v : allocatable_nodes_) {
       if (BitTest(in_worklist_, v)) { any = true; break; }
     }
     if (!any) break;
@@ -811,7 +1012,7 @@ void RegisterAllocator::Simplify() {
   bool changed = true;
   while (changed) {
     changed = false;
-    for (int node = 0; node <= max_var_id_; ++node) {
+    for (int node : allocatable_nodes_) {
       if (!BitTest(in_worklist_, node)) continue;
       if (current_degree_[node] < 0) continue;
       if (current_degree_[node] < K) {
@@ -915,7 +1116,7 @@ void RegisterAllocator::Freeze() {
   int K = static_cast<int>(allocatable_regs_.size());
 
   // Find a move-related node with degree < K and freeze its move edges.
-  for (int node = 0; node <= max_var_id_; ++node) {
+  for (int node : allocatable_nodes_) {
     if (!BitTest(in_move_related_, node)) continue;
     if (!BitTest(in_worklist_, node)) continue;
     if (current_degree_[node] >= K) continue;
@@ -941,7 +1142,7 @@ void RegisterAllocator::SelectSpill() {
   int spill_node = SelectSpillCandidate();
   if (spill_node < 0) {
     // Fallback: pick any node still in worklist.
-    for (int v = 0; v <= max_var_id_; ++v) {
+    for (int v : allocatable_nodes_) {
       if (BitTest(in_worklist_, v)) { spill_node = v; break; }
     }
   }
@@ -963,7 +1164,7 @@ void RegisterAllocator::SelectSpill() {
 int RegisterAllocator::SelectSpillCandidate() const {
   int best_node = -1;
   int best_degree = -1;
-  for (int node = 0; node <= max_var_id_; ++node) {
+  for (int node : allocatable_nodes_) {
     if (!BitTest(in_worklist_, node)) continue;
     int deg = current_degree_[node];
     if (deg > best_degree) {
@@ -1030,7 +1231,7 @@ void RegisterAllocator::AssignColors() {
   }
 
   // Persist the results.
-  for (int v = 0; v <= max_var_id_; ++v) {
+  for (int v : allocatable_nodes_) {
     if (node_color[v] >= -1) {
       assignment_[v] = node_color[v];
     }
@@ -1042,7 +1243,7 @@ void RegisterAllocator::AssignColors() {
 // ============================================================================
 
 void RegisterAllocator::UpdateLocationMap() {
-  for (int var = 0; var <= max_var_id_; ++var) {
+  for (int var : allocatable_nodes_) {
     if (!BitTest(is_allocatable_, var)) continue;
     if (BitTest(is_stack_bound_, var)) continue;
 
@@ -1063,7 +1264,7 @@ void RegisterAllocator::UpdateLocationMap() {
   }
 
   // Resolve coalesced variables.
-  for (int var = 0; var <= max_var_id_; ++var) {
+  for (int var : allocatable_nodes_) {
     if (coalesced_rep_[var] < 0) continue;
     if (BitTest(is_stack_bound_, var)) continue;
     int rep = coalesced_rep_[var];
