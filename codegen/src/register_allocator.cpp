@@ -859,21 +859,15 @@ void RegisterAllocator::BuildInterferenceGraph() {
         move_edges_[dest].push_back(src);
         BitSet(in_move_related_, src);
         BitSet(in_move_related_, dest);
-        // Force interference between move source and destination.
-        AddInterference(src, dest);
       }
     }
     // Cross-interference between moves in the same block.  The previous
     // pairwise loop generated O(m^2) duplicate edges for large phi fan-in.
     // The constraints depend only on the unique source and destination sets.
-    std::vector<uint64_t> move_srcs = MakeBitSet();
     std::vector<uint64_t> move_dests = MakeBitSet();
     for (const auto &mv : r_block.move_instructions_) {
       if (mv.dest_ > 0 && BitTest(is_allocatable_, mv.dest_)) {
         BitSet(move_dests, mv.dest_);
-      }
-      if (!mv.src_is_value_ && mv.src_ > 0 && BitTest(is_allocatable_, mv.src_)) {
-        BitSet(move_srcs, mv.src_);
       }
     }
     for (int w = 0; w < bitset_words_; ++w) {
@@ -881,13 +875,13 @@ void RegisterAllocator::BuildInterferenceGraph() {
       while (dest_word) {
         int dest_bit = __builtin_ctzll(dest_word);
         int dest = w * 64 + dest_bit;
-        for (int sw = 0; sw < bitset_words_; ++sw) {
-          uint64_t src_word = move_srcs[sw];
-          while (src_word) {
-            int src_bit = __builtin_ctzll(src_word);
-            AddInterference(dest, sw * 64 + src_bit);
-            src_word &= src_word - 1;
+        for (const auto &mv : r_block.move_instructions_) {
+          if (mv.src_is_value_ || mv.src_ <= 0 || !BitTest(is_allocatable_, mv.src_)) {
+            continue;
           }
+          if (mv.dest_ == dest && mv.src_ == dest) continue;
+          if (mv.dest_ == dest) continue;
+          AddInterference(dest, mv.src_);
         }
         uint64_t later_dests = dest_word & ~(1ULL << dest_bit);
         while (later_dests) {
@@ -1015,6 +1009,7 @@ void RegisterAllocator::Simplify() {
     for (int node : allocatable_nodes_) {
       if (!BitTest(in_worklist_, node)) continue;
       if (current_degree_[node] < 0) continue;
+      if (BitTest(in_move_related_, node) && !move_edges_[node].empty()) continue;
       if (current_degree_[node] < K) {
         changed = true;
         select_stack_.push_back(node);
@@ -1034,7 +1029,52 @@ void RegisterAllocator::Simplify() {
 }
 
 bool RegisterAllocator::Coalesce() {
-  // Disabled for debugging — coalescing may introduce subtle bugs.
+  const int K = static_cast<int>(allocatable_regs_.size());
+
+  for (int u : allocatable_nodes_) {
+    if (!BitTest(in_worklist_, u)) continue;
+
+    auto neighbors = move_edges_[u];
+    for (int v : neighbors) {
+      if (!BitTest(in_worklist_, v)) continue;
+
+      // Real interference means both values are simultaneously live and cannot
+      // share a register.  Move edges alone are not interference.
+      bool interferes = false;
+      for (int n : interference_[u]) {
+        if (n == v) {
+          interferes = true;
+          break;
+        }
+      }
+      if (interferes) {
+        auto &u_moves = move_edges_[u];
+        u_moves.erase(std::remove(u_moves.begin(), u_moves.end(), v), u_moves.end());
+        auto &v_moves = move_edges_[v];
+        v_moves.erase(std::remove(v_moves.begin(), v_moves.end(), u), v_moves.end());
+        if (u_moves.empty()) BitClear(in_move_related_, u);
+        if (v_moves.empty()) BitClear(in_move_related_, v);
+        continue;
+      }
+
+      // Keep the lower-degree node as the representative when possible; this
+      // usually preserves the already-friendly color pressure of the graph.
+      int rep = u;
+      int merged = v;
+      if (current_degree_[v] < current_degree_[u]) {
+        rep = v;
+        merged = u;
+      }
+
+      if (BriggsTest(rep, merged, K) &&
+          GeorgeTest(rep, merged, K) &&
+          GeorgeTest(merged, rep, K)) {
+        CoalesceNodes(rep, merged);
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 
@@ -1075,19 +1115,34 @@ void RegisterAllocator::CoalesceNodes(int u, int v) {
   // Transfer interference edges from v to u.
   for (int neighbor : interference_[v]) {
     if (neighbor != u) {
-      interference_[u].push_back(neighbor);
-      interference_[neighbor].push_back(u);
+      if (!BitTest(interference_bits_[u], neighbor)) {
+        BitSet(interference_bits_[u], neighbor);
+        BitSet(interference_bits_[neighbor], u);
+        interference_[u].push_back(neighbor);
+      }
       // Remove v from neighbor's list
       auto &nlist = interference_[neighbor];
       nlist.erase(std::remove(nlist.begin(), nlist.end(), v), nlist.end());
+      if (neighbor != u &&
+          std::find(nlist.begin(), nlist.end(), u) == nlist.end()) {
+        nlist.push_back(u);
+      }
+      BitClear(interference_bits_[neighbor], v);
     }
   }
+  interference_bits_[v] = MakeBitSet();
 
   // Transfer move edges from v to u.
   for (int neighbor : move_edges_[v]) {
     if (neighbor != u) {
-      move_edges_[u].push_back(neighbor);
-      move_edges_[neighbor].push_back(u);
+      if (std::find(move_edges_[u].begin(), move_edges_[u].end(), neighbor)
+          == move_edges_[u].end()) {
+        move_edges_[u].push_back(neighbor);
+      }
+      if (std::find(move_edges_[neighbor].begin(), move_edges_[neighbor].end(), u)
+          == move_edges_[neighbor].end()) {
+        move_edges_[neighbor].push_back(u);
+      }
       auto &nlist = move_edges_[neighbor];
       nlist.erase(std::remove(nlist.begin(), nlist.end(), v), nlist.end());
     }
@@ -1106,10 +1161,21 @@ void RegisterAllocator::CoalesceNodes(int u, int v) {
   // If u no longer has move edges, remove from move_related_.
   if (move_edges_[u].empty()) {
     BitClear(in_move_related_, u);
+  } else {
+    BitSet(in_move_related_, u);
   }
 
   // Record coalescing: v maps to u.
   coalesced_rep_[v] = u;
+
+  for (int node : allocatable_nodes_) {
+    if (!BitTest(in_worklist_, node)) continue;
+    int degree = 0;
+    for (int neighbor : interference_[node]) {
+      if (BitTest(in_worklist_, neighbor)) ++degree;
+    }
+    current_degree_[node] = degree;
+  }
 }
 
 void RegisterAllocator::Freeze() {
@@ -1230,6 +1296,22 @@ void RegisterAllocator::AssignColors() {
     }
   }
 
+  auto find_rep = [&](int var) {
+    int rep = var;
+    while (rep >= 0 && rep <= max_var_id_ && coalesced_rep_[rep] >= 0) {
+      rep = coalesced_rep_[rep];
+    }
+    return rep;
+  };
+
+  for (int v : allocatable_nodes_) {
+    if (coalesced_rep_[v] < 0) continue;
+    const int rep = find_rep(v);
+    if (rep >= 0 && rep <= max_var_id_ && node_color[rep] >= -1) {
+      node_color[v] = node_color[rep];
+    }
+  }
+
   // Persist the results.
   for (int v : allocatable_nodes_) {
     if (node_color[v] >= -1) {
@@ -1267,7 +1349,10 @@ void RegisterAllocator::UpdateLocationMap() {
   for (int var : allocatable_nodes_) {
     if (coalesced_rep_[var] < 0) continue;
     if (BitTest(is_stack_bound_, var)) continue;
-    int rep = coalesced_rep_[var];
+    int rep = var;
+    while (rep >= 0 && rep <= max_var_id_ && coalesced_rep_[rep] >= 0) {
+      rep = coalesced_rep_[rep];
+    }
     if (assignment_[rep] >= 0) {
       riscv_func_.location_[var] = {true, assignment_[rep]};
     } else {

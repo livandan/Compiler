@@ -2,6 +2,7 @@
 #include "register_allocator.h"
 #include "fstream"
 #include "item.h"
+#include <queue>
 #include <set>
 
 enum saver {no_saver, caller_save, callee_save};
@@ -412,6 +413,9 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     const int var_src, const std::shared_ptr<IntegratedType> &type) {
   const auto [dest_in_reg, dest_location] = RISCV_functions_[func_id].location_[var_dest];
   const auto [src_in_reg, src_location] = RISCV_functions_[func_id].location_[var_src];
+  if (dest_in_reg && src_in_reg && dest_location == src_location) {
+    return;
+  }
   auto [type_size, need_alignment] = GetSize(type);
   // Alloca result vars store a pointer (8 bytes), not the element type size
   if (alloca_var_ids_[func_id].count(var_src)) type_size = 8;
@@ -432,8 +436,7 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
         r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
       }
     } else {
-      r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
-      r_block.PushMemory_S(r_sb_, 5, dest_location, 2);
+      r_block.PushMemory_S(r_sb_, src_data_reg, dest_location, 2);
     }
   } else if (type_size == 4 && need_alignment) {
     int src_data_reg = src_location;
@@ -450,8 +453,7 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
         r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
       }
     } else {
-      r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
-      r_block.PushMemory_S(CodeGenerator::GetStoreInst(type), 5, dest_location, 2);
+      r_block.PushMemory_S(CodeGenerator::GetStoreInst(type), src_data_reg, dest_location, 2);
     }
   } else if (type_size == 8) {
     int src_data_reg = src_location;
@@ -468,8 +470,7 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
         r_block.PushMemory_S(r_sd_, dest_location, RegSavedLocation(func_id, dest_location), 2);
       }
     } else {
-      r_block.PushArithmetic_R(r_add_, 5, src_data_reg, 0);
-      r_block.PushMemory_S(r_sd_, 5, dest_location, 2);
+      r_block.PushMemory_S(r_sd_, src_data_reg, dest_location, 2);
     }
   } else {
     if (src_in_reg || dest_in_reg) {
@@ -569,6 +570,238 @@ void CodeGenerator::FlushSavedRegisters(int func_id, RISCVBlock &r_block) {
   registers_saved_[func_id] = false;
 }
 
+static bool InstructionUsesReg(const RISCVInstruction &inst, int reg) {
+  switch (inst.instruction_type_) {
+    case r_add_: case r_sub_: case r_and_: case r_or_: case r_xor_:
+    case r_sll_: case r_srl_: case r_sra_: case r_slt_: case r_sltu_:
+    case r_addw_: case r_subw_: case r_sllw_: case r_srlw_: case r_sraw_:
+    case r_mul_: case r_div_: case r_divu_: case r_rem_: case r_remu_:
+    case r_mulw_: case r_divw_: case r_divuw_: case r_remw_: case r_remuw_:
+      return inst.rs1_ == reg || inst.rs2_ == reg;
+    case r_addi_: case r_andi_: case r_ori_: case r_xori_:
+    case r_slli_: case r_srli_: case r_srai_: case r_slti_: case r_sltiu_:
+    case r_addiw_: case r_slliw_: case r_srliw_: case r_sraiw_:
+    case r_jalr_: case r_jr_: case r_mv_: case r_neg_: case r_not_:
+    case r_lb_: case r_lbu_: case r_lh_: case r_lhu_: case r_lw_: case r_ld_:
+      return inst.rs1_ == reg;
+    case r_sb_: case r_sh_: case r_sw_: case r_sd_:
+      return inst.rs1_ == reg || inst.rs2_ == reg;
+    case r_beq_: case r_bge_: case r_bgeu_: case r_blt_: case r_bltu_: case r_bne_:
+      return inst.rs1_ == reg || inst.rs2_ == reg;
+    case r_beqz_: case r_bnez_:
+      return inst.rs1_ == reg;
+    default:
+      return false;
+  }
+}
+
+static bool InstructionDefsReg(const RISCVInstruction &inst, int reg) {
+  switch (inst.instruction_type_) {
+    case r_add_: case r_sub_: case r_and_: case r_or_: case r_xor_:
+    case r_sll_: case r_srl_: case r_sra_: case r_slt_: case r_sltu_:
+    case r_addi_: case r_andi_: case r_ori_: case r_xori_:
+    case r_slli_: case r_srli_: case r_srai_: case r_slti_: case r_sltiu_:
+    case r_lb_: case r_lbu_: case r_lh_: case r_lhu_: case r_lw_:
+    case r_jal_: case r_jalr_: case r_auipc_: case r_lui_: case r_la_:
+    case r_li_: case r_mv_: case r_neg_: case r_not_:
+    case r_addw_: case r_subw_: case r_addiw_:
+    case r_sllw_: case r_srlw_: case r_sraw_:
+    case r_slliw_: case r_srliw_: case r_sraiw_:
+    case r_mul_: case r_div_: case r_divu_: case r_rem_: case r_remu_:
+    case r_mulw_: case r_divw_: case r_divuw_: case r_remw_: case r_remuw_:
+    case r_ld_:
+      return inst.rd_ == reg;
+    case r_call_:
+      return reg == 1 || (reg >= 5 && reg <= 7) ||
+          (reg >= 10 && reg <= 17) || (reg >= 28 && reg <= 31);
+    default:
+      return false;
+  }
+}
+
+static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std::set<int> &uses) {
+  auto add_def = [&](int id) {
+    if (id > 0) defs.insert(id);
+  };
+  auto add_use = [&](int id) {
+    if (id > 0) uses.insert(id);
+  };
+
+  switch (inst.instruction_type_) {
+    case two_var_binary_operation_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case var_const_binary_operation_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case const_var_binary_operation_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case conditional_br_:
+      add_use(inst.condition_id_);
+      break;
+    case variable_ret_:
+      add_use(inst.result_id_);
+      break;
+    case load_:
+    case ptr_load_:
+      add_use(inst.pointer_);
+      add_def(inst.result_id_);
+      break;
+    case variable_store_:
+    case ptr_store_:
+      add_use(inst.result_id_);
+      add_use(inst.pointer_);
+      break;
+    case value_store_:
+      add_use(inst.pointer_);
+      break;
+    case get_element_ptr_by_value_:
+      add_use(inst.pointer_);
+      add_def(inst.result_id_);
+      break;
+    case get_element_ptr_by_variable_:
+      add_use(inst.pointer_);
+      add_use(inst.index_);
+      add_def(inst.result_id_);
+      break;
+    case two_var_icmp_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case var_const_icmp_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case const_var_icmp_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case non_void_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      add_def(inst.result_id_);
+      break;
+    case void_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      break;
+    case builtin_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      if (inst.function_name_ == 2) add_def(inst.result_id_);
+      break;
+    case value_select_ii_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_iv_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_vi_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_vv_:
+      add_def(inst.result_id_);
+      break;
+    case variable_select_ii_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_vv_:
+      add_use(inst.condition_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_iv_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_vi_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case builtin_memset_:
+      add_use(inst.pointer_);
+      break;
+    case builtin_memcpy_:
+      add_use(inst.destination_);
+      add_use(inst.pointer_);
+      break;
+    default:
+      break;
+  }
+}
+
+void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
+    const std::set<int> &live_out_regs) const {
+  std::vector<RISCVInstruction> optimized;
+  optimized.reserve(r_block.instructions_.size());
+
+  for (int i = 0; i < r_block.instructions_.size(); ++i) {
+    RISCVInstruction inst = r_block.instructions_[i];
+
+    if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
+      if (inst.rd_ == inst.rs1_) {
+        continue;
+      }
+      inst.instruction_type_ = r_mv_;
+      inst.rs2_ = -1;
+      optimized.push_back(inst);
+      continue;
+    }
+
+    if (inst.instruction_type_ == r_addiw_ &&
+        i + 1 < r_block.instructions_.size()) {
+      const RISCVInstruction &next = r_block.instructions_[i + 1];
+      if ((next.instruction_type_ == r_add_ && next.rs1_ == inst.rd_ && next.rs2_ == 0) ||
+          next.instruction_type_ == r_mv_) {
+        const bool is_move_back =
+            next.rd_ == inst.rs1_ &&
+            ((next.instruction_type_ == r_add_ && next.rs1_ == inst.rd_ && next.rs2_ == 0) ||
+             (next.instruction_type_ == r_mv_ && next.rs1_ == inst.rd_));
+        bool tmp_dead = !live_out_regs.contains(inst.rd_);
+        if (is_move_back) {
+          for (int j = i + 2; j < r_block.instructions_.size(); ++j) {
+            const RISCVInstruction &later = r_block.instructions_[j];
+            if (InstructionUsesReg(later, inst.rd_)) {
+              tmp_dead = false;
+              break;
+            }
+            if (InstructionDefsReg(later, inst.rd_)) {
+              break;
+            }
+          }
+        }
+        if (is_move_back && tmp_dead) {
+          inst.rd_ = inst.rs1_;
+          optimized.push_back(inst);
+          ++i;
+          continue;
+        }
+      }
+    }
+
+    optimized.push_back(inst);
+  }
+
+  r_block.instructions_ = std::move(optimized);
+}
+
 void CodeGenerator::SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block) {
   for (int reg : used_caller_regs_[func_id]) {
     r_block.PushMemory_I(r_ld_, 31, RegSavedLocation(func_id, reg), 2);
@@ -633,6 +866,90 @@ void CodeGenerator::Generate() {
   }
   registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
+    std::map<int, std::set<int>> block_defs;
+    std::map<int, std::set<int>> block_uses;
+    std::map<int, std::set<int>> live_in_vars;
+    std::map<int, std::set<int>> live_out_vars;
+    std::map<int, std::vector<int>> successors;
+    std::map<int, std::vector<int>> predecessors;
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      std::set<int> defs;
+      std::set<int> uses;
+      for (const auto &instruction : block.instructions_) {
+        std::set<int> inst_defs;
+        std::set<int> inst_uses;
+        CollectIRDefUse(instruction, inst_defs, inst_uses);
+        for (int use : inst_uses) {
+          if (!defs.contains(use)) uses.insert(use);
+        }
+        for (int def : inst_defs) {
+          defs.insert(def);
+        }
+      }
+      for (const auto &phi : block.phi_instructions_) {
+        defs.insert(phi.result_id);
+        for (const auto &condition : phi.conditions) {
+          if (!condition.is_const) {
+            block_uses[condition.from_block_id].insert(condition.var_id);
+          }
+        }
+      }
+      for (int use : uses) {
+        block_uses[block_id].insert(use);
+      }
+      block_defs[block_id] = std::move(defs);
+      live_in_vars[block_id] = {};
+      live_out_vars[block_id] = {};
+
+      if (!block.instructions_.empty()) {
+        const auto &last = block.instructions_.back();
+        if (last.instruction_type_ == conditional_br_) {
+          successors[block_id].push_back(last.if_true_);
+          successors[block_id].push_back(last.if_false_);
+          predecessors[last.if_true_].push_back(block_id);
+          predecessors[last.if_false_].push_back(block_id);
+        } else if (last.instruction_type_ == unconditional_br_) {
+          successors[block_id].push_back(last.destination_);
+          predecessors[last.destination_].push_back(block_id);
+        }
+      }
+    }
+    std::queue<int> live_worklist;
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      live_worklist.push(block_id);
+    }
+    while (!live_worklist.empty()) {
+      const int block_id = live_worklist.front();
+      live_worklist.pop();
+      std::set<int> new_live_out;
+      for (int succ : successors[block_id]) {
+        new_live_out.insert(live_in_vars[succ].begin(), live_in_vars[succ].end());
+      }
+      std::set<int> new_live_in = block_uses[block_id];
+      for (int id : new_live_out) {
+        if (!block_defs[block_id].contains(id)) {
+          new_live_in.insert(id);
+        }
+      }
+      if (new_live_in != live_in_vars[block_id] ||
+          new_live_out != live_out_vars[block_id]) {
+        live_in_vars[block_id] = std::move(new_live_in);
+        live_out_vars[block_id] = std::move(new_live_out);
+        for (int pred : predecessors[block_id]) {
+          live_worklist.push(pred);
+        }
+      }
+    }
+    std::map<int, std::set<int>> live_out_regs;
+    for (const auto &[block_id, vars] : live_out_vars) {
+      for (int var : vars) {
+        const auto it = RISCV_functions_[i].location_.find(var);
+        if (it != RISCV_functions_[i].location_.end() && it->second.first) {
+          live_out_regs[block_id].insert(it->second.second);
+        }
+      }
+    }
+
     // bool busy_registers[32] = {false};
     const int stack_space = RISCV_functions_[i].stack_space_;
     // alloca
@@ -650,6 +967,7 @@ void CodeGenerator::Generate() {
     }
     FlushSavedRegisters(i, bb0);
     bb0.PushJ(IR_functions_[i].blocks_.begin()->first);
+    PeepholeOptimizeBlock(bb0, {});
     // Build next_block_map for redundant jump elimination.
     std::map<int, int> next_block_map;
     {
@@ -2336,6 +2654,7 @@ void CodeGenerator::Generate() {
         r_block.instructions_.push_back(jump_instructions.back());
         jump_instructions.pop_back();
       }
+      PeepholeOptimizeBlock(r_block, live_out_regs[block_id]);
     }
   }
 }
