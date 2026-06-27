@@ -8,6 +8,7 @@ cmake-build-debug
 RCompiler-Testcases/IR-1/src
 RCompiler-Testcases/semantic-1
 RCompiler-Testcases/semantic-2
+RCompiler-Testcases/hidden_case
 RCompiler-Testcases/working_space/**
 !RCompiler-Testcases/working_space/debugging_my.s
 REIMU
