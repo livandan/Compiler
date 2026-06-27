@@ -24,6 +24,10 @@ static bool IsCallerSavedReg(int reg) {
   return it != register_saver.end() && it->second == caller_save;
 }
 
+static int AlignUp(int value, int alignment) {
+  return (value + alignment - 1) / alignment * alignment;
+}
+
 void CodegenThrow(const std::string &err_info) {
   // std::cerr << "[Codegen Error] " << err_info << '\n';
   throw "";
@@ -275,15 +279,124 @@ void CodeGenerator::MemAlloc(const int func_id) {
   }
 }
 
+void CodeGenerator::CompactStackFrame(const int func_id) {
+  auto &riscv_func = RISCV_functions_[func_id];
+  const auto &ir_func = IR_functions_[func_id];
+  struct StackSlot {
+    int size = 0;
+    int alignment = 1;
+    bool is_alloca = false;
+    int alloca_data_size = 0;
+  };
+  std::map<int, StackSlot> stack_slots;
+
+  auto remember_stack_var = [&](int var_id, int size, int alignment) {
+    const auto it = riscv_func.location_.find(var_id);
+    if (it == riscv_func.location_.end() || it->second.first) return;
+    auto existing = stack_slots.find(var_id);
+    if (existing != stack_slots.end() && existing->second.is_alloca) return;
+    stack_slots[var_id] = {size, alignment, false, 0};
+  };
+
+  auto remember_alloca = [&](int var_id, int data_size) {
+    const auto it = riscv_func.location_.find(var_id);
+    if (it == riscv_func.location_.end() || it->second.first) return;
+    stack_slots[var_id] = {data_size + 8, 8, true, data_size};
+  };
+
+  for (int i = 0; i < ir_func.parameter_types_.size(); ++i) {
+    const auto size = GetSize(ir_func.parameter_types_[i]).first;
+    remember_stack_var(i, size, GetAlignment(ir_func.parameter_types_[i]));
+  }
+  for (const auto &instruction : ir_func.alloca_instructions_) {
+    const int data_size = GetSize(instruction.result_type_).first;
+    remember_alloca(instruction.result_id_, data_size);
+  }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    for (const auto &instruction : block.instructions_) {
+      switch (instruction.instruction_type_) {
+        case two_var_binary_operation_:
+        case var_const_binary_operation_:
+        case const_var_binary_operation_:
+        case load_:
+        case non_void_call_:
+        case value_select_ii_:
+        case value_select_iv_:
+        case value_select_vi_:
+        case value_select_vv_:
+        case variable_select_ii_:
+        case variable_select_iv_:
+        case variable_select_vi_:
+        case variable_select_vv_: {
+          const auto size = GetSize(instruction.result_type_).first;
+          remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_));
+          break;
+        }
+        case builtin_call_: {
+          if (instruction.function_name_ == 2) {
+            const auto size = GetSize(instruction.result_type_).first;
+            remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_));
+          }
+          break;
+        }
+        case ptr_load_:
+        case get_element_ptr_by_value_:
+        case get_element_ptr_by_variable_: {
+          remember_stack_var(instruction.result_id_, 8, 8);
+          break;
+        }
+        case two_var_icmp_:
+        case var_const_icmp_:
+        case const_var_icmp_: {
+          remember_stack_var(instruction.result_id_, 1, 1);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    for (const auto &mv_instruction : riscv_func.blocks_[block_id].move_instructions_) {
+      const auto size = GetSize(mv_instruction.type_).first;
+      remember_stack_var(mv_instruction.dest_, size, GetAlignment(mv_instruction.type_));
+    }
+  }
+
+  int offset = is_leaf_[func_id] ? 0 : 128;
+  for (const auto &[var_id, slot] : stack_slots) {
+    if (slot.is_alloca) {
+      const int pointer_offset = AlignUp(offset + slot.alloca_data_size, 8);
+      riscv_func.location_[var_id].second = pointer_offset;
+      offset = pointer_offset + 8;
+      continue;
+    }
+    offset = AlignUp(offset, slot.alignment);
+    riscv_func.location_[var_id].second = offset;
+    offset += slot.size;
+  }
+
+  auto &save_offsets = reg_save_offsets_[func_id];
+  save_offsets.clear();
+  for (int reg : used_caller_regs_[func_id]) {
+    offset = AlignUp(offset, 8);
+    save_offsets[reg] = offset;
+    offset += 8;
+  }
+  for (int reg : used_callee_regs_[func_id]) {
+    if (save_offsets.contains(reg)) continue;
+    offset = AlignUp(offset, 8);
+    save_offsets[reg] = offset;
+    offset += 8;
+  }
+
+  riscv_func.stack_space_ = AlignUp(offset, 16);
+}
+
 int CodeGenerator::RegSavedLocation(const int func_id, const int reg_id) const {
-  const int stack_space = RISCV_functions_[func_id].stack_space_;
-  if (reg_id == 1) {
-    return stack_space - 8;
+  const auto it = reg_save_offsets_[func_id].find(reg_id);
+  if (it == reg_save_offsets_[func_id].end()) {
+    CodegenThrow("Register has no saving space in the stack.");
   }
-  if (reg_id <= 4) {
-    CodegenThrow("x0, x2, x3 and x4 have no saving space in the stack.");
-  }
-  return stack_space - 8 * (reg_id - 3);
+  return it->second;
 }
 
 // Temp save area at sp+[0..127] for protecting outer save during nested call setup.
@@ -514,6 +627,10 @@ void CodeGenerator::Generate() {
   }
   // Determine which registers actually hold variables after RA.
   AnalyzeUsedRegisters();
+  reg_save_offsets_.resize(IR_functions_.size());
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    CompactStackFrame(i);
+  }
   registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
     // bool busy_registers[32] = {false};

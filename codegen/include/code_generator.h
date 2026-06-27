@@ -457,6 +457,7 @@ private:
   [[nodiscard]] std::pair<bool, int> GetParamPassPos(int function_id, int param_id) const;
   void PhiToMove();
   void MemAlloc(int func_id);
+  void CompactStackFrame(int func_id);
   [[nodiscard]] int RegSavedLocation(int func_id, int reg_id) const; // return the relative address to the stack pointer
   void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
@@ -498,6 +499,7 @@ private:
   // Computed by AnalyzeUsedRegisters() after RA runs.
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
   std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
+  std::vector<std::map<int, int>> reg_save_offsets_;  // [func_id][reg] -> stack offset
   std::vector<bool> registers_saved_;  // per-function: caller-saved regs are currently in save slots
   std::vector<bool> is_leaf_;         // per-function: leaf (no calls)
 };
