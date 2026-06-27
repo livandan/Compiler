@@ -61,13 +61,13 @@ static void RunMem2RegOn(const std::string &base) {
   }
 
   // Output IR
-  // std::ofstream IR_output_file(IR_file);
-  // if (IR_output_file.is_open()) {
-  //   IR_generator.Output(IR_output_file);
-  //   IR_output_file.close();
-  // } else {
-  //   // std::cerr << "[Error] Cannot open " << IR_file << "!\n";
-  // }
+  std::ofstream IR_output_file(IR_file);
+  if (IR_output_file.is_open()) {
+    IR_generator.Output(IR_output_file);
+    IR_output_file.close();
+  } else {
+    // std::cerr << "[Error] Cannot open " << IR_file << "!\n";
+  }
 
   try {
     CodeGenerator RISCV_generator(IR_generator.GetIRFunctions(),
