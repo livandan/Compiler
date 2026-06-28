@@ -4,6 +4,140 @@
 #include <iostream>
 #include <queue>
 
+namespace {
+
+bool IsIcmpInstruction(const IRInstructionType type) {
+  return type == two_var_icmp_ || type == var_const_icmp_ ||
+      type == const_var_icmp_;
+}
+
+void AddUse(std::map<int, int> &use_count, const int id) {
+  if (id > 0) {
+    ++use_count[id];
+  }
+}
+
+std::map<int, int> CountVariableUses(const IRFunctionNode &function) {
+  std::map<int, int> use_count;
+  for (const auto &[block_id, block] : function.blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          AddUse(use_count, condition.var_id);
+        }
+      }
+    }
+    for (const auto &inst : block.instructions_) {
+      switch (inst.instruction_type_) {
+        case two_var_binary_operation_:
+        case two_var_icmp_:
+          AddUse(use_count, inst.operand_1_id_);
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case var_const_binary_operation_:
+        case var_const_icmp_:
+          AddUse(use_count, inst.operand_1_id_);
+          break;
+        case const_var_binary_operation_:
+        case const_var_icmp_:
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case conditional_br_:
+          AddUse(use_count, inst.condition_id_);
+          break;
+        case variable_ret_:
+          AddUse(use_count, inst.result_id_);
+          break;
+        case load_:
+        case ptr_load_:
+        case value_store_:
+        case builtin_memset_:
+          AddUse(use_count, inst.pointer_);
+          break;
+        case variable_store_:
+        case ptr_store_:
+          AddUse(use_count, inst.result_id_);
+          AddUse(use_count, inst.pointer_);
+          break;
+        case get_element_ptr_by_value_:
+          AddUse(use_count, inst.pointer_);
+          break;
+        case get_element_ptr_by_variable_:
+          AddUse(use_count, inst.pointer_);
+          AddUse(use_count, inst.index_);
+          break;
+        case non_void_call_:
+        case void_call_:
+        case builtin_call_:
+          for (const auto &arg : inst.function_call_arguments_) {
+            if (arg.is_variable_) {
+              AddUse(use_count, arg.value_);
+            }
+          }
+          break;
+        case value_select_ii_:
+          AddUse(use_count, inst.operand_1_id_);
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case value_select_iv_:
+          AddUse(use_count, inst.operand_1_id_);
+          break;
+        case value_select_vi_:
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case variable_select_ii_:
+          AddUse(use_count, inst.condition_id_);
+          AddUse(use_count, inst.operand_1_id_);
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case variable_select_iv_:
+          AddUse(use_count, inst.condition_id_);
+          AddUse(use_count, inst.operand_1_id_);
+          break;
+        case variable_select_vi_:
+          AddUse(use_count, inst.condition_id_);
+          AddUse(use_count, inst.operand_2_id_);
+          break;
+        case variable_select_vv_:
+          AddUse(use_count, inst.condition_id_);
+          break;
+        case builtin_memcpy_:
+          AddUse(use_count, inst.destination_);
+          AddUse(use_count, inst.pointer_);
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  return use_count;
+}
+
+std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &function) {
+  std::map<int, IRInstruction> result;
+  const auto use_count = CountVariableUses(function);
+  for (const auto &[block_id, block] : function.blocks_) {
+    const auto &instructions = block.instructions_;
+    if (instructions.size() < 2) {
+      continue;
+    }
+    const auto &branch = instructions.back();
+    const auto &cmp = instructions[instructions.size() - 2];
+    if (branch.instruction_type_ != conditional_br_ ||
+        !IsIcmpInstruction(cmp.instruction_type_) ||
+        cmp.result_id_ != branch.condition_id_) {
+      continue;
+    }
+    const auto use_it = use_count.find(cmp.result_id_);
+    if (use_it != use_count.end() && use_it->second == 1) {
+      result.emplace(block_id, cmp);
+    }
+  }
+  return result;
+}
+
+} // namespace
+
 RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
                                      RISCVFunctionNode &riscv_func,
                                      bool is_leaf)
@@ -134,6 +268,7 @@ void RegisterAllocator::RebuildAllocatableNodes() {
 }
 
 void RegisterAllocator::ClassifyVariables() {
+  const auto direct_branch_icmps = FindDirectBranchIcmps(ir_func_);
   // Alloca'd variables MUST stay on the stack.
   for (const auto &alloca : ir_func_.alloca_instructions_) {
     BitSet(is_stack_bound_, alloca.result_id_);
@@ -213,6 +348,13 @@ void RegisterAllocator::ClassifyVariables() {
           BitSet(is_stack_bound_, result_id);
         }
       }
+    }
+  }
+  for (const auto &[block_id, cmp] : direct_branch_icmps) {
+    BitClear(is_allocatable_, cmp.result_id_);
+    BitSet(is_stack_bound_, cmp.result_id_);
+    if (cmp.result_id_ >= 0 && cmp.result_id_ < var_size_.size()) {
+      var_size_[cmp.result_id_] = 0;
     }
   }
   RebuildAllocatableNodes();
@@ -438,9 +580,26 @@ void RegisterAllocator::LimitRegisterAllocationCandidates() {
 // ============================================================================
 
 void RegisterAllocator::ComputeLiveness() {
+  const auto direct_branch_icmps = FindDirectBranchIcmps(ir_func_);
   auto set_if_allocatable = [&](std::vector<uint64_t> &bs, int id) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
       BitSet(bs, id);
+    }
+  };
+  auto add_cmp_uses = [&](std::vector<uint64_t> &bs, const IRInstruction &cmp) {
+    switch (cmp.instruction_type_) {
+      case two_var_icmp_:
+        set_if_allocatable(bs, cmp.operand_1_id_);
+        set_if_allocatable(bs, cmp.operand_2_id_);
+        break;
+      case var_const_icmp_:
+        set_if_allocatable(bs, cmp.operand_1_id_);
+        break;
+      case const_var_icmp_:
+        set_if_allocatable(bs, cmp.operand_2_id_);
+        break;
+      default:
+        break;
     }
   };
 
@@ -599,6 +758,11 @@ void RegisterAllocator::ComputeLiveness() {
           break;
       }
     }
+    const auto direct_cmp = direct_branch_icmps.find(block_id);
+    if (direct_cmp != direct_branch_icmps.end()) {
+      BitClear(defs, direct_cmp->second.result_id_);
+      add_cmp_uses(uses, direct_cmp->second);
+    }
 
     // Handle phi instructions: result is a def in this block.
     // Source operands are uses in the PREDECESSOR blocks.
@@ -661,6 +825,7 @@ void RegisterAllocator::ComputeLiveness() {
 // ============================================================================
 
 void RegisterAllocator::BuildInterferenceGraph() {
+  const auto direct_branch_icmps = FindDirectBranchIcmps(ir_func_);
   interference_bits_.assign(max_var_id_ + 1, MakeBitSet());
 
   // Within each block: walk instructions backwards.
@@ -685,7 +850,28 @@ void RegisterAllocator::BuildInterferenceGraph() {
     // The conditional-branch condition is loaded AFTER phi moves run.
     if (!block.instructions_.empty()) {
       const auto &last = block.instructions_.back();
-      if (last.instruction_type_ == conditional_br_ &&
+      const auto direct_cmp = direct_branch_icmps.find(block_id);
+      if (direct_cmp != direct_branch_icmps.end()) {
+        auto add_branch_use = [&](int id) {
+          if (id > 0 && BitTest(is_allocatable_, id)) {
+            BitSet(currently_live, id);
+          }
+        };
+        switch (direct_cmp->second.instruction_type_) {
+          case two_var_icmp_:
+            add_branch_use(direct_cmp->second.operand_1_id_);
+            add_branch_use(direct_cmp->second.operand_2_id_);
+            break;
+          case var_const_icmp_:
+            add_branch_use(direct_cmp->second.operand_1_id_);
+            break;
+          case const_var_icmp_:
+            add_branch_use(direct_cmp->second.operand_2_id_);
+            break;
+          default:
+            break;
+        }
+      } else if (last.instruction_type_ == conditional_br_ &&
           last.condition_id_ > 0 &&
           BitTest(is_allocatable_, last.condition_id_)) {
         BitSet(currently_live, last.condition_id_);
@@ -726,73 +912,84 @@ void RegisterAllocator::BuildInterferenceGraph() {
       auto add_use = [&](int id) {
         if (id > 0 && BitTest(is_allocatable_, id)) inst_uses.push_back(id);
       };
-      switch (inst.instruction_type_) {
-        case two_var_binary_operation_:
-          add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
-        case var_const_binary_operation_: add_use(inst.operand_1_id_); break;
-        case const_var_binary_operation_: add_use(inst.operand_2_id_); break;
-        case conditional_br_: add_use(inst.condition_id_); break;
-        case variable_ret_: add_use(inst.result_id_); break;
-        case load_: case ptr_load_: add_use(inst.pointer_); break;
-        case variable_store_:
-          add_use(inst.result_id_); add_use(inst.pointer_); break;
-        case value_store_:
-          add_use(inst.pointer_); break;
-        case ptr_store_:
-          add_use(inst.result_id_); add_use(inst.pointer_); break;
-        case get_element_ptr_by_value_:
-          add_use(inst.pointer_); break;
-        case get_element_ptr_by_variable_:
-          add_use(inst.pointer_); add_use(inst.index_); break;
-        case two_var_icmp_:
-          add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
-        case var_const_icmp_: add_use(inst.operand_1_id_); break;
-        case const_var_icmp_: add_use(inst.operand_2_id_); break;
-        case non_void_call_: case void_call_: case builtin_call_:
-          for (const auto &arg : inst.function_call_arguments_) {
-            if (arg.is_variable_) add_use(arg.value_);
-          }
-          break;
-        case value_select_ii_:
-          add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
-        case value_select_iv_: add_use(inst.operand_1_id_); break;
-        case value_select_vi_: add_use(inst.operand_2_id_); break;
-        case variable_select_ii_: case variable_select_vv_:
-          add_use(inst.condition_id_);
-          add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
-        case variable_select_iv_:
-          add_use(inst.condition_id_); add_use(inst.operand_1_id_); break;
-        case variable_select_vi_:
-          add_use(inst.condition_id_); add_use(inst.operand_2_id_); break;
-        case builtin_memset_: add_use(inst.pointer_); break;
-        case builtin_memcpy_: add_use(inst.destination_); add_use(inst.pointer_); break;
-        default: break;
+      const auto direct_cmp_for_block = direct_branch_icmps.find(block_id);
+      const bool skipped_direct_cmp =
+          direct_cmp_for_block != direct_branch_icmps.end() &&
+          IsIcmpInstruction(inst.instruction_type_) &&
+          inst.result_id_ == direct_cmp_for_block->second.result_id_;
+      if (!skipped_direct_cmp) {
+        switch (inst.instruction_type_) {
+          case two_var_binary_operation_:
+            add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
+          case var_const_binary_operation_: add_use(inst.operand_1_id_); break;
+          case const_var_binary_operation_: add_use(inst.operand_2_id_); break;
+          case conditional_br_: add_use(inst.condition_id_); break;
+          case variable_ret_: add_use(inst.result_id_); break;
+          case load_: case ptr_load_: add_use(inst.pointer_); break;
+          case variable_store_:
+            add_use(inst.result_id_); add_use(inst.pointer_); break;
+          case value_store_:
+            add_use(inst.pointer_); break;
+          case ptr_store_:
+            add_use(inst.result_id_); add_use(inst.pointer_); break;
+          case get_element_ptr_by_value_:
+            add_use(inst.pointer_); break;
+          case get_element_ptr_by_variable_:
+            add_use(inst.pointer_); add_use(inst.index_); break;
+          case two_var_icmp_:
+            add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
+          case var_const_icmp_: add_use(inst.operand_1_id_); break;
+          case const_var_icmp_: add_use(inst.operand_2_id_); break;
+          case non_void_call_: case void_call_: case builtin_call_:
+            for (const auto &arg : inst.function_call_arguments_) {
+              if (arg.is_variable_) add_use(arg.value_);
+            }
+            break;
+          case value_select_ii_:
+            add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
+          case value_select_iv_: add_use(inst.operand_1_id_); break;
+          case value_select_vi_: add_use(inst.operand_2_id_); break;
+          case variable_select_ii_:
+            add_use(inst.condition_id_);
+            add_use(inst.operand_1_id_); add_use(inst.operand_2_id_); break;
+          case variable_select_vv_:
+            add_use(inst.condition_id_); break;
+          case variable_select_iv_:
+            add_use(inst.condition_id_); add_use(inst.operand_1_id_); break;
+          case variable_select_vi_:
+            add_use(inst.condition_id_); add_use(inst.operand_2_id_); break;
+          case builtin_memset_: add_use(inst.pointer_); break;
+          case builtin_memcpy_: add_use(inst.destination_); add_use(inst.pointer_); break;
+          default: break;
+        }
       }
 
       // --- Collect defs ---
-      switch (inst.instruction_type_) {
-        case two_var_binary_operation_: case var_const_binary_operation_:
-        case const_var_binary_operation_: case non_void_call_:
-        case two_var_icmp_: case var_const_icmp_: case const_var_icmp_:
-        case load_: case ptr_load_:
-        case get_element_ptr_by_value_: case get_element_ptr_by_variable_:
-        case value_select_ii_: case value_select_iv_: case value_select_vi_:
-        case value_select_vv_:
-        case variable_select_ii_: case variable_select_iv_:
-        case variable_select_vi_: case variable_select_vv_:
-          if (result_id > 0 && BitTest(is_allocatable_, result_id)) {
-            inst_defs.push_back(result_id);
-          }
-          break;
-        case builtin_call_:
-          if (inst.function_name_ == 2 && result_id > 0 &&
-              BitTest(is_allocatable_, result_id)) {
-            inst_defs.push_back(result_id);
-          }
-          break;
-        case alloca_:
-          break;
-        default: break;
+      if (!skipped_direct_cmp) {
+        switch (inst.instruction_type_) {
+          case two_var_binary_operation_: case var_const_binary_operation_:
+          case const_var_binary_operation_: case non_void_call_:
+          case two_var_icmp_: case var_const_icmp_: case const_var_icmp_:
+          case load_: case ptr_load_:
+          case get_element_ptr_by_value_: case get_element_ptr_by_variable_:
+          case value_select_ii_: case value_select_iv_: case value_select_vi_:
+          case value_select_vv_:
+          case variable_select_ii_: case variable_select_iv_:
+          case variable_select_vi_: case variable_select_vv_:
+            if (result_id > 0 && BitTest(is_allocatable_, result_id)) {
+              inst_defs.push_back(result_id);
+            }
+            break;
+          case builtin_call_:
+            if (inst.function_name_ == 2 && result_id > 0 &&
+                BitTest(is_allocatable_, result_id)) {
+              inst_defs.push_back(result_id);
+            }
+            break;
+          case alloca_:
+            break;
+          default: break;
+        }
       }
 
       // Add interference: def interferes with everything currently live

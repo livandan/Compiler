@@ -2,8 +2,10 @@
 #include "register_allocator.h"
 #include "fstream"
 #include "item.h"
+#include <algorithm>
 #include <queue>
 #include <set>
+#include <vector>
 
 enum saver {no_saver, caller_save, callee_save};
 const std::map<int, saver> register_saver = {
@@ -27,6 +29,11 @@ static bool IsCallerSavedReg(int reg) {
 
 static int AlignUp(int value, int alignment) {
   return (value + alignment - 1) / alignment * alignment;
+}
+
+static bool IsIcmpInstruction(const IRInstructionType type) {
+  return type == two_var_icmp_ || type == var_const_icmp_ ||
+      type == const_var_icmp_;
 }
 
 void CodegenThrow(const std::string &err_info) {
@@ -773,6 +780,57 @@ static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std:
   }
 }
 
+static void AddIRUseCount(std::map<int, int> &use_count, const int id) {
+  if (id > 0) {
+    ++use_count[id];
+  }
+}
+
+static std::map<int, int> CountIRVariableUses(const IRFunctionNode &function) {
+  std::map<int, int> use_count;
+  for (const auto &[block_id, block] : function.blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          AddIRUseCount(use_count, condition.var_id);
+        }
+      }
+    }
+    for (const auto &inst : block.instructions_) {
+      std::set<int> defs;
+      std::set<int> uses;
+      CollectIRDefUse(inst, defs, uses);
+      for (int use : uses) {
+        AddIRUseCount(use_count, use);
+      }
+    }
+  }
+  return use_count;
+}
+
+static std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &function) {
+  std::map<int, IRInstruction> result;
+  const auto use_count = CountIRVariableUses(function);
+  for (const auto &[block_id, block] : function.blocks_) {
+    const auto &instructions = block.instructions_;
+    if (instructions.size() < 2) {
+      continue;
+    }
+    const auto &branch = instructions.back();
+    const auto &cmp = instructions[instructions.size() - 2];
+    if (branch.instruction_type_ != conditional_br_ ||
+        !IsIcmpInstruction(cmp.instruction_type_) ||
+        cmp.result_id_ != branch.condition_id_) {
+      continue;
+    }
+    const auto use_it = use_count.find(cmp.result_id_);
+    if (use_it != use_count.end() && use_it->second == 1) {
+      result.emplace(block_id, cmp);
+    }
+  }
+  return result;
+}
+
 void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     const std::set<int> &live_out_regs) const {
   std::vector<RISCVInstruction> optimized;
@@ -920,6 +978,7 @@ void CodeGenerator::Generate() {
   }
   registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
+    const auto direct_branch_icmps = FindDirectBranchIcmps(IR_functions_[i]);
     std::map<int, std::set<int>> block_defs;
     std::map<int, std::set<int>> block_uses;
     std::map<int, std::set<int>> live_in_vars;
@@ -1093,6 +1152,108 @@ void CodeGenerator::Generate() {
       if (it != RISCV_functions_[i].location_.end() && it->second.first &&
           IsCallerSavedReg(it->second.second)) {
         regs.erase(it->second.second);
+      }
+    };
+    auto deferred_load_typed_operand = [&](RISCVBlock &r_block, int var_id,
+        int scratch_reg, const std::shared_ptr<IntegratedType> &type) {
+      const auto &loc = RISCV_functions_[i].location_.at(var_id);
+      if (loc.first) {
+        r_block.deferred_load_.push_back(
+            RISCVInstruction(r_mv_, scratch_reg, loc.second, -1, -1, -1));
+      } else {
+        r_block.deferred_load_.push_back(
+            RISCVInstruction(CodeGenerator::GetLoadInst(type), scratch_reg, 2, -1,
+                loc.second, -1));
+      }
+    };
+    auto emit_direct_label_branch = [&](RISCVBlock &r_block, RISCVInstructionType type,
+        int lhs_reg, int rhs_reg, int target) {
+      r_block.instructions_.push_back(
+          RISCVInstruction(type, -1, lhs_reg, rhs_reg, 1, target));
+    };
+    auto branch_for_condition = [](IcmpCond cond) {
+      switch (cond) {
+        case equal_: return r_beq_;
+        case not_equal_: return r_bne_;
+        case unsigned_greater_than_: return r_bltu_;
+        case unsigned_greater_equal_: return r_bgeu_;
+        case unsigned_less_than_: return r_bltu_;
+        case unsigned_less_equal_: return r_bgeu_;
+        case signed_greater_than_: return r_blt_;
+        case signed_greater_equal_: return r_bge_;
+        case signed_less_than_: return r_blt_;
+        case signed_less_equal_: return r_bge_;
+      }
+      return r_beq_;
+    };
+    auto invert_condition = [](IcmpCond cond) {
+      switch (cond) {
+        case equal_: return not_equal_;
+        case not_equal_: return equal_;
+        case unsigned_greater_than_: return unsigned_less_equal_;
+        case unsigned_greater_equal_: return unsigned_less_than_;
+        case unsigned_less_than_: return unsigned_greater_equal_;
+        case unsigned_less_equal_: return unsigned_greater_than_;
+        case signed_greater_than_: return signed_less_equal_;
+        case signed_greater_equal_: return signed_less_than_;
+        case signed_less_than_: return signed_greater_equal_;
+        case signed_less_equal_: return signed_greater_than_;
+      }
+      return equal_;
+    };
+    auto emit_direct_compare_branch = [&](RISCVBlock &r_block, const IRInstruction &cmp,
+        int true_target, int false_target, int fallthrough_target) {
+      IcmpCond cond = cmp.icmp_condition_;
+      int target = true_target;
+      int followup_jump = -1;
+      if (true_target == fallthrough_target) {
+        cond = invert_condition(cond);
+        target = false_target;
+      } else if (false_target != fallthrough_target) {
+        followup_jump = false_target;
+      }
+
+      int lhs_reg = 5;
+      int rhs_reg = 6;
+      if (cmp.instruction_type_ == two_var_icmp_) {
+        deferred_load_typed_operand(r_block, cmp.operand_1_id_, lhs_reg, cmp.result_type_);
+        deferred_load_typed_operand(r_block, cmp.operand_2_id_, rhs_reg, cmp.result_type_);
+      } else if (cmp.instruction_type_ == var_const_icmp_) {
+        deferred_load_typed_operand(r_block, cmp.operand_1_id_, lhs_reg, cmp.result_type_);
+        if (cmp.operand_2_id_ == 0) {
+          rhs_reg = 0;
+        } else {
+          r_block.deferred_load_.push_back(
+              RISCVInstruction(r_li_, rhs_reg, -1, -1, cmp.operand_2_id_, -1));
+        }
+      } else if (cmp.instruction_type_ == const_var_icmp_) {
+        if (cmp.operand_1_id_ == 0) {
+          lhs_reg = 0;
+        } else {
+          r_block.deferred_load_.push_back(
+              RISCVInstruction(r_li_, lhs_reg, -1, -1, cmp.operand_1_id_, -1));
+        }
+        deferred_load_typed_operand(r_block, cmp.operand_2_id_, rhs_reg, cmp.result_type_);
+      } else {
+        CodegenThrow("Invalid compare instruction for direct branch.");
+      }
+
+      RISCVInstructionType branch_type = branch_for_condition(cond);
+      switch (cond) {
+        case unsigned_greater_than_:
+        case signed_greater_than_:
+          std::swap(lhs_reg, rhs_reg);
+          break;
+        case unsigned_less_equal_:
+        case signed_less_equal_:
+          std::swap(lhs_reg, rhs_reg);
+          break;
+        default:
+          break;
+      }
+      emit_direct_label_branch(r_block, branch_type, lhs_reg, rhs_reg, target);
+      if (followup_jump != -1) {
+        r_block.PushJ(followup_jump);
       }
     };
     // blocks
@@ -1391,6 +1552,16 @@ void CodeGenerator::Generate() {
             break;
           }
           case conditional_br_: {
+            const auto direct_cmp = direct_branch_icmps.find(block_id);
+            if (direct_cmp != direct_branch_icmps.end()) {
+              FlushSavedRegisters(i, r_block);
+              int next_blk = -1;
+              auto it = next_block_map.find(block_id);
+              if (it != next_block_map.end()) next_blk = it->second;
+              emit_direct_compare_branch(r_block, direct_cmp->second,
+                  instruction.if_true_, instruction.if_false_, next_blk);
+              break;
+            }
             // NOTE: phi-induced moves for the branch targets are emitted in
             // the post-block pass *after* the regular instructions, just
             // before the terminator. Those moves clobber scratch registers
@@ -1816,6 +1987,11 @@ void CodeGenerator::Generate() {
             break;
           }
           case two_var_icmp_: {
+            const auto direct_cmp = direct_branch_icmps.find(block_id);
+            if (direct_cmp != direct_branch_icmps.end() &&
+                direct_cmp->second.result_id_ == instruction.result_id_) {
+              break;
+            }
             int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
@@ -1964,6 +2140,11 @@ void CodeGenerator::Generate() {
             break;
           }
           case var_const_icmp_: {
+            const auto direct_cmp = direct_branch_icmps.find(block_id);
+            if (direct_cmp != direct_branch_icmps.end() &&
+                direct_cmp->second.result_id_ == instruction.result_id_) {
+              break;
+            }
             int op1_reg = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_1_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 5, op1_reg, 2);
@@ -2138,6 +2319,11 @@ void CodeGenerator::Generate() {
             break;
           }
           case const_var_icmp_: {
+            const auto direct_cmp = direct_branch_icmps.find(block_id);
+            if (direct_cmp != direct_branch_icmps.end() &&
+                direct_cmp->second.result_id_ == instruction.result_id_) {
+              break;
+            }
             int op2_reg = RISCV_functions_[i].location_[instruction.operand_2_id_].second;
             if (!RISCV_functions_[i].location_[instruction.operand_2_id_].first) {
               r_block.PushMemory_I(CodeGenerator::GetLoadInst(instruction.result_type_), 6, op2_reg, 2);
@@ -2774,13 +2960,16 @@ void CodeGenerator::Generate() {
       // Now emit deferred loads (e.g., the conditional branch's condition
       // reload) so they execute after the moves and before the terminator.
       for (const auto &def : r_block.deferred_load_) {
-        if (def.instruction_type_ == r_lbu_ && def.rs1_ == 2 &&
+        if ((def.instruction_type_ == r_lb_ || def.instruction_type_ == r_lbu_ ||
+             def.instruction_type_ == r_lh_ || def.instruction_type_ == r_lhu_ ||
+             def.instruction_type_ == r_lw_ || def.instruction_type_ == r_ld_) &&
+            def.rs1_ == 2 &&
             (def.imm_ < -2048 || def.imm_ > 2047)) {
-          // Large stack offset — use LI+ADD+LB sequence.
+          // Large stack offset - use LI+ADD+load sequence.
           r_block.PushLi(7, def.imm_);
           r_block.PushArithmetic_R(r_add_, 7, 7, 2);
           r_block.instructions_.push_back(
-              RISCVInstruction(r_lbu_, def.rd_, 7, -1, 0, -1));
+              RISCVInstruction(def.instruction_type_, def.rd_, 7, -1, 0, -1));
         } else {
           r_block.instructions_.push_back(def);
         }
@@ -2906,7 +3095,11 @@ void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruc
   file << ", ";
   PrintReg(file, instruction.rs2_);
   file << ", ";
-  PrintJumpLabel(file, block_id, instruction.label_, func_id);
+  if (instruction.imm_ == 1) {
+    PrintLabel(file, instruction.label_, func_id);
+  } else {
+    PrintJumpLabel(file, block_id, instruction.label_, func_id);
+  }
 }
 
 void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instruction,
