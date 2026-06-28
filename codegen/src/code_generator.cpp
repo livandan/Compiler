@@ -348,16 +348,24 @@ std::pair<bool, int> CodeGenerator::GetParamPassPos(const int function_id, const
 } // {true, reg_id} or {false, neg_offset}
 
 void CodeGenerator::PhiToMove() {
+  struct PendingValueMove {
+    int block_id;
+    int src;
+    int dest;
+    const std::shared_ptr<IntegratedType> *type;
+  };
+
   for (int i = 0; i < IR_functions_.size(); ++i) {
     std::map<BlockJumping, AssignmentGraph> assign_relations;
+    std::vector<PendingValueMove> value_moves;
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
       for (const auto &instruction : block.phi_instructions_) {
         const int dest_var_id = instruction.result_id;
         const auto &type = instruction.type;
         for (const auto &condition : instruction.conditions) {
           if (condition.is_const) { // is literal value
-            RISCV_functions_[i].blocks_[condition.from_block_id].PushMove(type,
-                true, condition.value, dest_var_id);
+            value_moves.push_back({condition.from_block_id, condition.value,
+                dest_var_id, &type});
           } else {
             if (!assign_relations.contains({condition.from_block_id, block_id})) {
               assign_relations.insert(std::pair<BlockJumping, AssignmentGraph>(
@@ -372,6 +380,13 @@ void CodeGenerator::PhiToMove() {
     int tmp_var_id = IR_functions_[i].var_id_;
     for (auto &[block_jump, graph] : assign_relations) {
       graph.EliminateCycles(block_jump, tmp_var_id, RISCV_functions_[i].blocks_);
+    }
+    // Literal phi moves do not read any predecessor value, so emit them after
+    // all variable phi copies. This preserves parallel-copy semantics when a
+    // literal phi writes a variable that another phi reads on the same edge.
+    for (const auto &move : value_moves) {
+      RISCV_functions_[i].blocks_[move.block_id].PushMove(*move.type, true,
+          move.src, move.dest);
     }
   }
 }

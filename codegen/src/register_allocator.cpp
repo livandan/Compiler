@@ -586,101 +586,94 @@ void RegisterAllocator::ComputeLiveness() {
       BitSet(bs, id);
     }
   };
-  auto add_cmp_uses = [&](std::vector<uint64_t> &bs, const IRInstruction &cmp) {
-    switch (cmp.instruction_type_) {
-      case two_var_icmp_:
-        set_if_allocatable(bs, cmp.operand_1_id_);
-        set_if_allocatable(bs, cmp.operand_2_id_);
-        break;
-      case var_const_icmp_:
-        set_if_allocatable(bs, cmp.operand_1_id_);
-        break;
-      case const_var_icmp_:
-        set_if_allocatable(bs, cmp.operand_2_id_);
-        break;
-      default:
-        break;
-    }
-  };
-
   // --- Phase 1: Compute per-block def/use bitsets ---
   for (const auto &[block_id, block] : ir_func_.blocks_) {
     std::vector<uint64_t> &defs = block_defs_[block_id];
     std::vector<uint64_t> &uses = block_uses_[block_id];
+    auto add_use = [&](int id) {
+      if (id > 0 && BitTest(is_allocatable_, id) && !BitTest(defs, id)) {
+        BitSet(uses, id);
+      }
+    };
+    auto add_def = [&](int id) {
+      if (id > 0 && BitTest(is_allocatable_, id)) {
+        BitSet(defs, id);
+      }
+    };
 
     for (const auto &inst : block.instructions_) {
       // Collect uses and defs for this instruction.
       switch (inst.instruction_type_) {
         case two_var_binary_operation_:
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_1_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         case var_const_binary_operation_:
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_1_id_);
+          add_def(inst.result_id_);
           break;
         case const_var_binary_operation_:
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         case conditional_br_:
-          set_if_allocatable(uses, inst.condition_id_);
+          add_use(inst.condition_id_);
           break;
         case variable_ret_:
-          set_if_allocatable(uses, inst.result_id_);
+          add_use(inst.result_id_);
           break;
         case load_:
         case ptr_load_:
-          set_if_allocatable(uses, inst.pointer_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.pointer_);
+          add_def(inst.result_id_);
           break;
         case variable_store_:
-          set_if_allocatable(uses, inst.result_id_);
-          set_if_allocatable(uses, inst.pointer_);
+          add_use(inst.result_id_);
+          add_use(inst.pointer_);
           break;
         case value_store_:
-          set_if_allocatable(uses, inst.pointer_);
+          add_use(inst.pointer_);
           break;
         case ptr_store_:
-          set_if_allocatable(uses, inst.pointer_);
-          set_if_allocatable(uses, inst.result_id_);
+          add_use(inst.pointer_);
+          add_use(inst.result_id_);
           break;
         case get_element_ptr_by_value_:
-          set_if_allocatable(uses, inst.pointer_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.pointer_);
+          add_def(inst.result_id_);
           break;
         case get_element_ptr_by_variable_:
-          set_if_allocatable(uses, inst.pointer_);
-          set_if_allocatable(uses, inst.index_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.pointer_);
+          add_use(inst.index_);
+          add_def(inst.result_id_);
           break;
         case two_var_icmp_:
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_1_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         case var_const_icmp_:
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_1_id_);
+          add_def(inst.result_id_);
           break;
         case const_var_icmp_:
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         case non_void_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
             if (arg.is_variable_) {
-              set_if_allocatable(uses, arg.value_);
+              add_use(arg.value_);
             }
           }
-          set_if_allocatable(defs, inst.result_id_);
+          add_def(inst.result_id_);
           break;
         }
         case void_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
             if (arg.is_variable_) {
-              set_if_allocatable(uses, arg.value_);
+              add_use(arg.value_);
             }
           }
           break;
@@ -688,71 +681,71 @@ void RegisterAllocator::ComputeLiveness() {
         case builtin_call_: {
           for (const auto &arg : inst.function_call_arguments_) {
             if (arg.is_variable_) {
-              set_if_allocatable(uses, arg.value_);
+              add_use(arg.value_);
             }
           }
           if (inst.function_name_ == 2) {
-            set_if_allocatable(defs, inst.result_id_);
+            add_def(inst.result_id_);
           }
           break;
         }
         case value_select_ii_: {
           if (inst.condition_id_ == 0) {
-            set_if_allocatable(uses, inst.operand_2_id_);
+            add_use(inst.operand_2_id_);
           } else {
-            set_if_allocatable(uses, inst.operand_1_id_);
+            add_use(inst.operand_1_id_);
           }
-          set_if_allocatable(defs, inst.result_id_);
+          add_def(inst.result_id_);
           break;
         }
         case value_select_iv_: {
           if (inst.condition_id_ != 0) {
-            set_if_allocatable(uses, inst.operand_1_id_);
+            add_use(inst.operand_1_id_);
           }
-          set_if_allocatable(defs, inst.result_id_);
+          add_def(inst.result_id_);
           break;
         }
         case value_select_vi_: {
           if (inst.condition_id_ == 0) {
-            set_if_allocatable(uses, inst.operand_2_id_);
+            add_use(inst.operand_2_id_);
           }
-          set_if_allocatable(defs, inst.result_id_);
+          add_def(inst.result_id_);
           break;
         }
         case value_select_vv_: {
-          set_if_allocatable(defs, inst.result_id_);
+          add_def(inst.result_id_);
           break;
         }
         case variable_select_ii_: {
-          set_if_allocatable(uses, inst.condition_id_);
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.condition_id_);
+          add_use(inst.operand_1_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         }
         case variable_select_vv_: {
-          set_if_allocatable(uses, inst.condition_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.condition_id_);
+          add_def(inst.result_id_);
           break;
         }
         case variable_select_iv_: {
-          set_if_allocatable(uses, inst.condition_id_);
-          set_if_allocatable(uses, inst.operand_1_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.condition_id_);
+          add_use(inst.operand_1_id_);
+          add_def(inst.result_id_);
           break;
         }
         case variable_select_vi_: {
-          set_if_allocatable(uses, inst.condition_id_);
-          set_if_allocatable(uses, inst.operand_2_id_);
-          set_if_allocatable(defs, inst.result_id_);
+          add_use(inst.condition_id_);
+          add_use(inst.operand_2_id_);
+          add_def(inst.result_id_);
           break;
         }
         case builtin_memset_:
-          set_if_allocatable(uses, inst.pointer_);
+          add_use(inst.pointer_);
           break;
         case builtin_memcpy_:
-          set_if_allocatable(uses, inst.destination_);
-          set_if_allocatable(uses, inst.pointer_);
+          add_use(inst.destination_);
+          add_use(inst.pointer_);
           break;
         default:
           break;
@@ -761,17 +754,41 @@ void RegisterAllocator::ComputeLiveness() {
     const auto direct_cmp = direct_branch_icmps.find(block_id);
     if (direct_cmp != direct_branch_icmps.end()) {
       BitClear(defs, direct_cmp->second.result_id_);
-      add_cmp_uses(uses, direct_cmp->second);
+      switch (direct_cmp->second.instruction_type_) {
+        case two_var_icmp_:
+          add_use(direct_cmp->second.operand_1_id_);
+          add_use(direct_cmp->second.operand_2_id_);
+          break;
+        case var_const_icmp_:
+          add_use(direct_cmp->second.operand_1_id_);
+          break;
+        case const_var_icmp_:
+          add_use(direct_cmp->second.operand_2_id_);
+          break;
+        default:
+          break;
+      }
     }
 
     // Handle phi instructions: result is a def in this block.
-    // Source operands are uses in the PREDECESSOR blocks.
     for (const auto &phi : block.phi_instructions_) {
-      set_if_allocatable(defs, phi.result_id);
+      add_def(phi.result_id);
+    }
+  }
+
+  // Phi source operands are uses on their incoming predecessor edge. They are
+  // upward-exposed only when the predecessor block did not define that value.
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
       for (const auto &cond : phi.conditions) {
-        if (!cond.is_const) {
-          set_if_allocatable(block_uses_[cond.from_block_id], cond.var_id);
+        if (cond.is_const || cond.var_id <= 0 || !BitTest(is_allocatable_, cond.var_id)) {
+          continue;
         }
+        const auto pred_defs = block_defs_.find(cond.from_block_id);
+        if (pred_defs != block_defs_.end() && BitTest(pred_defs->second, cond.var_id)) {
+          continue;
+        }
+        BitSet(block_uses_[cond.from_block_id], cond.var_id);
       }
     }
   }
