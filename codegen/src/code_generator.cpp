@@ -127,6 +127,42 @@ static bool IsIcmpInstruction(const IRInstructionType type) {
       type == const_var_icmp_;
 }
 
+static bool IsDirectLabelBranch(const RISCVInstruction &inst) {
+  if (inst.instruction_type_ == r_beqz_ || inst.instruction_type_ == r_bnez_) {
+    return true;
+  }
+  return inst.imm_ == 1 &&
+      (inst.instruction_type_ == r_beq_ || inst.instruction_type_ == r_bge_ ||
+       inst.instruction_type_ == r_bgeu_ || inst.instruction_type_ == r_blt_ ||
+       inst.instruction_type_ == r_bltu_ || inst.instruction_type_ == r_bne_);
+}
+
+static bool IsUnconditionalJump(const RISCVInstruction &inst) {
+  return inst.instruction_type_ == r_j_;
+}
+
+static int ConservativeInstructionBytes(const RISCVInstruction &inst) {
+  switch (inst.instruction_type_) {
+    case r_li_:
+    case r_la_:
+    case r_call_:
+      return 8;
+    default:
+      return 4;
+  }
+}
+
+static int ConservativeBlockBytes(const RISCVBlock &block) {
+  int bytes = 0;
+  for (const auto &inst : block.instructions_) {
+    bytes += ConservativeInstructionBytes(inst);
+  }
+  for (const auto &jump : block.jump_blocks_) {
+    bytes += ConservativeInstructionBytes(jump);
+  }
+  return bytes;
+}
+
 static std::vector<int> ComputeBlockLayout(const IRFunctionNode &function) {
   std::vector<int> layout;
   layout.reserve(function.blocks_.size());
@@ -1300,6 +1336,85 @@ void CodeGenerator::SaveCalleeRegs(int func_id, RISCVBlock &r_block) {
 void CodeGenerator::RestoreCalleeRegs(int func_id, RISCVBlock &r_block) {
   for (int reg : used_callee_regs_[func_id]) {
     r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
+void CodeGenerator::RelaxFarBranches(const int func_id) {
+  auto &riscv_func = RISCV_functions_[func_id];
+
+  std::map<int, int> next_block_map;
+  {
+    int prev_id = -1;
+    for (const int block_id : block_layouts_[func_id]) {
+      if (prev_id != -1) {
+        next_block_map[prev_id] = block_id;
+      }
+      prev_id = block_id;
+    }
+  }
+
+  constexpr int kBranchRange = 4096;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+
+    std::map<int, int> block_start;
+    int pc = ConservativeBlockBytes(riscv_func.alloca_block_);
+    for (const int block_id : block_layouts_[func_id]) {
+      block_start[block_id] = pc;
+      pc += ConservativeBlockBytes(riscv_func.blocks_.at(block_id));
+    }
+
+    for (const int block_id : block_layouts_[func_id]) {
+      auto &block = riscv_func.blocks_[block_id];
+      int offset = 0;
+      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size()); ++inst_index) {
+        auto &inst = block.instructions_[inst_index];
+        if (!IsDirectLabelBranch(inst)) {
+          offset += ConservativeInstructionBytes(inst);
+          continue;
+        }
+
+        const int target = inst.label_;
+        const int branch_pc = block_start[block_id] + offset;
+        const int target_pc = block_start.contains(target) ? block_start[target] : branch_pc;
+        const int distance = target_pc - branch_pc;
+        if (distance >= -kBranchRange && distance <= kBranchRange - 2) {
+          offset += ConservativeInstructionBytes(inst);
+          continue;
+        }
+
+        const int long_target = inst.label_;
+        inst.label_ = static_cast<int>(block.jump_blocks_.size());
+        inst.imm_ = -1;
+
+        if (inst.instruction_type_ == r_beqz_) {
+          inst.instruction_type_ = r_beq_;
+          inst.rs2_ = 0;
+        } else if (inst.instruction_type_ == r_bnez_) {
+          inst.instruction_type_ = r_bne_;
+          inst.rs2_ = 0;
+        }
+
+        const bool has_existing_skip =
+            inst_index + 1 < static_cast<int>(block.instructions_.size()) &&
+            IsUnconditionalJump(block.instructions_[inst_index + 1]);
+        if (!has_existing_skip) {
+          const auto next_it = next_block_map.find(block_id);
+          if (next_it == next_block_map.end()) {
+            CodegenThrow("Cannot relax far branch without a fall-through target.");
+          }
+          block.instructions_.insert(block.instructions_.begin() + inst_index + 1,
+              RISCVInstruction(r_j_, -1, -1, -1, -1, next_it->second));
+        }
+
+        block.jump_blocks_.push_back(
+            RISCVInstruction(r_j_, -1, -1, -1, -1, long_target));
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
   }
 }
 
@@ -3360,6 +3475,7 @@ void CodeGenerator::Generate() {
       }
       PeepholeOptimizeBlock(r_block, live_out_regs[block_id]);
     }
+    RelaxFarBranches(i);
   }
 }
 
@@ -3643,17 +3759,26 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
     case r_blt_:
     case r_bltu_:
     case r_bne_: {
-      file << InvertBranchMnemonic(instruction.instruction_type_) << '\t';
-      PrintReg(file, instruction.rs1_);
-      file << ", ";
-      PrintReg(file, instruction.rs2_);
-      file << ", 1f\n\tla\tt2, ";
       if (instruction.imm_ == 1) {
-        PrintLabel(file, instruction.label_, func_id);
+        switch (instruction.instruction_type_) {
+          case r_beq_: file << "beq\t"; break;
+          case r_bge_: file << "bge\t"; break;
+          case r_bgeu_: file << "bgeu\t"; break;
+          case r_blt_: file << "blt\t"; break;
+          case r_bltu_: file << "bltu\t"; break;
+          case r_bne_: file << "bne\t"; break;
+          default: break;
+        }
+        Print_B(file, instruction, func_id, block_id);
       } else {
+        file << InvertBranchMnemonic(instruction.instruction_type_) << '\t';
+        PrintReg(file, instruction.rs1_);
+        file << ", ";
+        PrintReg(file, instruction.rs2_);
+        file << ", 1f\n\tla\tt2, ";
         PrintJumpLabel(file, block_id, instruction.label_, func_id);
+        file << "\n\tjr\tt2\n1:";
       }
-      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_jal_: {
