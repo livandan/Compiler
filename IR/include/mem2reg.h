@@ -82,6 +82,7 @@ private:
   // --- Cleanup ---
   void RemoveDeadInstructions() const;
   void RemoveDeadPhis();
+  void SimplifyCFG();
 
   std::vector<IRFunctionNode> &functions_;
   // ========== per-function state (reset for each function) ==========

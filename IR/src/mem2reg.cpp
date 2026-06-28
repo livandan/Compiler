@@ -75,6 +75,8 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
 
   // After promotion, some phis may be dead — their result is never read.
   RemoveDeadPhis();
+
+  SimplifyCFG();
 }
 
 // ============================================================================
@@ -1342,4 +1344,144 @@ void Mem2Reg::RemoveDeadPhis() {
     }
     block.phi_instructions_ = std::move(remaining);
   }
+}
+
+void Mem2Reg::SimplifyCFG() {
+  auto build_preds = [&]() {
+    std::map<int, std::set<int>> preds;
+    for (const auto &[block_id, block] : func_->blocks_) {
+      preds[block_id];
+      if (block.instructions_.empty()) continue;
+      const auto &last = block.instructions_.back();
+      if (last.instruction_type_ == unconditional_br_) {
+        preds[last.destination_].insert(block_id);
+      } else if (last.instruction_type_ == conditional_br_) {
+        preds[last.if_true_].insert(block_id);
+        preds[last.if_false_].insert(block_id);
+      }
+    }
+    return preds;
+  };
+
+  auto redirect_successor_phi = [&](const int target, const int old_pred,
+      const std::set<int> &new_preds) {
+    auto target_it = func_->blocks_.find(target);
+    if (target_it == func_->blocks_.end()) return;
+    for (auto &phi : target_it->second.phi_instructions_) {
+      std::vector<PhiCondition> rebuilt;
+      for (const auto &condition : phi.conditions) {
+        if (condition.from_block_id != old_pred) {
+          rebuilt.push_back(condition);
+          continue;
+        }
+        for (const int pred : new_preds) {
+          PhiCondition redirected = condition;
+          redirected.from_block_id = pred;
+          rebuilt.push_back(redirected);
+        }
+      }
+      phi.conditions = std::move(rebuilt);
+    }
+  };
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+
+    const int entry = func_->blocks_.begin()->first;
+    std::set<int> reachable;
+    std::vector<int> stack;
+    stack.push_back(entry);
+    while (!stack.empty()) {
+      const int block_id = stack.back();
+      stack.pop_back();
+      if (reachable.contains(block_id) || !func_->blocks_.contains(block_id)) continue;
+      reachable.insert(block_id);
+      const auto &block = func_->blocks_.at(block_id);
+      if (block.instructions_.empty()) continue;
+      const auto &last = block.instructions_.back();
+      if (last.instruction_type_ == unconditional_br_) {
+        stack.push_back(last.destination_);
+      } else if (last.instruction_type_ == conditional_br_) {
+        stack.push_back(last.if_true_);
+        stack.push_back(last.if_false_);
+      }
+    }
+
+    for (auto it = func_->blocks_.begin(); it != func_->blocks_.end();) {
+      if (reachable.contains(it->first)) {
+        ++it;
+      } else {
+        it = func_->blocks_.erase(it);
+        changed = true;
+      }
+    }
+    if (changed) {
+      for (auto &[block_id, block] : func_->blocks_) {
+        for (auto &phi : block.phi_instructions_) {
+          std::vector<PhiCondition> kept;
+          for (const auto &condition : phi.conditions) {
+            if (reachable.contains(condition.from_block_id)) {
+              kept.push_back(condition);
+            }
+          }
+          phi.conditions = std::move(kept);
+        }
+      }
+      continue;
+    }
+
+    const auto preds = build_preds();
+    for (const auto &[block_id, block] : func_->blocks_) {
+      if (block_id == entry || !block.phi_instructions_.empty() ||
+          block.instructions_.size() != 1) {
+        continue;
+      }
+      const auto &branch = block.instructions_.front();
+      if (branch.instruction_type_ != unconditional_br_) {
+        continue;
+      }
+      const int target = branch.destination_;
+      if (target == block_id || !func_->blocks_.contains(target)) {
+        continue;
+      }
+      const auto pred_it = preds.find(block_id);
+      if (pred_it == preds.end() || pred_it->second.empty()) {
+        continue;
+      }
+
+      // Do not merge away a critical-edge split block if the target has phis:
+      // the backend stores phi moves on predecessor blocks, not per edge.
+      if (!func_->blocks_.at(target).phi_instructions_.empty()) {
+        bool has_critical_pred = false;
+        for (const int pred : pred_it->second) {
+          const auto &pred_block = func_->blocks_.at(pred);
+          if (!pred_block.instructions_.empty() &&
+              pred_block.instructions_.back().instruction_type_ == conditional_br_) {
+            has_critical_pred = true;
+            break;
+          }
+        }
+        if (has_critical_pred) {
+          continue;
+        }
+      }
+
+      for (const int pred : pred_it->second) {
+        auto &pred_last = func_->blocks_[pred].instructions_.back();
+        if (pred_last.instruction_type_ == unconditional_br_) {
+          if (pred_last.destination_ == block_id) pred_last.destination_ = target;
+        } else if (pred_last.instruction_type_ == conditional_br_) {
+          if (pred_last.if_true_ == block_id) pred_last.if_true_ = target;
+          if (pred_last.if_false_ == block_id) pred_last.if_false_ = target;
+        }
+      }
+      redirect_successor_phi(target, block_id, pred_it->second);
+      func_->blocks_.erase(block_id);
+      changed = true;
+      break;
+    }
+  }
+
+  RemoveDeadPhis();
 }

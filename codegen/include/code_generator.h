@@ -509,6 +509,7 @@ private:
   std::vector<std::map<int, int>> reg_save_offsets_;  // [func_id][reg] -> stack offset
   std::vector<bool> registers_saved_;  // legacy guard; phase-3 call saves restore immediately
   std::vector<bool> is_leaf_;         // per-function: leaf (no calls)
+  std::vector<std::vector<int>> block_layouts_;  // final emission order per function
 };
 
 #endif

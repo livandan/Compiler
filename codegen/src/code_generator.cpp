@@ -36,6 +36,75 @@ static bool IsIcmpInstruction(const IRInstructionType type) {
       type == const_var_icmp_;
 }
 
+static std::vector<int> ComputeBlockLayout(const IRFunctionNode &function) {
+  std::vector<int> layout;
+  layout.reserve(function.blocks_.size());
+  std::set<int> placed;
+
+  auto numeric_next = [&](const int block_id) {
+    const auto it = function.blocks_.upper_bound(block_id);
+    return it == function.blocks_.end() ? -1 : it->first;
+  };
+
+  auto choose_successor = [&](const int block_id) {
+    const auto block_it = function.blocks_.find(block_id);
+    if (block_it == function.blocks_.end() || block_it->second.instructions_.empty()) {
+      return -1;
+    }
+
+    const auto &last = block_it->second.instructions_.back();
+    if (last.instruction_type_ == unconditional_br_) {
+      return placed.contains(last.destination_) ? -1 : last.destination_;
+    }
+    if (last.instruction_type_ != conditional_br_) {
+      return -1;
+    }
+
+    const int true_target = last.if_true_;
+    const int false_target = last.if_false_;
+    const bool true_open = !placed.contains(true_target) && function.blocks_.contains(true_target);
+    const bool false_open = !placed.contains(false_target) && function.blocks_.contains(false_target);
+    if (!true_open && !false_open) {
+      return -1;
+    }
+    if (true_open && !false_open) {
+      return true_target;
+    }
+    if (!true_open && false_open) {
+      return false_target;
+    }
+
+    const int next = numeric_next(block_id);
+    if (true_target == next) {
+      return true_target;
+    }
+    if (false_target == next) {
+      return false_target;
+    }
+
+    // When neither successor is already the lexical next block, prefer the
+    // false edge as the fall-through. Direct branch lowering can then test for
+    // the true edge without an extra unconditional jump.
+    return false_target;
+  };
+
+  auto append_trace = [&](int start) {
+    while (start != -1 && function.blocks_.contains(start) && !placed.contains(start)) {
+      layout.push_back(start);
+      placed.insert(start);
+      start = choose_successor(start);
+    }
+  };
+
+  if (!function.blocks_.empty()) {
+    append_trace(function.blocks_.begin()->first);
+  }
+  for (const auto &[block_id, block] : function.blocks_) {
+    append_trace(block_id);
+  }
+  return layout;
+}
+
 void CodegenThrow(const std::string &err_info) {
   // std::cerr << "[Codegen Error] " << err_info << '\n';
   throw "";
@@ -1147,6 +1216,10 @@ void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
   alloca_var_ids_.resize(IR_functions_.size());
   alloca_data_offsets_.resize(IR_functions_.size());
+  block_layouts_.resize(IR_functions_.size());
+  for (int i = 0; i < IR_functions_.size(); ++i) {
+    block_layouts_[i] = ComputeBlockLayout(IR_functions_[i]);
+  }
   PhiToMove();
 
   // Detect leaf functions (no calls — builtin or user) before MemAlloc
@@ -1321,14 +1394,16 @@ void CodeGenerator::Generate() {
       bb0.PushMemory_S(r_sd_, 31, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
     }
     FlushSavedRegisters(i, bb0);
-    bb0.PushJ(IR_functions_[i].blocks_.begin()->first);
     PeepholeOptimizeBlock(bb0, {});
-    // Build next_block_map for redundant jump elimination.
+    // Build next_block_map from the final block layout so branch lowering sees
+    // the same fall-throughs that Output() will emit.
     std::map<int, int> next_block_map;
     {
       int prev_id = -1;
-      for (const auto &[b_id, b] : IR_functions_[i].blocks_) {
-        if (prev_id != -1) next_block_map[prev_id] = b_id;
+      for (const int b_id : block_layouts_[i]) {
+        if (prev_id != -1) {
+          next_block_map[prev_id] = b_id;
+        }
         prev_id = b_id;
       }
     }
@@ -3753,10 +3828,31 @@ void CodeGenerator::Output(std::ofstream &output_file) const {
     for (const auto &instruction : RISCV_functions_[i].alloca_block_.instructions_) {
       Print(output_file, instruction, current_func_id, -1);
     }
-    for (const auto &[block_label, block] : RISCV_functions_[i].blocks_) {
+    std::map<int, int> next_block_map;
+    {
+      int prev_id = -1;
+      for (const int block_id : block_layouts_[i]) {
+        if (prev_id != -1) {
+          next_block_map[prev_id] = block_id;
+        }
+        prev_id = block_id;
+      }
+    }
+    for (const int block_label : block_layouts_[i]) {
+      const auto &block = RISCV_functions_[i].blocks_.at(block_label);
       output_file << ".LBB" << current_func_id << '_' << block_label
           << ":                               # %label_" << block_label << '\n';
-      for (const auto &instruction : block.instructions_) {
+      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size()); ++inst_index) {
+        const auto &instruction = block.instructions_[inst_index];
+        const bool terminal_fallthrough_jump =
+            inst_index + 1 == static_cast<int>(block.instructions_.size()) &&
+            instruction.instruction_type_ == r_j_ &&
+            block.jump_blocks_.empty() &&
+            next_block_map.contains(block_label) &&
+            instruction.label_ == next_block_map[block_label];
+        if (terminal_fallthrough_jump) {
+          continue;
+        }
         Print(output_file, instruction, current_func_id, block_label);
       }
       for (int j = 0; j < block.jump_blocks_.size(); ++j) {
