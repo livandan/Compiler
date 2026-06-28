@@ -752,6 +752,31 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
 
   int offset = is_leaf_[func_id] ? 0 : 128;
   alloca_data_offsets_[func_id].clear();
+  bool has_stack_parameters = false;
+  for (int i = 0; i < ir_func.parameter_types_.size(); ++i) {
+    const auto loc_it = riscv_func.location_.find(i);
+    if (loc_it != riscv_func.location_.end() && !loc_it->second.first) {
+      has_stack_parameters = true;
+      break;
+    }
+  }
+
+  auto &save_offsets = reg_save_offsets_[func_id];
+  save_offsets.clear();
+  const int save_area_start = offset;
+  for (int reg : used_caller_regs_[func_id]) {
+    offset = AlignUp(offset, 8);
+    save_offsets[reg] = offset;
+    offset += 8;
+  }
+  for (int reg : used_callee_regs_[func_id]) {
+    if (save_offsets.contains(reg)) continue;
+    offset = AlignUp(offset, 8);
+    save_offsets[reg] = offset;
+    offset += 8;
+  }
+  const int save_area_size = offset - save_area_start;
+
   std::set<int> placed_slots;
   std::vector<int> slot_ids;
   slot_ids.reserve(stack_slots.size());
@@ -790,26 +815,15 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     }
   }
 
-  auto &save_offsets = reg_save_offsets_[func_id];
-  save_offsets.clear();
-  for (int reg : used_caller_regs_[func_id]) {
-    offset = AlignUp(offset, 8);
-    save_offsets[reg] = offset;
-    offset += 8;
-  }
-  for (int reg : used_callee_regs_[func_id]) {
-    if (save_offsets.contains(reg)) continue;
-    offset = AlignUp(offset, 8);
-    save_offsets[reg] = offset;
-    offset += 8;
-  }
-
   for (const auto &payload : payload_slots) {
     offset = AlignUp(offset, payload.alignment);
     alloca_data_offsets_[func_id][payload.alloca_id] = offset;
     offset += payload.size;
   }
 
+  if (has_stack_parameters) {
+    offset += AlignUp(save_area_size, 16);
+  }
   riscv_func.stack_space_ = AlignUp(offset, 16);
 }
 
