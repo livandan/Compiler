@@ -459,7 +459,9 @@ private:
   void MemAlloc(int func_id);
   void CompactStackFrame(int func_id);
   [[nodiscard]] int RegSavedLocation(int func_id, int reg_id) const; // return the relative address to the stack pointer
-  void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- %var_src
+  void VariableAssignment(int func_id, RISCVBlock &r_block, int var_dest, int var_src,
+      const std::shared_ptr<IntegratedType> &type,
+      const std::set<int> *live_caller_regs = nullptr); // %var_dest <- %var_src
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
   [[nodiscard]] int GetAlignment(const std::shared_ptr<IntegratedType> &type) const;
@@ -470,7 +472,10 @@ private:
   // registers that actually hold live values instead of the whole ABI set.
   void AnalyzeUsedRegisters();
   void SaveCallerRegs(int func_id, RISCVBlock &r_block);
+  void SaveCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs);
   void RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg = -1);
+  void RestoreCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs,
+      int exclude_reg = -1);
   void SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block);
   void RestoreCallerRegsFromTemp(int func_id, RISCVBlock &r_block);
   void SaveCalleeRegs(int func_id, RISCVBlock &r_block);
@@ -501,7 +506,7 @@ private:
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
   std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
   std::vector<std::map<int, int>> reg_save_offsets_;  // [func_id][reg] -> stack offset
-  std::vector<bool> registers_saved_;  // per-function: caller-saved regs are currently in save slots
+  std::vector<bool> registers_saved_;  // legacy guard; phase-3 call saves restore immediately
   std::vector<bool> is_leaf_;         // per-function: leaf (no calls)
 };
 

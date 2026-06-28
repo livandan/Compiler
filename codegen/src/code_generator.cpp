@@ -410,7 +410,8 @@ static int TempCallerSaveSlot(int reg_id) {
 }
 
 void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
-    const int var_src, const std::shared_ptr<IntegratedType> &type) {
+    const int var_src, const std::shared_ptr<IntegratedType> &type,
+    const std::set<int> *live_caller_regs) {
   const auto [dest_in_reg, dest_location] = RISCV_functions_[func_id].location_[var_dest];
   const auto [src_in_reg, src_location] = RISCV_functions_[func_id].location_[var_src];
   if (dest_in_reg && src_in_reg && dest_location == src_location) {
@@ -476,12 +477,14 @@ void CodeGenerator::VariableAssignment(const int func_id, RISCVBlock &r_block, c
     if (src_in_reg || dest_in_reg) {
       CodegenThrow("Unexpected type in the register!");
     }
-    SaveCallerRegs(func_id, r_block);
+    std::set<int> regs_to_save = live_caller_regs ? *live_caller_regs : used_caller_regs_[func_id];
+    regs_to_save.insert(1);
+    SaveCallerRegs(func_id, r_block, regs_to_save);
     r_block.PushArithmetic_I(r_addi_, 11, 2, src_location);
     r_block.PushArithmetic_I(r_addi_, 10, 2, dest_location);
     r_block.PushLi(12, type_size);
     r_block.PushCall(true, 7);
-    RestoreCallerRegs(func_id, r_block);
+    RestoreCallerRegs(func_id, r_block, regs_to_save);
   }
 }
 void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, const int var_dest,
@@ -541,24 +544,26 @@ void CodeGenerator::AnalyzeUsedRegisters() {
 }
 
 void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block) {
-  if (registers_saved_[func_id]) return;  // already saved, idempotent
-  for (int reg : used_caller_regs_[func_id]) {
+  SaveCallerRegs(func_id, r_block, used_caller_regs_[func_id]);
+}
+
+void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs) {
+  for (int reg : regs) {
+    if (!used_caller_regs_[func_id].contains(reg)) continue;
     r_block.PushMemory_S(r_sd_, reg, RegSavedLocation(func_id, reg), 2);
   }
-  registers_saved_[func_id] = true;
 }
 
 void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg) {
-  // Deferred: don't restore immediately.  registers_saved_ stays true so
-  // subsequent SaveCallerRegs calls are no-ops.  Actual restores happen at
-  // FlushSavedRegisters on block exit.
-  // If exclude_reg has a fresh value (e.g. return value just stored),
-  // write-through to its save slot so the slot stays consistent.
-  if (exclude_reg != -1) {
-    const auto it = register_saver.find(exclude_reg);
-    if (it != register_saver.end() && it->second == caller_save) {
-      r_block.PushMemory_S(r_sd_, exclude_reg, RegSavedLocation(func_id, exclude_reg), 2);
-    }
+  RestoreCallerRegs(func_id, r_block, used_caller_regs_[func_id], exclude_reg);
+}
+
+void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs,
+    int exclude_reg) {
+  for (int reg : regs) {
+    if (reg == exclude_reg) continue;
+    if (!used_caller_regs_[func_id].contains(reg)) continue;
+    r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
   }
 }
 
@@ -645,7 +650,7 @@ static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std:
     if (id > 0) defs.insert(id);
   };
   auto add_use = [&](int id) {
-    if (id > 0) uses.insert(id);
+    if (id >= 0) uses.insert(id);
   };
 
   switch (inst.instruction_type_) {
@@ -924,7 +929,8 @@ void CodeGenerator::Generate() {
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
       std::set<int> defs;
       std::set<int> uses;
-      for (const auto &instruction : block.instructions_) {
+      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size()); ++inst_index) {
+        const auto &instruction = block.instructions_[inst_index];
         std::set<int> inst_defs;
         std::set<int> inst_uses;
         CollectIRDefUse(instruction, inst_defs, inst_uses);
@@ -999,6 +1005,45 @@ void CodeGenerator::Generate() {
       }
     }
 
+    auto vars_to_caller_regs = [&](const std::set<int> &vars) {
+      std::set<int> regs;
+      for (int var : vars) {
+        const auto it = RISCV_functions_[i].location_.find(var);
+        if (it != RISCV_functions_[i].location_.end() && it->second.first &&
+            IsCallerSavedReg(it->second.second)) {
+          regs.insert(it->second.second);
+        }
+      }
+      return regs;
+    };
+
+    std::map<int, std::vector<std::set<int>>> live_after_caller_regs;
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      std::set<int> live = live_out_vars[block_id];
+      const auto move_it = RISCV_functions_[i].blocks_.find(block_id);
+      if (move_it != RISCV_functions_[i].blocks_.end()) {
+        for (const auto &mv : move_it->second.move_instructions_) {
+          if (!mv.src_is_value_ && mv.src_ >= 0) {
+            live.insert(mv.src_);
+          }
+        }
+      }
+
+      auto &after = live_after_caller_regs[block_id];
+      after.resize(block.instructions_.size());
+      for (int inst_index = static_cast<int>(block.instructions_.size()) - 1;
+           inst_index >= 0; --inst_index) {
+        after[inst_index] = vars_to_caller_regs(live);
+        std::set<int> defs;
+        std::set<int> uses;
+        CollectIRDefUse(block.instructions_[inst_index], defs, uses);
+        for (int def : defs) {
+          live.erase(def);
+        }
+        live.insert(uses.begin(), uses.end());
+      }
+    }
+
     // bool busy_registers[32] = {false};
     const int stack_space = RISCV_functions_[i].stack_space_;
     // alloca
@@ -1026,10 +1071,35 @@ void CodeGenerator::Generate() {
         prev_id = b_id;
       }
     }
+
+    auto current_call_save_regs = [&](int block_id, int inst_index) {
+      std::set<int> regs = live_after_caller_regs[block_id][inst_index];
+      regs.insert(1);
+      return regs;
+    };
+    auto add_argument_source_regs = [&](std::set<int> &regs,
+        const std::vector<FunctionCallArgument> &arguments) {
+      for (const auto &arg : arguments) {
+        if (!arg.is_variable_) continue;
+        const auto it = RISCV_functions_[i].location_.find(arg.value_);
+        if (it != RISCV_functions_[i].location_.end() && it->second.first &&
+            IsCallerSavedReg(it->second.second)) {
+          regs.insert(it->second.second);
+        }
+      }
+    };
+    auto erase_result_reg = [&](std::set<int> &regs, int result_id) {
+      const auto it = RISCV_functions_[i].location_.find(result_id);
+      if (it != RISCV_functions_[i].location_.end() && it->second.first &&
+          IsCallerSavedReg(it->second.second)) {
+        regs.erase(it->second.second);
+      }
+    };
     // blocks
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
       auto &r_block = RISCV_functions_[i].blocks_[block_id];
-      for (const auto &instruction : block.instructions_) {
+      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size()); ++inst_index) {
+        const auto &instruction = block.instructions_[inst_index];
         switch (instruction.instruction_type_) {
           case two_var_binary_operation_: {
             int first_var_register = RISCV_functions_[i].location_[instruction.operand_1_id_].second;
@@ -1472,8 +1542,13 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sd_, 5, result_address_offset, 2);
               } else {
-                SaveCallerRegs(i, r_block);
+                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (RISCV_functions_[i].location_[instruction.pointer_].first &&
+                    IsCallerSavedReg(src_register)) {
+                  call_save_regs.insert(src_register);
+                }
+                SaveCallerRegs(i, r_block, call_save_regs);
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, src_register, 2);
                   src_register = 5;
@@ -1486,7 +1561,7 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_addi_, 10, 2, result_address_offset);
                 r_block.PushLi(12, load_size);
                 r_block.PushCall(true, 7);
-                RestoreCallerRegs(i, r_block);
+                RestoreCallerRegs(i, r_block, call_save_regs);
               }
             }
             break;
@@ -1582,8 +1657,13 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
               } else {
-                SaveCallerRegs(i, r_block);
+                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
+                if (RISCV_functions_[i].location_[instruction.pointer_].first &&
+                    IsCallerSavedReg(dest_reg)) {
+                  call_save_regs.insert(dest_reg);
+                }
+                SaveCallerRegs(i, r_block, call_save_regs);
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
                   r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
                   dest_reg = 5;
@@ -1596,7 +1676,7 @@ void CodeGenerator::Generate() {
                 r_block.PushArithmetic_I(r_addi_, 11, 2, RISCV_functions_[i].location_[instruction.result_id_].second);
                 r_block.PushLi(12, store_size);
                 r_block.PushCall(true, 7);
-                RestoreCallerRegs(i, r_block);
+                RestoreCallerRegs(i, r_block, call_save_regs);
               }
             }
             break;
@@ -2232,15 +2312,12 @@ void CodeGenerator::Generate() {
             break;
           }
           case non_void_call_: {
-            SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
+            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            erase_result_reg(call_save_regs, instruction.result_id_);
+            add_argument_source_regs(call_save_regs, arguments);
+            SaveCallerRegs(i, r_block, call_save_regs);
             std::set<int> modified_reg;
-            // All caller-saved registers that hold variables may have been
-            // clobbered by an earlier function call in this block (e.g. a
-            // builtin memset/memcpy).  Force a reload from the save slot.
-            for (int reg : used_caller_regs_[i]) {
-              modified_reg.insert(reg);
-            }
             for (int j = 0; j < arguments.size(); ++j) {
               const auto [passed_by_reg, neg_offset] = GetParamPassPos(instruction.function_name_, j);
               if (!passed_by_reg) {
@@ -2280,18 +2357,13 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_I(r_lw_, 5, var_address_offset, 2);
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
-                      // Protect outer save: copy from RegSavedLocation to temp area
-                      SaveCallerRegsToTemp(i, r_block);
-                      // Inner save (will overwrite RegSavedLocation)
-                      SaveCallerRegs(i, r_block);
                       r_block.PushArithmetic_I(r_addi_, 10, 2, neg_offset);
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
-                      // Inner restore
-                      RestoreCallerRegs(i, r_block);
-                      // Restore outer save from temp back to RegSavedLocation
-                      RestoreCallerRegsFromTemp(i, r_block);
+                      for (int reg : used_caller_regs_[i]) {
+                        modified_reg.insert(reg);
+                      }
                     }
                   }
                 } else {
@@ -2358,19 +2430,15 @@ void CodeGenerator::Generate() {
                 CodegenThrow("Invalid return type in non_void_call.");
               }
             }
-            RestoreCallerRegs(i, r_block, result_reg);
+            RestoreCallerRegs(i, r_block, call_save_regs, result_reg);
             break;
           }
           case void_call_: {
-            SaveCallerRegs(i, r_block);
             const auto &arguments = instruction.function_call_arguments_;
+            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            add_argument_source_regs(call_save_regs, arguments);
+            SaveCallerRegs(i, r_block, call_save_regs);
             std::set<int> modified_reg;
-            // All caller-saved registers that hold variables may have been
-            // clobbered by an earlier function call in this block (e.g. a
-            // builtin memset/memcpy).  Force a reload from the save slot.
-            for (int reg : used_caller_regs_[i]) {
-              modified_reg.insert(reg);
-            }
             for (int j = 0; j < arguments.size(); ++j) {
               const auto [passed_by_reg, neg_offset] = GetParamPassPos(instruction.function_name_, j);
               if (!passed_by_reg) {
@@ -2410,18 +2478,13 @@ void CodeGenerator::Generate() {
                       r_block.PushMemory_I(r_lw_, 5, var_address_offset, 2);
                       r_block.PushMemory_S(r_sw_, 5, neg_offset, 2);
                     } else {
-                      // Protect outer save: copy from RegSavedLocation to temp area
-                      SaveCallerRegsToTemp(i, r_block);
-                      // Inner save
-                      SaveCallerRegs(i, r_block);
                       r_block.PushArithmetic_I(r_addi_, 10, 2, neg_offset);
                       r_block.PushArithmetic_I(r_addi_, 11, 2, var_address_offset);
                       r_block.PushLi(12, data_size);
                       r_block.PushCall(true, 7);
-                      // Inner restore
-                      RestoreCallerRegs(i, r_block);
-                      // Restore outer save from temp back to RegSavedLocation
-                      RestoreCallerRegsFromTemp(i, r_block);
+                      for (int reg : used_caller_regs_[i]) {
+                        modified_reg.insert(reg);
+                      }
                     }
                   }
                 } else {
@@ -2472,14 +2535,16 @@ void CodeGenerator::Generate() {
               modified_reg.insert(reg_id);
             }
             r_block.PushCall(false, instruction.function_name_);
-            RestoreCallerRegs(i, r_block);
+            RestoreCallerRegs(i, r_block, call_save_regs);
             break;
           }
           case builtin_call_: {
             switch (instruction.function_name_) {
               case 0: { // printInt
-                SaveCallerRegs(i, r_block);
                 const auto &arguments = instruction.function_call_arguments_;
+                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                add_argument_source_regs(call_save_regs, arguments);
+                SaveCallerRegs(i, r_block, call_save_regs);
                 if (arguments[0].is_variable_) {
                   const int var_id = arguments[0].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
@@ -2498,12 +2563,14 @@ void CodeGenerator::Generate() {
                   r_block.PushLi(10, arguments[0].value_);
                 }
                 r_block.PushCall(true, 2);
-                RestoreCallerRegs(i, r_block);
+                RestoreCallerRegs(i, r_block, call_save_regs);
                 break;
               }
               case 1: { // printlnInt
-                SaveCallerRegs(i, r_block);
                 const auto &arguments = instruction.function_call_arguments_;
+                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                add_argument_source_regs(call_save_regs, arguments);
+                SaveCallerRegs(i, r_block, call_save_regs);
                 if (arguments[0].is_variable_) {
                   const int var_id = arguments[0].value_;
                   if (RISCV_functions_[i].location_[var_id].first) {
@@ -2522,11 +2589,13 @@ void CodeGenerator::Generate() {
                   r_block.PushLi(10, arguments[0].value_);
                 }
                 r_block.PushCall(true, 3);
-                RestoreCallerRegs(i, r_block);
+                RestoreCallerRegs(i, r_block, call_save_regs);
                 break;
               }
               case 2: { // getInt
-                SaveCallerRegs(i, r_block);
+                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                erase_result_reg(call_save_regs, instruction.result_id_);
+                SaveCallerRegs(i, r_block, call_save_regs);
                 r_block.PushCall(true, 5);
                 int result_reg = -1;
                 if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -2539,7 +2608,7 @@ void CodeGenerator::Generate() {
                   const int result_var_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
                   r_block.PushMemory_S(CodeGenerator::GetStoreInst(instruction.result_type_), 10, result_var_offset, 2);
                 }
-                RestoreCallerRegs(i, r_block, result_reg);
+                RestoreCallerRegs(i, r_block, call_save_regs, result_reg);
                 break;
               }
               default:;
@@ -2612,7 +2681,13 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memset_: {
-            SaveCallerRegs(i, r_block);
+            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            const auto ptr_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+            if (ptr_it != RISCV_functions_[i].location_.end() && ptr_it->second.first &&
+                IsCallerSavedReg(ptr_it->second.second)) {
+              call_save_regs.insert(ptr_it->second.second);
+            }
+            SaveCallerRegs(i, r_block, call_save_regs);
             int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
@@ -2625,11 +2700,22 @@ void CodeGenerator::Generate() {
             r_block.PushLi(11, instruction.operand_1_id_ == 0 ? 0 : -1);
             r_block.PushLi(12, instruction.result_id_);
             r_block.PushCall(true, 6); // call memset
-            RestoreCallerRegs(i, r_block);
+            RestoreCallerRegs(i, r_block, call_save_regs);
             break;
           }
           case builtin_memcpy_: {
-            SaveCallerRegs(i, r_block);
+            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            const auto dest_it = RISCV_functions_[i].location_.find(instruction.destination_);
+            if (dest_it != RISCV_functions_[i].location_.end() && dest_it->second.first &&
+                IsCallerSavedReg(dest_it->second.second)) {
+              call_save_regs.insert(dest_it->second.second);
+            }
+            const auto src_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+            if (src_it != RISCV_functions_[i].location_.end() && src_it->second.first &&
+                IsCallerSavedReg(src_it->second.second)) {
+              call_save_regs.insert(src_it->second.second);
+            }
+            SaveCallerRegs(i, r_block, call_save_regs);
             int dest_register = RISCV_functions_[i].location_[instruction.destination_].second;
             if (!RISCV_functions_[i].location_[instruction.destination_].first) {
               r_block.PushMemory_I(r_ld_, 5, dest_register, 2);
@@ -2654,7 +2740,7 @@ void CodeGenerator::Generate() {
             r_block.PushArithmetic_R(r_add_, 11, src_register, 0);
             r_block.PushLi(12, instruction.result_id_);
             r_block.PushCall(true, 7); // call memcpy
-            RestoreCallerRegs(i, r_block);
+            RestoreCallerRegs(i, r_block, call_save_regs);
             break;
           }
           default:;
