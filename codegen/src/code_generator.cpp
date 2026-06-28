@@ -505,6 +505,8 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     int size = 0;
     int alignment = 1;
     bool is_alloca_pointer = false;
+    bool is_pointer_like = false;
+    bool used_around_call = false;
     long long hotness = 0;
   };
   struct PayloadSlot {
@@ -523,9 +525,10 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   };
 
   std::map<int, std::vector<int>> successors;
+  std::map<int, int> block_depth;
   std::map<int, int> block_weight;
   for (const auto &[block_id, block] : ir_func.blocks_) {
-    block_weight[block_id] = 1;
+    block_depth[block_id] = 0;
     if (block.instructions_.empty()) continue;
     const auto &last = block.instructions_.back();
     if (last.instruction_type_ == conditional_br_) {
@@ -540,10 +543,14 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
       if (to > from) continue;
       for (const auto &[block_id, block] : ir_func.blocks_) {
         if (block_id >= to && block_id <= from) {
-          block_weight[block_id] += 3;
+          ++block_depth[block_id];
         }
       }
     }
+  }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    const int depth = block_depth[block_id];
+    block_weight[block_id] = 1 + depth * 8 + depth * depth * 4;
   }
 
   for (const auto &instruction : ir_func.alloca_instructions_) {
@@ -678,24 +685,342 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     }
   }
 
-  auto remember_stack_var = [&](int var_id, int size, int alignment) {
+  std::map<int, std::set<int>> block_defs;
+  std::map<int, std::set<int>> block_uses;
+  std::map<int, std::set<int>> live_in;
+  std::map<int, std::set<int>> live_out;
+  auto record_use = [&](std::set<int> &defs, std::set<int> &uses, const int var_id) {
+    if (var_id > 0 && !defs.contains(var_id)) {
+      uses.insert(var_id);
+    }
+  };
+  auto record_def = [&](std::set<int> &defs, const int var_id) {
+    if (var_id > 0) {
+      defs.insert(var_id);
+    }
+  };
+  auto record_call_argument_uses = [&](std::set<int> &defs, std::set<int> &uses,
+      const std::vector<FunctionCallArgument> &arguments) {
+    for (const auto &argument : arguments) {
+      if (argument.is_variable_) {
+        record_use(defs, uses, argument.value_);
+      }
+    }
+  };
+
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    std::set<int> defs;
+    std::set<int> uses;
+    for (const auto &instruction : block.instructions_) {
+      switch (instruction.instruction_type_) {
+        case two_var_binary_operation_:
+        case two_var_icmp_:
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case var_const_binary_operation_:
+        case var_const_icmp_:
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case const_var_binary_operation_:
+        case const_var_icmp_:
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case conditional_br_:
+          record_use(defs, uses, instruction.condition_id_);
+          break;
+        case variable_ret_:
+          record_use(defs, uses, instruction.result_id_);
+          break;
+        case load_:
+        case ptr_load_:
+          record_use(defs, uses, instruction.pointer_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case variable_store_:
+        case ptr_store_:
+          record_use(defs, uses, instruction.result_id_);
+          record_use(defs, uses, instruction.pointer_);
+          break;
+        case value_store_:
+        case builtin_memset_:
+          record_use(defs, uses, instruction.pointer_);
+          break;
+        case get_element_ptr_by_value_:
+          record_use(defs, uses, instruction.pointer_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case get_element_ptr_by_variable_:
+          record_use(defs, uses, instruction.pointer_);
+          record_use(defs, uses, instruction.index_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case non_void_call_:
+          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case void_call_:
+          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
+          break;
+        case builtin_call_:
+          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
+          if (instruction.function_name_ == 2) {
+            record_def(defs, instruction.result_id_);
+          }
+          break;
+        case value_select_ii_:
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case value_select_iv_:
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case value_select_vi_:
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case value_select_vv_:
+          record_def(defs, instruction.result_id_);
+          break;
+        case variable_select_ii_:
+          record_use(defs, uses, instruction.condition_id_);
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case variable_select_iv_:
+          record_use(defs, uses, instruction.condition_id_);
+          record_use(defs, uses, instruction.operand_1_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case variable_select_vi_:
+          record_use(defs, uses, instruction.condition_id_);
+          record_use(defs, uses, instruction.operand_2_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case variable_select_vv_:
+          record_use(defs, uses, instruction.condition_id_);
+          record_def(defs, instruction.result_id_);
+          break;
+        case builtin_memcpy_:
+          record_use(defs, uses, instruction.destination_);
+          record_use(defs, uses, instruction.pointer_);
+          break;
+        default:
+          break;
+      }
+    }
+    for (const auto &phi : block.phi_instructions_) {
+      record_def(defs, phi.result_id);
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          block_uses[condition.from_block_id].insert(condition.var_id);
+        }
+      }
+    }
+    block_uses[block_id].insert(uses.begin(), uses.end());
+    block_defs[block_id] = std::move(defs);
+    live_in[block_id] = {};
+    live_out[block_id] = {};
+  }
+
+  std::queue<int> live_worklist;
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    live_worklist.push(block_id);
+  }
+  while (!live_worklist.empty()) {
+    const int block_id = live_worklist.front();
+    live_worklist.pop();
+    std::set<int> new_live_out;
+    for (int succ : successors[block_id]) {
+      new_live_out.insert(live_in[succ].begin(), live_in[succ].end());
+    }
+    std::set<int> new_live_in = block_uses[block_id];
+    for (int id : new_live_out) {
+      if (!block_defs[block_id].contains(id)) {
+        new_live_in.insert(id);
+      }
+    }
+    if (new_live_in != live_in[block_id] || new_live_out != live_out[block_id]) {
+      live_in[block_id] = std::move(new_live_in);
+      live_out[block_id] = std::move(new_live_out);
+      for (const auto &[pred, succs] : successors) {
+        if (std::find(succs.begin(), succs.end(), block_id) != succs.end()) {
+          live_worklist.push(pred);
+        }
+      }
+    }
+  }
+
+  std::set<int> call_crossing_vars;
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    std::set<int> live = live_out[block_id];
+    const auto move_it = riscv_func.blocks_.find(block_id);
+    if (move_it != riscv_func.blocks_.end()) {
+      for (const auto &mv : move_it->second.move_instructions_) {
+        if (!mv.src_is_value_ && mv.src_ > 0) {
+          live.insert(mv.src_);
+        }
+      }
+    }
+    const int weight = block_weight[block_id];
+    for (int inst_index = static_cast<int>(block.instructions_.size()) - 1;
+         inst_index >= 0; --inst_index) {
+      const auto &instruction = block.instructions_[inst_index];
+      if (instruction.instruction_type_ == non_void_call_ ||
+          instruction.instruction_type_ == void_call_ ||
+          instruction.instruction_type_ == builtin_call_ ||
+          instruction.instruction_type_ == builtin_memset_ ||
+          instruction.instruction_type_ == builtin_memcpy_) {
+        for (int id : live) {
+          if (id > 0) {
+            call_crossing_vars.insert(id);
+            add_score(id, 10LL * weight);
+          }
+        }
+      }
+
+      std::set<int> defs;
+      std::set<int> uses;
+      switch (instruction.instruction_type_) {
+        case two_var_binary_operation_:
+        case two_var_icmp_:
+          uses.insert(instruction.operand_1_id_);
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case var_const_binary_operation_:
+        case var_const_icmp_:
+          uses.insert(instruction.operand_1_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case const_var_binary_operation_:
+        case const_var_icmp_:
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case conditional_br_:
+          uses.insert(instruction.condition_id_);
+          break;
+        case variable_ret_:
+          uses.insert(instruction.result_id_);
+          break;
+        case load_:
+        case ptr_load_:
+          uses.insert(instruction.pointer_);
+          defs.insert(instruction.result_id_);
+          break;
+        case variable_store_:
+        case ptr_store_:
+          uses.insert(instruction.result_id_);
+          uses.insert(instruction.pointer_);
+          break;
+        case value_store_:
+        case builtin_memset_:
+          uses.insert(instruction.pointer_);
+          break;
+        case get_element_ptr_by_value_:
+          uses.insert(instruction.pointer_);
+          defs.insert(instruction.result_id_);
+          break;
+        case get_element_ptr_by_variable_:
+          uses.insert(instruction.pointer_);
+          uses.insert(instruction.index_);
+          defs.insert(instruction.result_id_);
+          break;
+        case non_void_call_:
+          for (const auto &arg : instruction.function_call_arguments_) {
+            if (arg.is_variable_) uses.insert(arg.value_);
+          }
+          defs.insert(instruction.result_id_);
+          break;
+        case void_call_:
+          for (const auto &arg : instruction.function_call_arguments_) {
+            if (arg.is_variable_) uses.insert(arg.value_);
+          }
+          break;
+        case builtin_call_:
+          for (const auto &arg : instruction.function_call_arguments_) {
+            if (arg.is_variable_) uses.insert(arg.value_);
+          }
+          if (instruction.function_name_ == 2) defs.insert(instruction.result_id_);
+          break;
+        case value_select_ii_:
+          uses.insert(instruction.operand_1_id_);
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case value_select_iv_:
+          uses.insert(instruction.operand_1_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case value_select_vi_:
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case value_select_vv_:
+          defs.insert(instruction.result_id_);
+          break;
+        case variable_select_ii_:
+          uses.insert(instruction.condition_id_);
+          uses.insert(instruction.operand_1_id_);
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case variable_select_iv_:
+          uses.insert(instruction.condition_id_);
+          uses.insert(instruction.operand_1_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case variable_select_vi_:
+          uses.insert(instruction.condition_id_);
+          uses.insert(instruction.operand_2_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case variable_select_vv_:
+          uses.insert(instruction.condition_id_);
+          defs.insert(instruction.result_id_);
+          break;
+        case builtin_memcpy_:
+          uses.insert(instruction.destination_);
+          uses.insert(instruction.pointer_);
+          break;
+        default:
+          break;
+      }
+      for (int def : defs) live.erase(def);
+      for (int use : uses) {
+        if (use > 0) live.insert(use);
+      }
+    }
+  }
+
+  auto remember_stack_var = [&](int var_id, int size, int alignment, bool pointer_like) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
     auto existing = stack_slots.find(var_id);
     if (existing != stack_slots.end() && existing->second.is_alloca_pointer) return;
-    stack_slots[var_id] = {size, alignment, false, hotness[var_id]};
+    stack_slots[var_id] = {size, alignment, false, pointer_like,
+        call_crossing_vars.contains(var_id), hotness[var_id]};
   };
 
   auto remember_alloca = [&](int var_id, int data_size, int data_alignment) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
-    stack_slots[var_id] = {8, 8, true, hotness[var_id] + 1000};
+    stack_slots[var_id] = {8, 8, true, true, call_crossing_vars.contains(var_id),
+        hotness[var_id] + 1000};
     payload_slots.push_back({var_id, data_size, data_alignment});
   };
 
   for (int i = 0; i < ir_func.parameter_types_.size(); ++i) {
     const auto size = GetSize(ir_func.parameter_types_[i]).first;
-    remember_stack_var(i, size, GetAlignment(ir_func.parameter_types_[i]));
+    remember_stack_var(i, size, GetAlignment(ir_func.parameter_types_[i]),
+        ir_func.parameter_types_[i]->basic_type == pointer_type);
   }
   for (const auto &instruction : ir_func.alloca_instructions_) {
     const int data_size = GetSize(instruction.result_type_).first;
@@ -718,26 +1043,28 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
         case variable_select_vi_:
         case variable_select_vv_: {
           const auto size = GetSize(instruction.result_type_).first;
-          remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_));
+          remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_),
+              instruction.result_type_->basic_type == pointer_type);
           break;
         }
         case builtin_call_: {
           if (instruction.function_name_ == 2) {
             const auto size = GetSize(instruction.result_type_).first;
-            remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_));
+            remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_),
+                instruction.result_type_->basic_type == pointer_type);
           }
           break;
         }
         case ptr_load_:
         case get_element_ptr_by_value_:
         case get_element_ptr_by_variable_: {
-          remember_stack_var(instruction.result_id_, 8, 8);
+          remember_stack_var(instruction.result_id_, 8, 8, true);
           break;
         }
         case two_var_icmp_:
         case var_const_icmp_:
         case const_var_icmp_: {
-          remember_stack_var(instruction.result_id_, 1, 1);
+          remember_stack_var(instruction.result_id_, 1, 1, false);
           break;
         }
         default:
@@ -746,7 +1073,8 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     }
     for (const auto &mv_instruction : riscv_func.blocks_[block_id].move_instructions_) {
       const auto size = GetSize(mv_instruction.type_).first;
-      remember_stack_var(mv_instruction.dest_, size, GetAlignment(mv_instruction.type_));
+      remember_stack_var(mv_instruction.dest_, size, GetAlignment(mv_instruction.type_),
+          mv_instruction.type_->basic_type == pointer_type);
     }
   }
 
@@ -786,6 +1114,9 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   auto hotter_slot_first = [&](int lhs, int rhs) {
     const auto &left = stack_slots[lhs];
     const auto &right = stack_slots[rhs];
+    if (left.used_around_call != right.used_around_call) {
+      return left.used_around_call > right.used_around_call;
+    }
     if (left.hotness != right.hotness) return left.hotness > right.hotness;
     if (left.size != right.size) return left.size < right.size;
     return lhs < rhs;
@@ -801,14 +1132,31 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   };
 
   constexpr int kImmediateWindowEnd = 2048;
-  for (int var_id : slot_ids) {
-    const auto &slot = stack_slots[var_id];
-    if (slot.size > 16 && !slot.is_alloca_pointer) continue;
-    const int aligned_offset = AlignUp(offset, slot.alignment);
-    if (aligned_offset + slot.size <= kImmediateWindowEnd) {
-      place_stack_slot(var_id);
+  auto try_place_hot_window = [&](auto predicate) {
+    for (int var_id : slot_ids) {
+      if (placed_slots.contains(var_id)) continue;
+      const auto &slot = stack_slots[var_id];
+      if (!predicate(slot)) continue;
+      const int aligned_offset = AlignUp(offset, slot.alignment);
+      if (aligned_offset + slot.size <= kImmediateWindowEnd) {
+        place_stack_slot(var_id);
+      }
     }
-  }
+  };
+
+  try_place_hot_window([](const StackSlot &slot) {
+    return slot.is_alloca_pointer;
+  });
+  try_place_hot_window([](const StackSlot &slot) {
+    return !slot.is_alloca_pointer && !slot.is_pointer_like && slot.size <= 8;
+  });
+  try_place_hot_window([](const StackSlot &slot) {
+    return !slot.is_alloca_pointer && slot.is_pointer_like && slot.size <= 8;
+  });
+  try_place_hot_window([](const StackSlot &slot) {
+    return !slot.is_alloca_pointer && slot.size <= 16;
+  });
+
   for (int var_id : slot_ids) {
     if (!placed_slots.contains(var_id)) {
       place_stack_slot(var_id);
@@ -3888,9 +4236,8 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
       break;
     }
     case r_j_: {
-      file << "la\tt2, ";
+      file << "j\t";
       PrintLabel(file, instruction.label_, func_id);
-      file << "\n\tjr\tt2";
       break;
     }
     case r_jal_ra_: {
