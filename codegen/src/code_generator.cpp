@@ -293,23 +293,193 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   struct StackSlot {
     int size = 0;
     int alignment = 1;
-    bool is_alloca = false;
-    int alloca_data_size = 0;
+    bool is_alloca_pointer = false;
+    long long hotness = 0;
+  };
+  struct PayloadSlot {
+    int alloca_id = 0;
+    int size = 0;
+    int alignment = 1;
   };
   std::map<int, StackSlot> stack_slots;
+  std::vector<PayloadSlot> payload_slots;
+  std::map<int, long long> hotness;
+
+  auto add_score = [&](const int var_id, const long long amount) {
+    if (var_id > 0) {
+      hotness[var_id] += amount;
+    }
+  };
+
+  std::map<int, std::vector<int>> successors;
+  std::map<int, int> block_weight;
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    block_weight[block_id] = 1;
+    if (block.instructions_.empty()) continue;
+    const auto &last = block.instructions_.back();
+    if (last.instruction_type_ == conditional_br_) {
+      successors[block_id].push_back(last.if_true_);
+      successors[block_id].push_back(last.if_false_);
+    } else if (last.instruction_type_ == unconditional_br_) {
+      successors[block_id].push_back(last.destination_);
+    }
+  }
+  for (const auto &[from, succs] : successors) {
+    for (int to : succs) {
+      if (to > from) continue;
+      for (const auto &[block_id, block] : ir_func.blocks_) {
+        if (block_id >= to && block_id <= from) {
+          block_weight[block_id] += 3;
+        }
+      }
+    }
+  }
+
+  for (const auto &instruction : ir_func.alloca_instructions_) {
+    add_score(instruction.result_id_, 200);
+  }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    const int weight = block_weight[block_id];
+    for (const auto &phi : block.phi_instructions_) {
+      add_score(phi.result_id, 4LL * weight);
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          add_score(condition.var_id, 4LL * block_weight[condition.from_block_id]);
+        }
+      }
+    }
+    for (const auto &instruction : block.instructions_) {
+      auto add_def = [&](int var_id, long long amount = 4) {
+        add_score(var_id, amount * weight);
+      };
+      auto add_use = [&](int var_id, long long amount = 6) {
+        add_score(var_id, amount * weight);
+      };
+
+      switch (instruction.instruction_type_) {
+        case two_var_binary_operation_:
+        case two_var_icmp_:
+          add_use(instruction.operand_1_id_);
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case var_const_binary_operation_:
+        case var_const_icmp_:
+          add_use(instruction.operand_1_id_);
+          add_def(instruction.result_id_);
+          break;
+        case const_var_binary_operation_:
+        case const_var_icmp_:
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case conditional_br_:
+          add_use(instruction.condition_id_, 8);
+          break;
+        case variable_ret_:
+          add_use(instruction.result_id_, 8);
+          break;
+        case load_:
+        case ptr_load_:
+          add_use(instruction.pointer_, 12);
+          add_def(instruction.result_id_);
+          break;
+        case variable_store_:
+        case ptr_store_:
+          add_use(instruction.result_id_);
+          add_use(instruction.pointer_, 12);
+          break;
+        case value_store_:
+        case builtin_memset_:
+          add_use(instruction.pointer_, 12);
+          break;
+        case get_element_ptr_by_value_:
+          add_use(instruction.pointer_, 12);
+          add_def(instruction.result_id_, 6);
+          break;
+        case get_element_ptr_by_variable_:
+          add_use(instruction.pointer_, 12);
+          add_use(instruction.index_);
+          add_def(instruction.result_id_, 6);
+          break;
+        case non_void_call_:
+        case void_call_:
+        case builtin_call_:
+          for (const auto &argument : instruction.function_call_arguments_) {
+            if (argument.is_variable_) {
+              add_use(argument.value_, 8);
+            }
+          }
+          if (instruction.instruction_type_ == non_void_call_ ||
+              (instruction.instruction_type_ == builtin_call_ && instruction.function_name_ == 2)) {
+            add_def(instruction.result_id_);
+          }
+          break;
+        case value_select_ii_:
+          add_use(instruction.operand_1_id_);
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case value_select_iv_:
+          add_use(instruction.operand_1_id_);
+          add_def(instruction.result_id_);
+          break;
+        case value_select_vi_:
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case value_select_vv_:
+          add_def(instruction.result_id_);
+          break;
+        case variable_select_ii_:
+          add_use(instruction.condition_id_, 8);
+          add_use(instruction.operand_1_id_);
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case variable_select_iv_:
+          add_use(instruction.condition_id_, 8);
+          add_use(instruction.operand_1_id_);
+          add_def(instruction.result_id_);
+          break;
+        case variable_select_vi_:
+          add_use(instruction.condition_id_, 8);
+          add_use(instruction.operand_2_id_);
+          add_def(instruction.result_id_);
+          break;
+        case variable_select_vv_:
+          add_use(instruction.condition_id_, 8);
+          add_def(instruction.result_id_);
+          break;
+        case builtin_memcpy_:
+          add_use(instruction.destination_, 12);
+          add_use(instruction.pointer_, 12);
+          break;
+        default:
+          break;
+      }
+    }
+    for (const auto &mv_instruction : riscv_func.blocks_[block_id].move_instructions_) {
+      add_score(mv_instruction.dest_, 4LL * weight);
+      if (!mv_instruction.src_is_value_) {
+        add_score(mv_instruction.src_, 4LL * weight);
+      }
+    }
+  }
 
   auto remember_stack_var = [&](int var_id, int size, int alignment) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
     auto existing = stack_slots.find(var_id);
-    if (existing != stack_slots.end() && existing->second.is_alloca) return;
-    stack_slots[var_id] = {size, alignment, false, 0};
+    if (existing != stack_slots.end() && existing->second.is_alloca_pointer) return;
+    stack_slots[var_id] = {size, alignment, false, hotness[var_id]};
   };
 
-  auto remember_alloca = [&](int var_id, int data_size) {
+  auto remember_alloca = [&](int var_id, int data_size, int data_alignment) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
-    stack_slots[var_id] = {data_size + 8, 8, true, data_size};
+    stack_slots[var_id] = {8, 8, true, hotness[var_id] + 1000};
+    payload_slots.push_back({var_id, data_size, data_alignment});
   };
 
   for (int i = 0; i < ir_func.parameter_types_.size(); ++i) {
@@ -318,7 +488,7 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   }
   for (const auto &instruction : ir_func.alloca_instructions_) {
     const int data_size = GetSize(instruction.result_type_).first;
-    remember_alloca(instruction.result_id_, data_size);
+    remember_alloca(instruction.result_id_, data_size, GetAlignment(instruction.result_type_));
   }
   for (const auto &[block_id, block] : ir_func.blocks_) {
     for (const auto &instruction : block.instructions_) {
@@ -370,16 +540,43 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   }
 
   int offset = is_leaf_[func_id] ? 0 : 128;
+  alloca_data_offsets_[func_id].clear();
+  std::set<int> placed_slots;
+  std::vector<int> slot_ids;
+  slot_ids.reserve(stack_slots.size());
   for (const auto &[var_id, slot] : stack_slots) {
-    if (slot.is_alloca) {
-      const int pointer_offset = AlignUp(offset + slot.alloca_data_size, 8);
-      riscv_func.location_[var_id].second = pointer_offset;
-      offset = pointer_offset + 8;
-      continue;
-    }
+    slot_ids.push_back(var_id);
+  }
+  auto hotter_slot_first = [&](int lhs, int rhs) {
+    const auto &left = stack_slots[lhs];
+    const auto &right = stack_slots[rhs];
+    if (left.hotness != right.hotness) return left.hotness > right.hotness;
+    if (left.size != right.size) return left.size < right.size;
+    return lhs < rhs;
+  };
+  std::sort(slot_ids.begin(), slot_ids.end(), hotter_slot_first);
+
+  auto place_stack_slot = [&](int var_id) {
+    const auto &slot = stack_slots[var_id];
     offset = AlignUp(offset, slot.alignment);
     riscv_func.location_[var_id].second = offset;
     offset += slot.size;
+    placed_slots.insert(var_id);
+  };
+
+  constexpr int kImmediateWindowEnd = 2048;
+  for (int var_id : slot_ids) {
+    const auto &slot = stack_slots[var_id];
+    if (slot.size > 16 && !slot.is_alloca_pointer) continue;
+    const int aligned_offset = AlignUp(offset, slot.alignment);
+    if (aligned_offset + slot.size <= kImmediateWindowEnd) {
+      place_stack_slot(var_id);
+    }
+  }
+  for (int var_id : slot_ids) {
+    if (!placed_slots.contains(var_id)) {
+      place_stack_slot(var_id);
+    }
   }
 
   auto &save_offsets = reg_save_offsets_[func_id];
@@ -394,6 +591,12 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     offset = AlignUp(offset, 8);
     save_offsets[reg] = offset;
     offset += 8;
+  }
+
+  for (const auto &payload : payload_slots) {
+    offset = AlignUp(offset, payload.alignment);
+    alloca_data_offsets_[func_id][payload.alloca_id] = offset;
+    offset += payload.size;
   }
 
   riscv_func.stack_space_ = AlignUp(offset, 16);
@@ -943,6 +1146,7 @@ void CodeGenerator::RestoreCalleeRegs(int func_id, RISCVBlock &r_block) {
 void CodeGenerator::Generate() {
   RISCV_functions_.resize(IR_functions_.size());
   alloca_var_ids_.resize(IR_functions_.size());
+  alloca_data_offsets_.resize(IR_functions_.size());
   PhiToMove();
 
   // Detect leaf functions (no calls — builtin or user) before MemAlloc
@@ -1111,10 +1315,8 @@ void CodeGenerator::Generate() {
     bb0.PushArithmetic_I(r_addi_, 2, 2, -stack_space);
     SaveCalleeRegs(i, bb0);
     for (const auto &instruction : IR_functions_[i].alloca_instructions_) {
-      const int allocated_start_addr_offset = RISCV_functions_[i].location_[instruction.result_id_].second
-          - GetSize(instruction.result_type_).first;
-      bb0.PushLi(31, allocated_start_addr_offset);
-      bb0.PushArithmetic_R(r_add_, 31, 31, 2);
+      const int allocated_start_addr_offset = alloca_data_offsets_[i].at(instruction.result_id_);
+      bb0.PushArithmetic_I(r_addi_, 31, 2, allocated_start_addr_offset);
       // reg31 keeps the real address of the data
       bb0.PushMemory_S(r_sd_, 31, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
     }

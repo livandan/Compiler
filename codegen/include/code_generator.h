@@ -501,6 +501,7 @@ private:
   std::vector<RISCVFunctionNode> RISCV_functions_;
   const int main_func_id_;
   std::vector<std::set<int>> alloca_var_ids_;  // [func_id] -> vars whose stack slot holds a pointer (alloca results)
+  std::vector<std::map<int, int>> alloca_data_offsets_;  // [func_id][alloca var] -> payload offset
   // Registers that actually hold variables after register allocation.
   // Computed by AnalyzeUsedRegisters() after RA runs.
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
