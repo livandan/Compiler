@@ -3379,6 +3379,22 @@ void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruc
   }
 }
 
+namespace {
+
+const char *InvertBranchMnemonic(const RISCVInstructionType type) {
+  switch (type) {
+    case r_beq_: return "bne";
+    case r_bge_: return "blt";
+    case r_bgeu_: return "bltu";
+    case r_blt_: return "bge";
+    case r_bltu_: return "bgeu";
+    case r_bne_: return "beq";
+    default: return "beq";
+  }
+}
+
+} // namespace
+
 void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instruction,
     const int func_id, const int block_id) const {
   file << '\t';
@@ -3518,34 +3534,23 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
       Print_MS(file, instruction);
       break;
     }
-    case r_beq_: {
-      file << "beq\t";
-      Print_B(file, instruction, func_id, block_id);
-      break;
-    }
-    case r_bge_: {
-      file << "bge\t";
-      Print_B(file, instruction, func_id, block_id);
-      break;
-    }
-    case r_bgeu_: {
-      file << "bgeu\t";
-      Print_B(file, instruction, func_id, block_id);
-      break;
-    }
-    case r_blt_: {
-      file << "blt\t";
-      Print_B(file, instruction, func_id, block_id);
-      break;
-    }
-    case r_bltu_: {
-      file << "bltu\t";
-      Print_B(file, instruction, func_id, block_id);
-      break;
-    }
+    case r_beq_:
+    case r_bge_:
+    case r_bgeu_:
+    case r_blt_:
+    case r_bltu_:
     case r_bne_: {
-      file << "bne\t";
-      Print_B(file, instruction, func_id, block_id);
+      file << InvertBranchMnemonic(instruction.instruction_type_) << '\t';
+      PrintReg(file, instruction.rs1_);
+      file << ", ";
+      PrintReg(file, instruction.rs2_);
+      file << ", 1f\n\tla\tt2, ";
+      if (instruction.imm_ == 1) {
+        PrintLabel(file, instruction.label_, func_id);
+      } else {
+        PrintJumpLabel(file, block_id, instruction.label_, func_id);
+      }
+      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_jal_: {
@@ -3610,22 +3615,25 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
       break;
     }
     case r_beqz_: {
-      file << "beqz\t";
+      file << "bnez\t";
       PrintReg(file, instruction.rs1_);
-      file << ", ";
+      file << ", 1f\n\tla\tt2, ";
       PrintLabel(file, instruction.label_, func_id);
+      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_bnez_: {
-      file << "bnez\t";
+      file << "beqz\t";
       PrintReg(file, instruction.rs1_);
-      file << ", ";
+      file << ", 1f\n\tla\tt2, ";
       PrintLabel(file, instruction.label_, func_id);
+      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_j_: {
-      file << "j\t";
+      file << "la\tt2, ";
       PrintLabel(file, instruction.label_, func_id);
+      file << "\n\tjr\tt2";
       break;
     }
     case r_jal_ra_: {
