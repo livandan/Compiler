@@ -31,6 +31,97 @@ static int AlignUp(int value, int alignment) {
   return (value + alignment - 1) / alignment * alignment;
 }
 
+static bool IsPowerOfTwo(const int value) {
+  return value > 0 && (value & (value - 1)) == 0;
+}
+
+static int Log2Int(int value) {
+  int result = 0;
+  while (value > 1) {
+    value >>= 1;
+    ++result;
+  }
+  return result;
+}
+
+static bool TryEmitMulConst32(RISCVBlock &block, const int dest_reg,
+    const int src_reg, const int constant, const int tmp_reg) {
+  if (constant == 0) {
+    block.PushLi(dest_reg, 0);
+    return true;
+  }
+  if (constant == 1) {
+    block.PushArithmetic_R(r_add_, dest_reg, src_reg, 0);
+    return true;
+  }
+  if (constant == -1) {
+    block.PushArithmetic_R(r_subw_, dest_reg, 0, src_reg);
+    return true;
+  }
+
+  const bool negative = constant < 0;
+  const int abs_constant = negative ? -constant : constant;
+  if (IsPowerOfTwo(abs_constant)) {
+    block.PushArithmetic_I(r_slliw_, dest_reg, src_reg, Log2Int(abs_constant));
+    if (negative) {
+      block.PushArithmetic_R(r_subw_, dest_reg, 0, dest_reg);
+    }
+    return true;
+  }
+
+  if (IsPowerOfTwo(abs_constant + 1)) {
+    block.PushArithmetic_I(r_slliw_, tmp_reg, src_reg, Log2Int(abs_constant + 1));
+    block.PushArithmetic_R(r_subw_, dest_reg, tmp_reg, src_reg);
+    if (negative) {
+      block.PushArithmetic_R(r_subw_, dest_reg, 0, dest_reg);
+    }
+    return true;
+  }
+
+  if (IsPowerOfTwo(abs_constant - 1)) {
+    block.PushArithmetic_I(r_slliw_, tmp_reg, src_reg, Log2Int(abs_constant - 1));
+    block.PushArithmetic_R(r_addw_, dest_reg, tmp_reg, src_reg);
+    if (negative) {
+      block.PushArithmetic_R(r_subw_, dest_reg, 0, dest_reg);
+    }
+    return true;
+  }
+
+  int first_bit = -1;
+  int second_bit = -1;
+  int bit_count = 0;
+  for (int bit = 0; bit < 31; ++bit) {
+    if ((abs_constant & (1 << bit)) == 0) {
+      continue;
+    }
+    if (first_bit == -1) {
+      first_bit = bit;
+    } else if (second_bit == -1) {
+      second_bit = bit;
+    }
+    ++bit_count;
+  }
+  if (bit_count == 2) {
+    if (second_bit == 0) {
+      block.PushArithmetic_R(r_add_, tmp_reg, src_reg, 0);
+    } else {
+      block.PushArithmetic_I(r_slliw_, tmp_reg, src_reg, second_bit);
+    }
+    if (first_bit == 0) {
+      block.PushArithmetic_R(r_add_, dest_reg, src_reg, 0);
+    } else {
+      block.PushArithmetic_I(r_slliw_, dest_reg, src_reg, first_bit);
+    }
+    block.PushArithmetic_R(r_addw_, dest_reg, dest_reg, tmp_reg);
+    if (negative) {
+      block.PushArithmetic_R(r_subw_, dest_reg, 0, dest_reg);
+    }
+    return true;
+  }
+
+  return false;
+}
+
 static bool IsIcmpInstruction(const IRInstructionType type) {
   return type == two_var_icmp_ || type == var_const_icmp_ ||
       type == const_var_icmp_;
@@ -1671,8 +1762,11 @@ void CodeGenerator::Generate() {
                 break;
               }
               case mul_: {
-                r_block.PushLi(second_var_register, instruction.operand_2_id_);
-                r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
+                if (!TryEmitMulConst32(r_block, dest_reg, first_var_register,
+                    instruction.operand_2_id_, second_var_register)) {
+                  r_block.PushLi(second_var_register, instruction.operand_2_id_);
+                  r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
+                }
                 break;
               }
               case udiv_: {
@@ -1764,8 +1858,11 @@ void CodeGenerator::Generate() {
                 break;
               }
               case mul_: {
-                r_block.PushLi(first_var_register, instruction.operand_1_id_);
-                r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
+                if (!TryEmitMulConst32(r_block, dest_reg, second_var_register,
+                    instruction.operand_1_id_, first_var_register)) {
+                  r_block.PushLi(first_var_register, instruction.operand_1_id_);
+                  r_block.PushExtended(r_mulw_, dest_reg, first_var_register, second_var_register);
+                }
                 break;
               }
               case udiv_: {
@@ -2234,10 +2331,16 @@ void CodeGenerator::Generate() {
             if (need_alignment) {
               element_size = (element_size + 3) / 4 * 4;
             }
-            // reg 6 holds element_size, then is reused for pointer load below.
-            // The offset is computed in reg 5 (which is a scratch).
-            r_block.PushLi(6, element_size);
-            r_block.PushExtended(r_mul_, 5, 5, 6);
+            if (element_size == 1) {
+              // offset is already the index value in reg 5
+            } else if (IsPowerOfTwo(element_size)) {
+              r_block.PushArithmetic_I(r_slli_, 5, 5, Log2Int(element_size));
+            } else {
+              // reg 6 holds element_size, then is reused for pointer load below.
+              // The offset is computed in reg 5 (which is a scratch).
+              r_block.PushLi(6, element_size);
+              r_block.PushExtended(r_mul_, 5, 5, 6);
+            }
             // the offset is stored in reg 5
             int pointer_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
             if (!RISCV_functions_[i].location_[instruction.pointer_].first) {

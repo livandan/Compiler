@@ -3,6 +3,7 @@
 #include "expression.h"
 #include "statements.h"
 #include "fstream"
+#include <algorithm>
 #include <map>
 #include <set>
 #include <vector>
@@ -391,6 +392,172 @@ bool IsMemcpyForwardable(const IRInstruction &first_copy,
 
   const auto use_it = use_count.find(second_copy.pointer_);
   return use_it != use_count.end() && use_it->second == 2;
+}
+
+bool IsScalarIRType(const std::shared_ptr<IntegratedType> &type) {
+  if (type == nullptr) {
+    return false;
+  }
+  switch (type->basic_type) {
+    case bool_type:
+    case i32_type:
+    case u32_type:
+    case isize_type:
+    case usize_type:
+    case enumeration_type:
+    case pointer_type:
+    case unit_type:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsInlineTerminator(const IRInstructionType type) {
+  return type == conditional_br_ || type == unconditional_br_ ||
+      type == value_ret_ || type == variable_ret_ || type == void_ret_;
+}
+
+std::vector<int> InstructionSuccessors(const IRInstruction &instruction) {
+  if (instruction.instruction_type_ == conditional_br_) {
+    return {instruction.if_true_, instruction.if_false_};
+  }
+  if (instruction.instruction_type_ == unconditional_br_) {
+    return {instruction.destination_};
+  }
+  return {};
+}
+
+bool HasCycleFromBlock(const IRFunctionNode &function, const int block_id,
+    std::map<int, int> &color) {
+  color[block_id] = 1;
+  const auto block_it = function.blocks_.find(block_id);
+  if (block_it == function.blocks_.end() || block_it->second.instructions_.empty()) {
+    color[block_id] = 2;
+    return false;
+  }
+  for (const int succ : InstructionSuccessors(block_it->second.instructions_.back())) {
+    if (!function.blocks_.contains(succ)) {
+      continue;
+    }
+    if (color[succ] == 1) {
+      return true;
+    }
+    if (color[succ] == 0 && HasCycleFromBlock(function, succ, color)) {
+      return true;
+    }
+  }
+  color[block_id] = 2;
+  return false;
+}
+
+bool HasCFGCycle(const IRFunctionNode &function) {
+  std::map<int, int> color;
+  for (const auto &[block_id, block] : function.blocks_) {
+    color[block_id] = 0;
+  }
+  for (const auto &[block_id, block] : function.blocks_) {
+    if (color[block_id] == 0 && HasCycleFromBlock(function, block_id, color)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool IsInlineSafeInstruction(const IRInstruction &instruction) {
+  switch (instruction.instruction_type_) {
+    case two_var_binary_operation_:
+    case var_const_binary_operation_:
+    case const_var_binary_operation_:
+    case conditional_br_:
+    case unconditional_br_:
+    case value_ret_:
+    case variable_ret_:
+    case void_ret_:
+    case load_:
+    case ptr_load_:
+    case variable_store_:
+    case value_store_:
+    case ptr_store_:
+    case two_var_icmp_:
+    case var_const_icmp_:
+    case const_var_icmp_:
+    case value_select_ii_:
+    case value_select_iv_:
+    case value_select_vi_:
+    case value_select_vv_:
+    case variable_select_ii_:
+    case variable_select_iv_:
+    case variable_select_vi_:
+    case variable_select_vv_:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsShortInlineCandidate(const IRFunctionNode &function, const int function_id) {
+  if (!IsScalarIRType(function.return_type_)) {
+    return false;
+  }
+  for (const auto &type : function.parameter_types_) {
+    if (!IsScalarIRType(type) || type->basic_type == unit_type) {
+      return false;
+    }
+  }
+  if (function.blocks_.size() != 1 || HasCFGCycle(function)) {
+    return false;
+  }
+
+  int instruction_count = static_cast<int>(function.alloca_instructions_.size());
+  int return_count = 0;
+  for (const auto &alloca : function.alloca_instructions_) {
+    if (!IsScalarIRType(alloca.result_type_) || alloca.result_type_->basic_type == unit_type) {
+      return false;
+    }
+  }
+  for (const auto &[block_id, block] : function.blocks_) {
+    if (!block.phi_instructions_.empty() || block.instructions_.empty()) {
+      return false;
+    }
+    for (int i = 0; i < static_cast<int>(block.instructions_.size()); ++i) {
+      const auto &instruction = block.instructions_[i];
+      if (!IsInlineSafeInstruction(instruction)) {
+        return false;
+      }
+      if (instruction.instruction_type_ == non_void_call_ ||
+          instruction.instruction_type_ == void_call_ ||
+          instruction.instruction_type_ == builtin_call_) {
+        return false;
+      }
+      if (IsInlineTerminator(instruction.instruction_type_) &&
+          i + 1 != static_cast<int>(block.instructions_.size())) {
+        return false;
+      }
+      if (instruction.instruction_type_ == variable_ret_ ||
+          instruction.instruction_type_ == value_ret_ ||
+          instruction.instruction_type_ == void_ret_) {
+        ++return_count;
+      }
+      ++instruction_count;
+    }
+  }
+  return return_count == 1 && instruction_count <= 12;
+}
+
+std::map<int, int> CountFunctionCalls(const std::vector<IRFunctionNode> &functions) {
+  std::map<int, int> call_count;
+  for (const auto &function : functions) {
+    for (const auto &[block_id, block] : function.blocks_) {
+      for (const auto &instruction : block.instructions_) {
+        if (instruction.instruction_type_ == non_void_call_ ||
+            instruction.instruction_type_ == void_call_) {
+          ++call_count[instruction.function_name_];
+        }
+      }
+    }
+  }
+  return call_count;
 }
 
 } // namespace
@@ -917,6 +1084,263 @@ void IRVisitor::OptimizeAggregateCopies() {
   }
 }
 
+void IRVisitor::OptimizeShortFunctions() {
+  bool changed = false;
+  int inline_rounds = 0;
+  do {
+    changed = false;
+    ++inline_rounds;
+    const auto call_count = CountFunctionCalls(functions_);
+    std::set<int> inline_candidates;
+    for (int func_id = 0; func_id < static_cast<int>(functions_.size()); ++func_id) {
+      if (func_id == main_function_id_) {
+        continue;
+      }
+      const auto call_it = call_count.find(func_id);
+      if (call_it == call_count.end() || call_it->second == 0) {
+        continue;
+      }
+      if (IsShortInlineCandidate(functions_[func_id], func_id)) {
+        inline_candidates.insert(func_id);
+      }
+    }
+    if (inline_candidates.empty()) {
+      break;
+    }
+
+    for (int caller_id = 0; caller_id < static_cast<int>(functions_.size()); ++caller_id) {
+      auto &caller = functions_[caller_id];
+      std::vector<int> original_block_ids;
+      original_block_ids.reserve(caller.blocks_.size());
+      for (const auto &[block_id, block] : caller.blocks_) {
+        original_block_ids.push_back(block_id);
+      }
+
+      for (const int original_block_id : original_block_ids) {
+        auto original_it = caller.blocks_.find(original_block_id);
+        if (original_it == caller.blocks_.end()) {
+          continue;
+        }
+        const IRBlock original_block = original_it->second;
+        bool block_changed = false;
+        IRBlock rebuilt_block;
+        rebuilt_block.phi_instructions_ = original_block.phi_instructions_;
+        caller.blocks_[original_block_id] = std::move(rebuilt_block);
+
+        int current_block_id = original_block_id;
+        auto *current_block = &caller.blocks_[current_block_id];
+
+        auto update_successor_phis = [&](const int old_pred, const int new_pred) {
+          if (old_pred == new_pred || current_block->instructions_.empty()) {
+            return;
+          }
+          for (const int successor : InstructionSuccessors(current_block->instructions_.back())) {
+            auto successor_it = caller.blocks_.find(successor);
+            if (successor_it == caller.blocks_.end()) {
+              continue;
+            }
+            for (auto &phi : successor_it->second.phi_instructions_) {
+              for (auto &condition : phi.conditions) {
+                if (condition.from_block_id == old_pred) {
+                  condition.from_block_id = new_pred;
+                }
+              }
+            }
+          }
+        };
+
+        auto inline_call = [&](const IRInstruction &call_instruction) {
+          const auto &callee = functions_[call_instruction.function_name_];
+          std::map<int, int> var_map;
+          for (int arg_id = 0; arg_id < static_cast<int>(call_instruction.function_call_arguments_.size());
+               ++arg_id) {
+            const auto &argument = call_instruction.function_call_arguments_[arg_id];
+            if (argument.is_variable_) {
+              var_map[arg_id] = argument.value_;
+            } else {
+              const int temp_id = caller.var_id_++;
+              current_block->AddSelect(0b111, temp_id, 1, callee.parameter_types_[arg_id],
+                  argument.value_, callee.parameter_types_[arg_id], argument.value_);
+              var_map[arg_id] = temp_id;
+            }
+          }
+          for (const auto &alloca : callee.alloca_instructions_) {
+            const int new_id = caller.var_id_++;
+            var_map[alloca.result_id_] = new_id;
+            auto cloned_alloca = alloca;
+            cloned_alloca.result_id_ = new_id;
+            caller.alloca_instructions_.push_back(cloned_alloca);
+          }
+
+          std::map<int, int> block_map;
+          const int callee_entry = callee.blocks_.begin()->first;
+          for (const auto &[callee_block_id, block] : callee.blocks_) {
+            block_map[callee_block_id] =
+                (callee_block_id == callee_entry) ? current_block_id : caller.var_id_++;
+          }
+          const int after_block_id = caller.var_id_++;
+
+          auto map_var = [&](const int old_id) {
+            if (old_id < 0) {
+              return old_id;
+            }
+            const auto mapped = var_map.find(old_id);
+            if (mapped != var_map.end()) {
+              return mapped->second;
+            }
+            const int new_id = caller.var_id_++;
+            var_map[old_id] = new_id;
+            return new_id;
+          };
+
+          auto map_instruction = [&](IRInstruction instruction) {
+            switch (instruction.instruction_type_) {
+              case two_var_binary_operation_:
+              case two_var_icmp_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case var_const_binary_operation_:
+              case var_const_icmp_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                break;
+              case const_var_binary_operation_:
+              case const_var_icmp_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case conditional_br_:
+                instruction.condition_id_ = map_var(instruction.condition_id_);
+                instruction.if_true_ = block_map.at(instruction.if_true_);
+                instruction.if_false_ = block_map.at(instruction.if_false_);
+                break;
+              case unconditional_br_:
+                instruction.destination_ = block_map.at(instruction.destination_);
+                break;
+              case load_:
+              case ptr_load_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.pointer_ = map_var(instruction.pointer_);
+                break;
+              case variable_store_:
+              case ptr_store_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.pointer_ = map_var(instruction.pointer_);
+                break;
+              case value_store_:
+                instruction.pointer_ = map_var(instruction.pointer_);
+                break;
+              case value_select_ii_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case value_select_iv_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                break;
+              case value_select_vi_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case value_select_vv_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                break;
+              case variable_select_ii_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.condition_id_ = map_var(instruction.condition_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case variable_select_iv_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.condition_id_ = map_var(instruction.condition_id_);
+                instruction.operand_1_id_ = map_var(instruction.operand_1_id_);
+                break;
+              case variable_select_vi_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.condition_id_ = map_var(instruction.condition_id_);
+                instruction.operand_2_id_ = map_var(instruction.operand_2_id_);
+                break;
+              case variable_select_vv_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.condition_id_ = map_var(instruction.condition_id_);
+                break;
+              default:
+                break;
+            }
+            return instruction;
+          };
+
+          caller.blocks_[after_block_id] = IRBlock();
+          for (const auto &[callee_block_id, callee_block] : callee.blocks_) {
+            const int target_block_id = block_map.at(callee_block_id);
+            auto &target_block = caller.blocks_[target_block_id];
+            if (target_block_id != current_block_id) {
+              target_block = IRBlock();
+            }
+            for (const auto &instruction : callee_block.instructions_) {
+              if (instruction.instruction_type_ == value_ret_) {
+                if (call_instruction.instruction_type_ == non_void_call_) {
+                  target_block.AddSelect(0b111, call_instruction.result_id_, 1,
+                      call_instruction.result_type_, instruction.result_id_,
+                      call_instruction.result_type_, instruction.result_id_);
+                }
+                target_block.AddUnconditionalBranch(after_block_id);
+              } else if (instruction.instruction_type_ == variable_ret_) {
+                if (call_instruction.instruction_type_ == non_void_call_) {
+                  const int mapped_ret = map_var(instruction.result_id_);
+                  target_block.AddSelect(0b100, call_instruction.result_id_, 1,
+                      call_instruction.result_type_, mapped_ret,
+                      call_instruction.result_type_, mapped_ret);
+                }
+                target_block.AddUnconditionalBranch(after_block_id);
+              } else if (instruction.instruction_type_ == void_ret_) {
+                target_block.AddUnconditionalBranch(after_block_id);
+              } else {
+                target_block.instructions_.push_back(map_instruction(instruction));
+              }
+            }
+          }
+          current_block_id = after_block_id;
+          current_block = &caller.blocks_[current_block_id];
+        };
+
+        for (const auto &instruction : original_block.instructions_) {
+          if ((instruction.instruction_type_ == non_void_call_ ||
+               instruction.instruction_type_ == void_call_) &&
+              instruction.function_name_ != caller_id &&
+              inline_candidates.contains(instruction.function_name_)) {
+            const auto &callee = functions_[instruction.function_name_];
+            if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
+                ((instruction.instruction_type_ == non_void_call_ &&
+                  callee.return_type_->basic_type != unit_type) ||
+                 (instruction.instruction_type_ == void_call_ &&
+                  callee.return_type_->basic_type == unit_type))) {
+              inline_call(instruction);
+              block_changed = true;
+              changed = true;
+              continue;
+            }
+          }
+          current_block->instructions_.push_back(instruction);
+        }
+
+        if (block_changed) {
+          update_successor_phis(original_block_id, current_block_id);
+          if (current_block->instructions_.empty()) {
+            current_block->AddVoidReturn();
+          }
+        } else {
+          caller.blocks_[original_block_id] = original_block;
+        }
+      }
+    }
+  } while (changed && inline_rounds < 3);
+}
+
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
     std::set<int> &visited_block) const {
   const auto &last_instruction = functions_[func_id].blocks_.at(start_block).instructions_.back();
@@ -1006,6 +1430,8 @@ void IRVisitor::Visit(Crate *crate_ptr) {
   for (const auto &it : crate_ptr->children_) {
     it->Accept(this);
   }
+  OptimizeAggregateCopies();
+  OptimizeShortFunctions();
   OptimizeAggregateCopies();
 }
 void IRVisitor::Visit(Item *item_ptr) {

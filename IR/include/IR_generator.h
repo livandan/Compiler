@@ -398,6 +398,7 @@ private:
   void EmitLogicalBranch(Expression *expression_ptr, int true_branch, int false_branch);
   void EmitLogicalExpression(Expression *expression_ptr);
   void OptimizeAggregateCopies();
+  void OptimizeShortFunctions();
   int GetPreviousBlockHelper(int func_id, int start_block, int target_block, std::set<int> &visited_block) const;
   [[nodiscard]] int GetPreviousBlock(int func_id, int start_block, int target_block) const; // start from the start_block and keep going until find the block in front of target_block
   void OutputType(std::ofstream &file, const std::shared_ptr<IntegratedType> &integrated_type);
