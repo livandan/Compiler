@@ -3,6 +3,7 @@
 #include "fstream"
 #include "item.h"
 #include <algorithm>
+#include <cstdint>
 #include <queue>
 #include <set>
 #include <vector>
@@ -1428,6 +1429,119 @@ static bool RegisterUsedBeforeDef(const std::vector<RISCVInstruction> &instructi
   return false;
 }
 
+static std::uint32_t RegisterMask(const int reg) {
+  return reg >= 0 && reg < 32 ? (1u << reg) : 0;
+}
+
+static std::uint32_t ToRegisterMask(const std::set<int> &regs) {
+  std::uint32_t result = 0;
+  for (int reg : regs) {
+    result |= RegisterMask(reg);
+  }
+  return result;
+}
+
+struct RegUseDefMasks {
+  std::uint32_t uses = 0;
+  std::uint32_t defs = 0;
+};
+
+static RegUseDefMasks InstructionRegUseDefMasks(const RISCVInstruction &inst) {
+  RegUseDefMasks result;
+  switch (inst.instruction_type_) {
+    case r_add_: case r_sub_: case r_and_: case r_or_: case r_xor_:
+    case r_sll_: case r_srl_: case r_sra_: case r_slt_: case r_sltu_:
+    case r_addw_: case r_subw_: case r_sllw_: case r_srlw_: case r_sraw_:
+    case r_mul_: case r_div_: case r_divu_: case r_rem_: case r_remu_:
+    case r_mulw_: case r_divw_: case r_divuw_: case r_remw_: case r_remuw_:
+      result.uses = RegisterMask(inst.rs1_) | RegisterMask(inst.rs2_);
+      result.defs = RegisterMask(inst.rd_);
+      break;
+    case r_addi_: case r_andi_: case r_ori_: case r_xori_:
+    case r_slli_: case r_srli_: case r_srai_: case r_slti_: case r_sltiu_:
+    case r_addiw_: case r_slliw_: case r_srliw_: case r_sraiw_:
+    case r_jalr_: case r_mv_: case r_neg_: case r_not_:
+    case r_lb_: case r_lbu_: case r_lh_: case r_lhu_: case r_lw_: case r_ld_:
+      result.uses = RegisterMask(inst.rs1_);
+      result.defs = RegisterMask(inst.rd_);
+      break;
+    case r_jr_:
+      result.uses = RegisterMask(inst.rs1_);
+      break;
+    case r_sb_: case r_sh_: case r_sw_: case r_sd_:
+      result.uses = RegisterMask(inst.rs1_) | RegisterMask(inst.rs2_);
+      break;
+    case r_beq_: case r_bge_: case r_bgeu_: case r_blt_: case r_bltu_: case r_bne_:
+      result.uses = RegisterMask(inst.rs1_) | RegisterMask(inst.rs2_);
+      break;
+    case r_beqz_: case r_bnez_:
+      result.uses = RegisterMask(inst.rs1_);
+      break;
+    case r_jal_: case r_auipc_: case r_lui_: case r_la_: case r_li_:
+      result.defs = RegisterMask(inst.rd_);
+      break;
+    case r_call_:
+      result.defs = RegisterMask(1) | RegisterMask(5) | RegisterMask(6) |
+          RegisterMask(7) | RegisterMask(10) | RegisterMask(11) |
+          RegisterMask(12) | RegisterMask(13) | RegisterMask(14) |
+          RegisterMask(15) | RegisterMask(16) | RegisterMask(17) |
+          RegisterMask(28) | RegisterMask(29) | RegisterMask(30) |
+          RegisterMask(31);
+      break;
+    default:
+      break;
+  }
+  return result;
+}
+
+static std::vector<RegUseDefMasks> ComputeRegUseDefMasks(
+    const std::vector<RISCVInstruction> &instructions) {
+  std::vector<RegUseDefMasks> result;
+  result.reserve(instructions.size());
+  for (const auto &inst : instructions) {
+    result.push_back(InstructionRegUseDefMasks(inst));
+  }
+  return result;
+}
+
+static std::vector<std::uint32_t> ComputeRegNeededBeforeDefMasks(
+    const std::vector<RISCVInstruction> &instructions,
+    const std::vector<RegUseDefMasks> &reg_masks,
+    const std::set<int> &live_out_regs) {
+  const std::uint32_t live_out_mask = ToRegisterMask(live_out_regs);
+  std::vector<std::uint32_t> needed(instructions.size() + 1, 0);
+  needed[instructions.size()] = live_out_mask;
+
+  for (int i = static_cast<int>(instructions.size()) - 1; i >= 0; --i) {
+    const auto &inst = instructions[i];
+    if (inst.instruction_type_ == r_j_ || inst.instruction_type_ == r_ret_ ||
+        IsDirectLabelBranch(inst)) {
+      needed[i] = reg_masks[i].uses | live_out_mask;
+    } else {
+      needed[i] = (needed[i + 1] & ~reg_masks[i].defs) | reg_masks[i].uses;
+    }
+  }
+  return needed;
+}
+
+static bool HasRestoreSavePeepholeCandidates(
+    const std::vector<RISCVInstruction> &instructions) {
+  bool has_restore_load = false;
+  bool has_stack_store = false;
+  for (const auto &inst : instructions) {
+    if (inst.instruction_type_ == r_ld_ && inst.rs1_ == 2 &&
+        IsCallerSavedReg(inst.rd_)) {
+      has_restore_load = true;
+    } else if (inst.instruction_type_ == r_sd_ && inst.rs1_ == 2) {
+      has_stack_store = true;
+    }
+    if (has_restore_load && has_stack_store) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std::set<int> &uses) {
   auto add_def = [&](int id) {
     if (id > 0) defs.insert(id);
@@ -1611,7 +1725,74 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     const std::set<int> &live_out_regs) const {
   std::vector<RISCVInstruction> optimized;
   optimized.reserve(r_block.instructions_.size());
-  std::set<int> removed_indices;
+  std::vector<char> removed_indices(r_block.instructions_.size(), 0);
+
+  if (HasRestoreSavePeepholeCandidates(r_block.instructions_)) {
+    const auto reg_masks = ComputeRegUseDefMasks(r_block.instructions_);
+    const auto reg_needed_before_def =
+        ComputeRegNeededBeforeDefMasks(r_block.instructions_, reg_masks, live_out_regs);
+
+    std::vector<int> pending_restore_offset(32, 0);
+    std::vector<int> pending_restore_index(32, -1);
+    std::uint32_t pending_mask = 0;
+    auto clear_pending_mask = [&](std::uint32_t mask) {
+      mask &= pending_mask;
+      const std::uint32_t clear_mask = mask;
+      while (mask != 0) {
+        const int reg = __builtin_ctz(mask);
+        pending_restore_index[reg] = -1;
+        mask &= mask - 1;
+      }
+      pending_mask &= ~clear_mask;
+    };
+    auto clear_pending_offset = [&](const int offset) {
+      std::uint32_t clear_mask = 0;
+      std::uint32_t scan_mask = pending_mask;
+      while (scan_mask != 0) {
+        const int reg = __builtin_ctz(scan_mask);
+        if (pending_restore_offset[reg] == offset) {
+          clear_mask |= RegisterMask(reg);
+        }
+        scan_mask &= scan_mask - 1;
+      }
+      pending_mask &= ~clear_mask;
+    };
+
+    for (int i = 0; i < static_cast<int>(r_block.instructions_.size()); ++i) {
+      const auto &inst = r_block.instructions_[i];
+      if (inst.instruction_type_ == r_call_ || inst.instruction_type_ == r_j_ ||
+          inst.instruction_type_ == r_ret_ || IsDirectLabelBranch(inst)) {
+        pending_mask = 0;
+        continue;
+      }
+
+      if (inst.instruction_type_ == r_sd_ && inst.rs1_ == 2) {
+        const int reg = inst.rs2_;
+        const std::uint32_t reg_mask = RegisterMask(reg);
+        if ((pending_mask & reg_mask) != 0 && pending_restore_offset[reg] == inst.imm_ &&
+            (reg_needed_before_def[i + 1] & reg_mask) == 0) {
+          removed_indices[pending_restore_index[reg]] = 1;
+          removed_indices[i] = 1;
+        }
+        clear_pending_offset(inst.imm_);
+        clear_pending_mask(reg_masks[i].uses | reg_masks[i].defs);
+        continue;
+      }
+
+      if (inst.instruction_type_ == r_ld_ && inst.rs1_ == 2) {
+        clear_pending_offset(inst.imm_);
+        clear_pending_mask(reg_masks[i].uses | reg_masks[i].defs);
+        if (IsCallerSavedReg(inst.rd_)) {
+          pending_restore_offset[inst.rd_] = inst.imm_;
+          pending_restore_index[inst.rd_] = i;
+          pending_mask |= RegisterMask(inst.rd_);
+        }
+        continue;
+      }
+
+      clear_pending_mask(reg_masks[i].uses | reg_masks[i].defs);
+    }
+  }
 
   auto emit = [&](RISCVInstruction inst) {
     if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
@@ -1631,25 +1812,8 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     optimized.push_back(inst);
   };
 
-  auto restored_reg_unused_after_save = [&](const int begin, const int reg) {
-    for (int k = begin; k < static_cast<int>(r_block.instructions_.size()); ++k) {
-      const RISCVInstruction &later = r_block.instructions_[k];
-      if (InstructionUsesReg(later, reg)) {
-        return false;
-      }
-      if (InstructionDefsReg(later, reg)) {
-        return true;
-      }
-      if (later.instruction_type_ == r_j_ || later.instruction_type_ == r_ret_ ||
-          IsDirectLabelBranch(later)) {
-        return !live_out_regs.contains(reg);
-      }
-    }
-    return !live_out_regs.contains(reg);
-  };
-
   for (int i = 0; i < r_block.instructions_.size(); ++i) {
-    if (removed_indices.contains(i)) {
+    if (removed_indices[i]) {
       continue;
     }
     RISCVInstruction inst = r_block.instructions_[i];
@@ -1671,34 +1835,6 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
           ++i;
           continue;
         }
-      }
-    }
-
-    if (inst.instruction_type_ == r_ld_ && inst.rs1_ == 2 && IsCallerSavedReg(inst.rd_)) {
-      bool removed_restore_save = false;
-      for (int j = i + 1; j < static_cast<int>(r_block.instructions_.size()); ++j) {
-        const RISCVInstruction &next = r_block.instructions_[j];
-        const bool same_sp_slot_load =
-            next.instruction_type_ == r_ld_ && next.rs1_ == 2 && next.imm_ == inst.imm_;
-        const bool same_sp_slot_store =
-            next.instruction_type_ == r_sd_ && next.rs1_ == 2 && next.imm_ == inst.imm_;
-        if (same_sp_slot_store && next.rs2_ == inst.rd_ &&
-            restored_reg_unused_after_save(j + 1, inst.rd_)) {
-          removed_indices.insert(j);
-          removed_restore_save = true;
-          break;
-        }
-        if (same_sp_slot_load || same_sp_slot_store) {
-          break;
-        }
-        if (next.instruction_type_ == r_call_ || next.instruction_type_ == r_j_ ||
-            next.instruction_type_ == r_ret_ || IsDirectLabelBranch(next) ||
-            InstructionUsesReg(next, inst.rd_) || InstructionDefsReg(next, inst.rd_)) {
-          break;
-        }
-      }
-      if (removed_restore_save) {
-        continue;
       }
     }
 
