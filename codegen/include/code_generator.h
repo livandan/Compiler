@@ -112,7 +112,7 @@ struct RISCVBlock {
       case r_slli_: {
         if (imm < 0) {
           CodegenThrow("Invalid slli.");
-        } else if (imm <= 15) {
+        } else if (imm <= 63) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;
@@ -127,7 +127,7 @@ struct RISCVBlock {
       case r_srli_: {
         if (imm < 0) {
           CodegenThrow("Invalid srli.");
-        } else if (imm <= 15) {
+        } else if (imm <= 63) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;
@@ -142,7 +142,7 @@ struct RISCVBlock {
       case r_srai_: {
         if (imm < 0) {
           CodegenThrow("Invalid srai.");
-        } else if (imm <= 15) {
+        } else if (imm <= 63) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;
@@ -196,7 +196,7 @@ struct RISCVBlock {
       case r_slliw_: {
         if (imm < 0) {
           CodegenThrow("Invalid slliw.");
-        } else if (imm <= 15) {
+        } else if (imm <= 31) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;
@@ -211,7 +211,7 @@ struct RISCVBlock {
       case r_srliw_: {
         if (imm < 0) {
           CodegenThrow("Invalid srliw.");
-        } else if (imm <= 15) {
+        } else if (imm <= 31) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;
@@ -226,7 +226,7 @@ struct RISCVBlock {
       case r_sraiw_: {
         if (imm < 0) {
           CodegenThrow("Invalid sraiw.");
-        } else if (imm <= 15) {
+        } else if (imm <= 31) {
           instructions_.push_back(RISCVInstruction(type, rd, rs1, -1, imm, -1));
         } else {
           int tmp_reg = 31;

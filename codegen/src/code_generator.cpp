@@ -619,6 +619,27 @@ static bool InstructionDefsReg(const RISCVInstruction &inst, int reg) {
   }
 }
 
+static bool RegisterUsedBeforeDef(const std::vector<RISCVInstruction> &instructions,
+    const int begin, const int reg) {
+  for (int i = begin; i < static_cast<int>(instructions.size()); ++i) {
+    const auto &inst = instructions[i];
+    if (InstructionUsesReg(inst, reg)) {
+      return true;
+    }
+    if (InstructionDefsReg(inst, reg)) {
+      return false;
+    }
+    if (inst.instruction_type_ == r_j_ || inst.instruction_type_ == r_ret_ ||
+        inst.instruction_type_ == r_beq_ || inst.instruction_type_ == r_bge_ ||
+        inst.instruction_type_ == r_bgeu_ || inst.instruction_type_ == r_blt_ ||
+        inst.instruction_type_ == r_bltu_ || inst.instruction_type_ == r_bne_ ||
+        inst.instruction_type_ == r_beqz_ || inst.instruction_type_ == r_bnez_) {
+      return false;
+    }
+  }
+  return false;
+}
+
 static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std::set<int> &uses) {
   auto add_def = [&](int id) {
     if (id > 0) defs.insert(id);
@@ -752,21 +773,49 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
   std::vector<RISCVInstruction> optimized;
   optimized.reserve(r_block.instructions_.size());
 
+  auto emit = [&](RISCVInstruction inst) {
+    if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.rs2_ = -1;
+    } else if (inst.instruction_type_ == r_add_ && inst.rs1_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.rs1_ = inst.rs2_;
+      inst.rs2_ = -1;
+    } else if (inst.instruction_type_ == r_addi_ && inst.imm_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.imm_ = -1;
+    }
+    if (inst.instruction_type_ == r_mv_ && inst.rd_ == inst.rs1_) {
+      return;
+    }
+    optimized.push_back(inst);
+  };
+
   for (int i = 0; i < r_block.instructions_.size(); ++i) {
     RISCVInstruction inst = r_block.instructions_[i];
 
-    if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
-      if (inst.rd_ == inst.rs1_) {
-        continue;
+    if (inst.instruction_type_ == r_li_ &&
+        i + 1 < static_cast<int>(r_block.instructions_.size())) {
+      const RISCVInstruction &next = r_block.instructions_[i + 1];
+      if (next.instruction_type_ == r_add_) {
+        int other_reg = -1;
+        if (next.rs1_ == inst.rd_ && next.rs2_ != inst.rd_) {
+          other_reg = next.rs2_;
+        } else if (next.rs2_ == inst.rd_ && next.rs1_ != inst.rd_) {
+          other_reg = next.rs1_;
+        }
+        if (other_reg != -1 && inst.imm_ >= -2048 && inst.imm_ <= 2047 &&
+            (next.rd_ == inst.rd_ ||
+             !RegisterUsedBeforeDef(r_block.instructions_, i + 2, inst.rd_))) {
+          emit(RISCVInstruction(r_addi_, next.rd_, other_reg, -1, inst.imm_, -1));
+          ++i;
+          continue;
+        }
       }
-      inst.instruction_type_ = r_mv_;
-      inst.rs2_ = -1;
-      optimized.push_back(inst);
-      continue;
     }
 
     if (inst.instruction_type_ == r_addiw_ &&
-        i + 1 < r_block.instructions_.size()) {
+        i + 1 < static_cast<int>(r_block.instructions_.size())) {
       const RISCVInstruction &next = r_block.instructions_[i + 1];
       if ((next.instruction_type_ == r_add_ && next.rs1_ == inst.rd_ && next.rs2_ == 0) ||
           next.instruction_type_ == r_mv_) {
@@ -789,14 +838,14 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
         }
         if (is_move_back && tmp_dead) {
           inst.rd_ = inst.rs1_;
-          optimized.push_back(inst);
+          emit(inst);
           ++i;
           continue;
         }
       }
     }
 
-    optimized.push_back(inst);
+    emit(inst);
   }
 
   r_block.instructions_ = std::move(optimized);
