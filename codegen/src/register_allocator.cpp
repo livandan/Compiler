@@ -153,11 +153,15 @@ RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
     allocatable_regs_.push_back(9);
     for (int r = 18; r <= 27; ++r) allocatable_regs_.push_back(r);
   } else {
-    for (int r = 0; r < 32; ++r) {
-      if (!IsReservedReg(r) && !IsScratchReg(r)) {
-        allocatable_regs_.push_back(r);
-      }
-    }
+    // Non-leaf functions pay once for callee-saved registers in the
+    // prologue/epilogue, while caller-saved registers may need traffic around
+    // every call. Prefer s-registers first, then use caller-saved registers for
+    // remaining short-lived pressure.
+    allocatable_regs_.push_back(8);
+    allocatable_regs_.push_back(9);
+    for (int r = 18; r <= 27; ++r) allocatable_regs_.push_back(r);
+    for (int r = 10; r <= 17; ++r) allocatable_regs_.push_back(r);
+    for (int r = 28; r <= 30; ++r) allocatable_regs_.push_back(r);
   }
 
   ComputeMaxVarId();
