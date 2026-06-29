@@ -1,6 +1,7 @@
 #include "mem2reg.h"
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <stack>
 
 void Mem2RegThrow(const std::string &err_info) {
@@ -77,6 +78,7 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
   RemoveDeadPhis();
 
   SimplifyCFG();
+  SimplifyPhiCopies();
 }
 
 // ============================================================================
@@ -708,6 +710,10 @@ static void ReplaceVarWithVar(IRInstruction &inst, int old_id, int new_id);
 static void ReplacePhiVarWithVar(PhiInstruction &inst, int old_id, int new_id);
 static void ReplaceVarWithConst(IRInstruction &inst, int old_id, int const_val);
 static void ReplacePhiVarWithConst(PhiInstruction &inst, int old_id, int const_val);
+static void ReplaceAllPhiResultUsesInFunction(IRFunctionNode &func, int old_id,
+    const ReachingDef &new_def);
+static std::map<int, ReachingDef> BuildPhiValueMap(const IRBlock &block,
+    int predecessor_block);
 
 // ============================================================================
 // Replace all uses of old_id with new_def — O(uses) via use-list
@@ -1166,6 +1172,45 @@ void ReplacePhiVarWithConst(PhiInstruction &inst, int old_id, int const_val) {
   }
 }
 
+static void ReplaceAllPhiResultUsesInFunction(IRFunctionNode &func, const int old_id,
+    const ReachingDef &new_def) {
+  for (auto &[block_id, block] : func.blocks_) {
+    for (auto &phi : block.phi_instructions_) {
+      if (new_def.is_constant) {
+        ReplacePhiVarWithConst(phi, old_id, new_def.const_value);
+      } else {
+        ReplacePhiVarWithVar(phi, old_id, new_def.var_id);
+      }
+    }
+    for (auto &instruction : block.instructions_) {
+      if (new_def.is_constant) {
+        ReplaceVarWithConst(instruction, old_id, new_def.const_value);
+      } else {
+        ReplaceVarWithVar(instruction, old_id, new_def.var_id);
+      }
+    }
+  }
+}
+
+static std::map<int, ReachingDef> BuildPhiValueMap(const IRBlock &block,
+    const int predecessor_block) {
+  std::map<int, ReachingDef> values;
+  for (const auto &phi : block.phi_instructions_) {
+    ReachingDef value = ReachingDef::Undef();
+    for (const auto &condition : phi.conditions) {
+      if (condition.from_block_id != predecessor_block) {
+        continue;
+      }
+      value = condition.is_const
+          ? ReachingDef::Const(condition.value)
+          : ReachingDef::Var(condition.var_id);
+      break;
+    }
+    values[phi.result_id] = value.valid ? value : ReachingDef::Const(0);
+  }
+  return values;
+}
+
 // ============================================================================
 // Remove dead load/store instructions (those marked unknown_)
 // ============================================================================
@@ -1484,4 +1529,304 @@ void Mem2Reg::SimplifyCFG() {
   }
 
   RemoveDeadPhis();
+}
+
+bool Mem2Reg::EliminateTrivialPhis() {
+  bool changed = false;
+
+  auto same_def = [](const ReachingDef &lhs, const ReachingDef &rhs) {
+    if (lhs.valid != rhs.valid || lhs.is_constant != rhs.is_constant) {
+      return false;
+    }
+    if (!lhs.valid) {
+      return true;
+    }
+    return lhs.is_constant ? lhs.const_value == rhs.const_value
+                           : lhs.var_id == rhs.var_id;
+  };
+
+  for (auto &[block_id, block] : func_->blocks_) {
+    for (auto it = block.phi_instructions_.begin();
+         it != block.phi_instructions_.end();) {
+      const int result_id = it->result_id;
+      bool have_replacement = false;
+      bool is_trivial = true;
+      ReachingDef replacement = ReachingDef::Undef();
+
+      for (const auto &condition : it->conditions) {
+        if (!condition.is_const && condition.var_id == result_id) {
+          continue;
+        }
+
+        const ReachingDef incoming = condition.is_const
+            ? ReachingDef::Const(condition.value)
+            : ReachingDef::Var(condition.var_id);
+        if (!have_replacement) {
+          replacement = incoming;
+          have_replacement = true;
+        } else if (!same_def(replacement, incoming)) {
+          is_trivial = false;
+          break;
+        }
+      }
+
+      // Variable-to-variable trivial phis can perturb the current register
+      // allocator enough to lose code quality. Constant phis are still useful:
+      // they unlock constant folding and dead-phi cascades without introducing
+      // a new live variable.
+      if (is_trivial && have_replacement && replacement.is_constant) {
+        ReplaceAllPhiResultUsesInFunction(*func_, result_id, replacement);
+        it = block.phi_instructions_.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  return changed;
+}
+
+bool Mem2Reg::MergePhiOnlyBlock() {
+  auto build_preds = [&]() {
+    std::map<int, std::set<int>> preds;
+    for (const auto &[block_id, block] : func_->blocks_) {
+      preds[block_id];
+      if (block.instructions_.empty()) continue;
+      const auto &last = block.instructions_.back();
+      if (last.instruction_type_ == unconditional_br_) {
+        preds[last.destination_].insert(block_id);
+      } else if (last.instruction_type_ == conditional_br_) {
+        preds[last.if_true_].insert(block_id);
+        preds[last.if_false_].insert(block_id);
+      }
+    }
+    return preds;
+  };
+
+  auto phi_uses_var = [](const PhiInstruction &phi, const int var_id) {
+    for (const auto &condition : phi.conditions) {
+      if (!condition.is_const && condition.var_id == var_id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto instruction_uses_var = [](const IRInstruction &instruction, const int var_id) {
+    auto is_var = [var_id](const int candidate) {
+      return candidate == var_id;
+    };
+    switch (instruction.instruction_type_) {
+      case two_var_binary_operation_:
+      case two_var_icmp_:
+        return is_var(instruction.operand_1_id_) || is_var(instruction.operand_2_id_);
+      case var_const_binary_operation_:
+      case var_const_icmp_:
+        return is_var(instruction.operand_1_id_);
+      case const_var_binary_operation_:
+      case const_var_icmp_:
+        return is_var(instruction.operand_2_id_);
+      case conditional_br_:
+        return is_var(instruction.condition_id_);
+      case variable_ret_:
+        return is_var(instruction.result_id_);
+      case load_:
+      case ptr_load_:
+        return is_var(instruction.pointer_);
+      case variable_store_:
+      case ptr_store_:
+        return is_var(instruction.result_id_) || is_var(instruction.pointer_);
+      case value_store_:
+      case get_element_ptr_by_value_:
+      case builtin_memset_:
+        return is_var(instruction.pointer_);
+      case get_element_ptr_by_variable_:
+        return is_var(instruction.pointer_) || is_var(instruction.index_);
+      case non_void_call_:
+      case void_call_:
+      case builtin_call_:
+        for (const auto &argument : instruction.function_call_arguments_) {
+          if (argument.is_variable_ && is_var(argument.value_)) {
+            return true;
+          }
+        }
+        return false;
+      case value_select_ii_:
+        return is_var(instruction.operand_1_id_) || is_var(instruction.operand_2_id_);
+      case value_select_iv_:
+        return is_var(instruction.operand_1_id_);
+      case value_select_vi_:
+        return is_var(instruction.operand_2_id_);
+      case variable_select_ii_:
+        return is_var(instruction.condition_id_) ||
+            is_var(instruction.operand_1_id_) || is_var(instruction.operand_2_id_);
+      case variable_select_iv_:
+        return is_var(instruction.condition_id_) || is_var(instruction.operand_1_id_);
+      case variable_select_vi_:
+        return is_var(instruction.condition_id_) || is_var(instruction.operand_2_id_);
+      case variable_select_vv_:
+        return is_var(instruction.condition_id_);
+      case builtin_memcpy_:
+        return is_var(instruction.destination_) || is_var(instruction.pointer_);
+      default:
+        return false;
+    }
+  };
+
+  const int entry = func_->blocks_.begin()->first;
+  const auto preds = build_preds();
+
+  for (auto block_it = func_->blocks_.begin(); block_it != func_->blocks_.end();
+       ++block_it) {
+    const int block_id = block_it->first;
+    auto &block = block_it->second;
+    if (block_id == entry || block.phi_instructions_.empty() ||
+        block.instructions_.size() != 1) {
+      continue;
+    }
+
+    const auto &branch = block.instructions_.front();
+    if (branch.instruction_type_ != unconditional_br_) {
+      continue;
+    }
+    const int target = branch.destination_;
+    if (target == block_id || !func_->blocks_.contains(target)) {
+      continue;
+    }
+
+    const auto pred_it = preds.find(block_id);
+    if (pred_it == preds.end() || pred_it->second.size() != 1 ||
+        pred_it->second.contains(block_id) || pred_it->second.contains(target)) {
+      continue;
+    }
+
+    // Keep critical-edge split blocks. Phi moves are stored on predecessor
+    // blocks in the backend, so a conditional predecessor must retain a
+    // dedicated edge block when the successor has phis.
+    bool has_only_unconditional_preds = true;
+    for (const int pred : pred_it->second) {
+      const auto pred_block_it = func_->blocks_.find(pred);
+      if (pred_block_it == func_->blocks_.end() ||
+          pred_block_it->second.instructions_.empty()) {
+        has_only_unconditional_preds = false;
+        break;
+      }
+      const auto &pred_last = pred_block_it->second.instructions_.back();
+      if (pred_last.instruction_type_ != unconditional_br_ ||
+          pred_last.destination_ != block_id) {
+        has_only_unconditional_preds = false;
+        break;
+      }
+    }
+    if (!has_only_unconditional_preds) {
+      continue;
+    }
+
+    std::set<int> block_phi_results;
+    for (const auto &phi : block.phi_instructions_) {
+      block_phi_results.insert(phi.result_id);
+    }
+
+    bool all_uses_are_target_edge_phis = true;
+    for (const int result_id : block_phi_results) {
+      for (const auto &[scan_block_id, scan_block] : func_->blocks_) {
+        for (const auto &phi : scan_block.phi_instructions_) {
+          if (!phi_uses_var(phi, result_id)) {
+            continue;
+          }
+          bool allowed = scan_block_id == target;
+          if (allowed) {
+            allowed = false;
+            for (const auto &condition : phi.conditions) {
+              if (!condition.is_const && condition.var_id == result_id &&
+                  condition.from_block_id == block_id) {
+                allowed = true;
+                break;
+              }
+            }
+          }
+          if (!allowed) {
+            all_uses_are_target_edge_phis = false;
+            break;
+          }
+        }
+        if (!all_uses_are_target_edge_phis) break;
+        for (const auto &instruction : scan_block.instructions_) {
+          if (instruction_uses_var(instruction, result_id)) {
+            all_uses_are_target_edge_phis = false;
+            break;
+          }
+        }
+        if (!all_uses_are_target_edge_phis) break;
+      }
+      if (!all_uses_are_target_edge_phis) break;
+    }
+    if (!all_uses_are_target_edge_phis) {
+      continue;
+    }
+
+    std::map<int, std::map<int, ReachingDef>> edge_values;
+    for (const int pred : pred_it->second) {
+      edge_values[pred] = BuildPhiValueMap(block, pred);
+    }
+
+    auto &target_block = func_->blocks_[target];
+    for (auto &phi : target_block.phi_instructions_) {
+      std::vector<PhiCondition> rebuilt;
+      for (const auto &condition : phi.conditions) {
+        if (condition.from_block_id != block_id) {
+          rebuilt.push_back(condition);
+          continue;
+        }
+
+        ReachingDef edge_value = condition.is_const
+            ? ReachingDef::Const(condition.value)
+            : ReachingDef::Var(condition.var_id);
+        for (const int pred : pred_it->second) {
+          ReachingDef pred_value = edge_value;
+          if (pred_value.valid && !pred_value.is_constant &&
+              edge_values[pred].contains(pred_value.var_id)) {
+            pred_value = edge_values[pred][pred_value.var_id];
+          }
+          if (!pred_value.valid) {
+            pred_value = ReachingDef::Const(0);
+          }
+          if (pred_value.is_constant) {
+            rebuilt.emplace_back(pred, true, pred_value.const_value, -1);
+          } else {
+            rebuilt.emplace_back(pred, false, 0, pred_value.var_id);
+          }
+        }
+      }
+      phi.conditions = std::move(rebuilt);
+    }
+
+    for (const int pred : pred_it->second) {
+      auto &pred_last = func_->blocks_[pred].instructions_.back();
+      pred_last.destination_ = target;
+    }
+    func_->blocks_.erase(block_id);
+    return true;
+  }
+
+  return false;
+}
+
+void Mem2Reg::SimplifyPhiCopies() {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    if (EliminateTrivialPhis()) {
+      RemoveDeadPhis();
+      SimplifyCFG();
+      changed = true;
+      continue;
+    }
+    if (MergePhiOnlyBlock()) {
+      RemoveDeadPhis();
+      SimplifyCFG();
+      changed = true;
+    }
+  }
 }

@@ -83,6 +83,9 @@ private:
   void RemoveDeadInstructions() const;
   void RemoveDeadPhis();
   void SimplifyCFG();
+  void SimplifyPhiCopies();
+  bool EliminateTrivialPhis();
+  bool MergePhiOnlyBlock();
 
   std::vector<IRFunctionNode> &functions_;
   // ========== per-function state (reset for each function) ==========
