@@ -6,6 +6,7 @@ RCompiler-Spec
 cmake-build-debug
 .idea
 RCompiler-Testcases/IR-1/src
+RCompiler-Testcases/IR-1/asm
 RCompiler-Testcases/semantic-1
 RCompiler-Testcases/semantic-2
 RCompiler-Testcases/hidden_case
@@ -16,6 +17,7 @@ REIMU
 codegen/codegen.md
 testcases
 testcases.zip
+asm.zip
 RV32toRV64.md
 build
 plan.md
