@@ -465,8 +465,6 @@ private:
   void ValueAssignment(int func_id, RISCVBlock &r_block, int var_dest, int value_src, const std::shared_ptr<IntegratedType> &type); // %var_dest <- value_src
   [[nodiscard]] std::pair<int, bool> GetSize(const std::shared_ptr<IntegratedType> &type) const;
   [[nodiscard]] int GetAlignment(const std::shared_ptr<IntegratedType> &type) const;
-  [[nodiscard]] int GetConstGepOffset(const IRInstruction &instruction) const;
-  void ComputeFrameAddressOffsets(int func_id);
   static RISCVInstructionType GetLoadInst(const std::shared_ptr<IntegratedType> &type);
   static RISCVInstructionType GetStoreInst(const std::shared_ptr<IntegratedType> &type);
 
@@ -506,7 +504,6 @@ private:
   const int main_func_id_;
   std::vector<std::set<int>> alloca_var_ids_;  // [func_id] -> vars whose stack slot holds a pointer (alloca results)
   std::vector<std::map<int, int>> alloca_data_offsets_;  // [func_id][alloca var] -> payload offset
-  std::vector<std::map<int, int>> frame_address_offsets_;  // [func_id][ptr var] -> fixed sp-relative payload address
   // Registers that actually hold variables after register allocation.
   // Computed by AnalyzeUsedRegisters() after RA runs.
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
