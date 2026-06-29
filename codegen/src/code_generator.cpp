@@ -128,6 +128,9 @@ static bool IsIcmpInstruction(const IRInstructionType type) {
       type == const_var_icmp_;
 }
 
+static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs,
+    std::set<int> &uses);
+
 static bool IsDirectLabelBranch(const RISCVInstruction &inst) {
   if (inst.instruction_type_ == r_beqz_ || inst.instruction_type_ == r_bnez_) {
     return true;
@@ -513,6 +516,7 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     int alignment = 1;
     bool is_alloca_pointer = false;
     bool is_pointer_like = false;
+    bool overlay_eligible = false;
     bool used_around_call = false;
     long long hotness = 0;
   };
@@ -521,9 +525,20 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     int size = 0;
     int alignment = 1;
   };
+  struct SlotLifetime {
+    int first = 0;
+    int last = 0;
+  };
+  struct OverlayInterval {
+    int first = 0;
+    int last = 0;
+    int offset = 0;
+    int size = 0;
+  };
   std::map<int, StackSlot> stack_slots;
   std::vector<PayloadSlot> payload_slots;
   std::map<int, long long> hotness;
+  std::map<int, SlotLifetime> lifetimes;
 
   auto add_score = [&](const int var_id, const long long amount) {
     if (var_id > 0) {
@@ -688,6 +703,100 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
       add_score(mv_instruction.dest_, 4LL * weight);
       if (!mv_instruction.src_is_value_) {
         add_score(mv_instruction.src_, 4LL * weight);
+      }
+    }
+  }
+
+  std::map<int, int> block_order;
+  for (int i = 0; i < static_cast<int>(block_layouts_[func_id].size()); ++i) {
+    block_order[block_layouts_[func_id][i]] = i;
+  }
+  auto block_position = [&](const int block_id) {
+    const auto it = block_order.find(block_id);
+    return it == block_order.end() ? block_id : it->second;
+  };
+  int block_position_stride = 2;
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    int block_events = static_cast<int>(block.instructions_.size()) + 2;
+    const auto move_it = riscv_func.blocks_.find(block_id);
+    if (move_it != riscv_func.blocks_.end()) {
+      block_events += static_cast<int>(move_it->second.move_instructions_.size());
+    }
+    block_position_stride = std::max(block_position_stride, block_events + 1);
+  }
+  auto instruction_position = [&](const int block_id, const int inst_index) {
+    return block_position(block_id) * block_position_stride + inst_index + 1;
+  };
+  auto mark_def = [&](const int var_id, const int pos) {
+    if (var_id <= 0) return;
+    auto &life = lifetimes[var_id];
+    if (life.first == 0) {
+      life.first = pos;
+      life.last = pos;
+    } else {
+      life.first = std::min(life.first, pos);
+      life.last = std::max(life.last, pos);
+    }
+  };
+  auto mark_use = [&](const int var_id, const int pos) {
+    if (var_id <= 0) return;
+    auto &life = lifetimes[var_id];
+    if (life.first == 0) {
+      life.first = 1;
+    }
+    life.last = std::max(life.last, pos);
+  };
+  auto extend_lifetime = [&](const int var_id, const int first, const int last) {
+    if (var_id <= 0) return;
+    auto &life = lifetimes[var_id];
+    if (life.first == 0) {
+      life.first = first;
+      life.last = last;
+    } else {
+      life.first = std::min(life.first, first);
+      life.last = std::max(life.last, last);
+    }
+  };
+  for (int i = 0; i < static_cast<int>(ir_func.parameter_types_.size()); ++i) {
+    mark_def(i, 1);
+  }
+  for (const auto &instruction : ir_func.alloca_instructions_) {
+    mark_def(instruction.result_id_, 1);
+  }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    const int block_start = instruction_position(block_id, 0);
+    for (const auto &phi : block.phi_instructions_) {
+      mark_def(phi.result_id, block_start);
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          mark_use(condition.var_id,
+              instruction_position(condition.from_block_id,
+                  static_cast<int>(ir_func.blocks_.at(condition.from_block_id).instructions_.size())));
+        }
+      }
+    }
+    for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size());
+         ++inst_index) {
+      std::set<int> defs;
+      std::set<int> uses;
+      CollectIRDefUse(block.instructions_[inst_index], defs, uses);
+      const int pos = instruction_position(block_id, inst_index + 1);
+      for (int def : defs) {
+        mark_def(def, pos);
+      }
+      for (int use : uses) {
+        mark_use(use, pos);
+      }
+    }
+    const auto move_it = riscv_func.blocks_.find(block_id);
+    if (move_it != riscv_func.blocks_.end()) {
+      const int move_pos = instruction_position(block_id,
+          static_cast<int>(block.instructions_.size()) + 1);
+      for (const auto &mv_instruction : move_it->second.move_instructions_) {
+        mark_def(mv_instruction.dest_, move_pos);
+        if (!mv_instruction.src_is_value_) {
+          mark_use(mv_instruction.src_, move_pos);
+        }
       }
     }
   }
@@ -863,6 +972,17 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
       }
     }
   }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    const int block_start = instruction_position(block_id, 0);
+    const int block_end = instruction_position(block_id,
+        static_cast<int>(block.instructions_.size()) + 1);
+    for (int var_id : live_in[block_id]) {
+      extend_lifetime(var_id, block_start, block_end);
+    }
+    for (int var_id : live_out[block_id]) {
+      extend_lifetime(var_id, block_start, block_end);
+    }
+  }
 
   std::set<int> call_crossing_vars;
   for (const auto &[block_id, block] : ir_func.blocks_) {
@@ -1007,19 +1127,20 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     }
   }
 
-  auto remember_stack_var = [&](int var_id, int size, int alignment, bool pointer_like) {
+  auto remember_stack_var = [&](int var_id, int size, int alignment, bool pointer_like,
+      bool overlay_eligible) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
     auto existing = stack_slots.find(var_id);
     if (existing != stack_slots.end() && existing->second.is_alloca_pointer) return;
-    stack_slots[var_id] = {size, alignment, false, pointer_like,
+    stack_slots[var_id] = {size, alignment, false, pointer_like, overlay_eligible && size <= 8,
         call_crossing_vars.contains(var_id), hotness[var_id]};
   };
 
   auto remember_alloca = [&](int var_id, int data_size, int data_alignment) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
-    stack_slots[var_id] = {8, 8, true, true, call_crossing_vars.contains(var_id),
+    stack_slots[var_id] = {8, 8, true, true, false, call_crossing_vars.contains(var_id),
         hotness[var_id] + 1000};
     payload_slots.push_back({var_id, data_size, data_alignment});
   };
@@ -1027,7 +1148,7 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   for (int i = 0; i < ir_func.parameter_types_.size(); ++i) {
     const auto size = GetSize(ir_func.parameter_types_[i]).first;
     remember_stack_var(i, size, GetAlignment(ir_func.parameter_types_[i]),
-        ir_func.parameter_types_[i]->basic_type == pointer_type);
+        ir_func.parameter_types_[i]->basic_type == pointer_type, false);
   }
   for (const auto &instruction : ir_func.alloca_instructions_) {
     const int data_size = GetSize(instruction.result_type_).first;
@@ -1051,27 +1172,27 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
         case variable_select_vv_: {
           const auto size = GetSize(instruction.result_type_).first;
           remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_),
-              instruction.result_type_->basic_type == pointer_type);
+              instruction.result_type_->basic_type == pointer_type, true);
           break;
         }
         case builtin_call_: {
           if (instruction.function_name_ == 2) {
             const auto size = GetSize(instruction.result_type_).first;
             remember_stack_var(instruction.result_id_, size, GetAlignment(instruction.result_type_),
-                instruction.result_type_->basic_type == pointer_type);
+                instruction.result_type_->basic_type == pointer_type, true);
           }
           break;
         }
         case ptr_load_:
         case get_element_ptr_by_value_:
         case get_element_ptr_by_variable_: {
-          remember_stack_var(instruction.result_id_, 8, 8, true);
+          remember_stack_var(instruction.result_id_, 8, 8, true, true);
           break;
         }
         case two_var_icmp_:
         case var_const_icmp_:
         case const_var_icmp_: {
-          remember_stack_var(instruction.result_id_, 1, 1, false);
+          remember_stack_var(instruction.result_id_, 1, 1, false, true);
           break;
         }
         default:
@@ -1081,7 +1202,7 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     for (const auto &mv_instruction : riscv_func.blocks_[block_id].move_instructions_) {
       const auto size = GetSize(mv_instruction.type_).first;
       remember_stack_var(mv_instruction.dest_, size, GetAlignment(mv_instruction.type_),
-          mv_instruction.type_->basic_type == pointer_type);
+          mv_instruction.type_->basic_type == pointer_type, true);
     }
   }
 
@@ -1130,10 +1251,61 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   };
   std::sort(slot_ids.begin(), slot_ids.end(), hotter_slot_first);
 
+  auto intervals_overlap = [](const SlotLifetime &lhs, const SlotLifetime &rhs) {
+    return lhs.first <= rhs.last && rhs.first <= lhs.last;
+  };
+  std::vector<OverlayInterval> overlay_intervals;
+  auto find_overlay_offset = [&](const int var_id, const StackSlot &slot) {
+    if (!slot.overlay_eligible || !lifetimes.contains(var_id)) {
+      return -1;
+    }
+    const SlotLifetime &life = lifetimes[var_id];
+    std::set<int> checked_offsets;
+    for (const auto &interval : overlay_intervals) {
+      if (checked_offsets.contains(interval.offset)) continue;
+      checked_offsets.insert(interval.offset);
+      if (interval.offset % slot.alignment != 0) continue;
+      if (slot.size > interval.size) continue;
+      bool has_overlap = false;
+      for (const auto &other : overlay_intervals) {
+        if (other.offset == interval.offset &&
+            intervals_overlap(life, {other.first, other.last})) {
+          has_overlap = true;
+          break;
+        }
+      }
+      if (has_overlap) continue;
+      return interval.offset;
+    }
+    return -1;
+  };
+  auto remember_overlay = [&](const int var_id, const StackSlot &slot, const int slot_offset) {
+    if (!slot.overlay_eligible || !lifetimes.contains(var_id)) {
+      return;
+    }
+    const SlotLifetime life = lifetimes[var_id];
+    int overlay_size = slot.size;
+    for (const auto &interval : overlay_intervals) {
+      if (interval.offset == slot_offset) {
+        overlay_size = interval.size;
+        break;
+      }
+    }
+    overlay_intervals.push_back({life.first, life.last, slot_offset, overlay_size});
+  };
+
   auto place_stack_slot = [&](int var_id) {
     const auto &slot = stack_slots[var_id];
+    const int overlay_offset = find_overlay_offset(var_id, slot);
+    if (overlay_offset != -1) {
+      riscv_func.location_[var_id].second = overlay_offset;
+      remember_overlay(var_id, slot, overlay_offset);
+      placed_slots.insert(var_id);
+      return;
+    }
     offset = AlignUp(offset, slot.alignment);
     riscv_func.location_[var_id].second = offset;
+    remember_overlay(var_id, slot, offset);
     offset += slot.size;
     placed_slots.insert(var_id);
   };
