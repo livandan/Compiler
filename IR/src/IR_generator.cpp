@@ -496,53 +496,84 @@ bool IsInlineSafeInstruction(const IRInstruction &instruction) {
   }
 }
 
-bool IsShortInlineCandidate(const IRFunctionNode &function, const int function_id) {
+struct InlineCandidateInfo {
+  bool eligible = false;
+  bool is_single_block = false;
+  int instruction_count = 0;
+  int block_count = 0;
+  int conditional_branch_count = 0;
+};
+
+InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
+  InlineCandidateInfo info;
+  info.block_count = static_cast<int>(function.blocks_.size());
   if (!IsScalarIRType(function.return_type_)) {
-    return false;
+    return info;
   }
   for (const auto &type : function.parameter_types_) {
     if (!IsScalarIRType(type) || type->basic_type == unit_type) {
-      return false;
+      return info;
     }
   }
-  if (function.blocks_.size() != 1 || HasCFGCycle(function)) {
-    return false;
+  if (function.blocks_.empty() || HasCFGCycle(function)) {
+    return info;
   }
 
-  int instruction_count = static_cast<int>(function.alloca_instructions_.size());
+  info.instruction_count = static_cast<int>(function.alloca_instructions_.size());
   int return_count = 0;
+  const int entry_block = function.blocks_.begin()->first;
   for (const auto &alloca : function.alloca_instructions_) {
     if (!IsScalarIRType(alloca.result_type_) || alloca.result_type_->basic_type == unit_type) {
-      return false;
+      return info;
     }
   }
   for (const auto &[block_id, block] : function.blocks_) {
-    if (!block.phi_instructions_.empty() || block.instructions_.empty()) {
-      return false;
+    if (block.instructions_.empty()) {
+      return info;
+    }
+    if (block_id == entry_block && !block.phi_instructions_.empty()) {
+      return info;
+    }
+    for (const auto &phi : block.phi_instructions_) {
+      if (!IsScalarIRType(phi.type) || phi.type->basic_type == unit_type) {
+        return info;
+      }
+      ++info.instruction_count;
     }
     for (int i = 0; i < static_cast<int>(block.instructions_.size()); ++i) {
       const auto &instruction = block.instructions_[i];
       if (!IsInlineSafeInstruction(instruction)) {
-        return false;
+        return info;
       }
       if (instruction.instruction_type_ == non_void_call_ ||
           instruction.instruction_type_ == void_call_ ||
           instruction.instruction_type_ == builtin_call_) {
-        return false;
+        return info;
       }
       if (IsInlineTerminator(instruction.instruction_type_) &&
           i + 1 != static_cast<int>(block.instructions_.size())) {
-        return false;
+        return info;
+      }
+      if (instruction.instruction_type_ == conditional_br_) {
+        ++info.conditional_branch_count;
       }
       if (instruction.instruction_type_ == variable_ret_ ||
           instruction.instruction_type_ == value_ret_ ||
           instruction.instruction_type_ == void_ret_) {
         ++return_count;
       }
-      ++instruction_count;
+      ++info.instruction_count;
     }
   }
-  return return_count == 1 && instruction_count <= 12;
+  if (return_count != 1) {
+    return info;
+  }
+
+  info.is_single_block = info.block_count == 1;
+  info.eligible = (info.is_single_block && info.instruction_count <= 12) ||
+      (!info.is_single_block && info.block_count <= 4 &&
+       info.conditional_branch_count <= 1 && info.instruction_count <= 16);
+  return info;
 }
 
 std::map<int, int> CountFunctionCalls(const std::vector<IRFunctionNode> &functions) {
@@ -558,6 +589,51 @@ std::map<int, int> CountFunctionCalls(const std::vector<IRFunctionNode> &functio
     }
   }
   return call_count;
+}
+
+int CountFunctionInstructions(const IRFunctionNode &function) {
+  int instruction_count = static_cast<int>(function.alloca_instructions_.size());
+  for (const auto &[block_id, block] : function.blocks_) {
+    instruction_count += static_cast<int>(block.phi_instructions_.size());
+    instruction_count += static_cast<int>(block.instructions_.size());
+  }
+  return instruction_count;
+}
+
+int CountCallsInFunction(const IRFunctionNode &function) {
+  int call_count = 0;
+  for (const auto &[block_id, block] : function.blocks_) {
+    for (const auto &instruction : block.instructions_) {
+      if (instruction.instruction_type_ == non_void_call_ ||
+          instruction.instruction_type_ == void_call_) {
+        ++call_count;
+      }
+    }
+  }
+  return call_count;
+}
+
+bool ShouldInlineCall(const IRFunctionNode &caller, const int caller_id,
+    const int main_function_id, const InlineCandidateInfo &callee_info,
+    const int total_callee_call_count) {
+  if (!callee_info.eligible) {
+    return false;
+  }
+  if (callee_info.is_single_block) {
+    return total_callee_call_count == 1 || callee_info.instruction_count <= 12;
+  }
+
+  const int caller_instruction_count = CountFunctionInstructions(caller);
+  if (total_callee_call_count == 1 && caller_instruction_count <= 80) {
+    return true;
+  }
+
+  const bool small_wrapper = caller_id != main_function_id &&
+      !HasCFGCycle(caller) &&
+      caller.blocks_.size() <= 2 &&
+      caller_instruction_count <= 48 &&
+      CountCallsInFunction(caller) <= 2;
+  return small_wrapper && callee_info.instruction_count <= 16;
 }
 
 } // namespace
@@ -1090,18 +1166,19 @@ void IRVisitor::OptimizeShortFunctions() {
   do {
     changed = false;
     ++inline_rounds;
-    const auto call_count = CountFunctionCalls(functions_);
-    std::set<int> inline_candidates;
+    const auto function_call_count = CountFunctionCalls(functions_);
+    std::map<int, InlineCandidateInfo> inline_candidates;
     for (int func_id = 0; func_id < static_cast<int>(functions_.size()); ++func_id) {
       if (func_id == main_function_id_) {
         continue;
       }
-      const auto call_it = call_count.find(func_id);
-      if (call_it == call_count.end() || call_it->second == 0) {
+      const auto call_it = function_call_count.find(func_id);
+      if (call_it == function_call_count.end() || call_it->second == 0) {
         continue;
       }
-      if (IsShortInlineCandidate(functions_[func_id], func_id)) {
-        inline_candidates.insert(func_id);
+      auto info = AnalyzeInlineCandidate(functions_[func_id]);
+      if (info.eligible) {
+        inline_candidates[func_id] = info;
       }
     }
     if (inline_candidates.empty()) {
@@ -1281,6 +1358,21 @@ void IRVisitor::OptimizeShortFunctions() {
             if (target_block_id != current_block_id) {
               target_block = IRBlock();
             }
+            if (callee_block_id != callee_entry) {
+              for (const auto &phi : callee_block.phi_instructions_) {
+                PhiInstruction mapped_phi(map_var(phi.result_id), phi.type);
+                for (const auto &condition : phi.conditions) {
+                  if (condition.is_const) {
+                    mapped_phi.conditions.push_back(PhiCondition(
+                        block_map.at(condition.from_block_id), true, condition.value, -1));
+                  } else {
+                    mapped_phi.conditions.push_back(PhiCondition(
+                        block_map.at(condition.from_block_id), false, 0, map_var(condition.var_id)));
+                  }
+                }
+                target_block.phi_instructions_.push_back(mapped_phi);
+              }
+            }
             for (const auto &instruction : callee_block.instructions_) {
               if (instruction.instruction_type_ == value_ret_) {
                 if (call_instruction.instruction_type_ == non_void_call_) {
@@ -1314,11 +1406,17 @@ void IRVisitor::OptimizeShortFunctions() {
               instruction.function_name_ != caller_id &&
               inline_candidates.contains(instruction.function_name_)) {
             const auto &callee = functions_[instruction.function_name_];
+            const auto call_count_it = function_call_count.find(instruction.function_name_);
+            const int callee_call_count = (call_count_it == function_call_count.end()) ? 0 :
+                call_count_it->second;
+            const auto &candidate_info = inline_candidates.at(instruction.function_name_);
             if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
                 ((instruction.instruction_type_ == non_void_call_ &&
                   callee.return_type_->basic_type != unit_type) ||
                  (instruction.instruction_type_ == void_call_ &&
-                  callee.return_type_->basic_type == unit_type))) {
+                  callee.return_type_->basic_type == unit_type)) &&
+                ShouldInlineCall(caller, caller_id, main_function_id_, candidate_info,
+                    callee_call_count)) {
               inline_call(instruction);
               block_changed = true;
               changed = true;
