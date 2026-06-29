@@ -4,6 +4,7 @@
 #include "statements.h"
 #include "fstream"
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
@@ -14,6 +15,10 @@ void IRThrow(const std::string &err_info) {
 }
 
 namespace {
+
+constexpr int kInlineInstructionLimit = 32;
+constexpr int kMaxInlineRounds = 3;
+constexpr int kMaxInlineCallerInstructions = 900;
 
 void AddUse(std::map<int, int> &use_count, const int var_id) {
   if (var_id >= 0) {
@@ -479,9 +484,14 @@ bool IsInlineSafeInstruction(const IRInstruction &instruction) {
     case variable_store_:
     case value_store_:
     case ptr_store_:
+    case get_element_ptr_by_value_:
+    case get_element_ptr_by_variable_:
     case two_var_icmp_:
     case var_const_icmp_:
     case const_var_icmp_:
+    case non_void_call_:
+    case void_call_:
+    case builtin_call_:
     case value_select_ii_:
     case value_select_iv_:
     case value_select_vi_:
@@ -490,6 +500,8 @@ bool IsInlineSafeInstruction(const IRInstruction &instruction) {
     case variable_select_iv_:
     case variable_select_vi_:
     case variable_select_vv_:
+    case builtin_memset_:
+    case builtin_memcpy_:
       return true;
     default:
       return false;
@@ -498,10 +510,8 @@ bool IsInlineSafeInstruction(const IRInstruction &instruction) {
 
 struct InlineCandidateInfo {
   bool eligible = false;
-  bool is_single_block = false;
   int instruction_count = 0;
   int block_count = 0;
-  int conditional_branch_count = 0;
 };
 
 InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
@@ -515,7 +525,7 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
       return info;
     }
   }
-  if (function.blocks_.empty() || HasCFGCycle(function)) {
+  if (function.blocks_.empty()) {
     return info;
   }
 
@@ -523,7 +533,7 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
   int return_count = 0;
   const int entry_block = function.blocks_.begin()->first;
   for (const auto &alloca : function.alloca_instructions_) {
-    if (!IsScalarIRType(alloca.result_type_) || alloca.result_type_->basic_type == unit_type) {
+    if (alloca.result_type_ == nullptr || alloca.result_type_->basic_type == unit_type) {
       return info;
     }
   }
@@ -545,17 +555,9 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
       if (!IsInlineSafeInstruction(instruction)) {
         return info;
       }
-      if (instruction.instruction_type_ == non_void_call_ ||
-          instruction.instruction_type_ == void_call_ ||
-          instruction.instruction_type_ == builtin_call_) {
-        return info;
-      }
       if (IsInlineTerminator(instruction.instruction_type_) &&
           i + 1 != static_cast<int>(block.instructions_.size())) {
         return info;
-      }
-      if (instruction.instruction_type_ == conditional_br_) {
-        ++info.conditional_branch_count;
       }
       if (instruction.instruction_type_ == variable_ret_ ||
           instruction.instruction_type_ == value_ret_ ||
@@ -569,11 +571,79 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
     return info;
   }
 
-  info.is_single_block = info.block_count == 1;
-  info.eligible = (info.is_single_block && info.instruction_count <= 12) ||
-      (!info.is_single_block && info.block_count <= 4 &&
-       info.conditional_branch_count <= 1 && info.instruction_count <= 16);
+  info.eligible = info.instruction_count <= kInlineInstructionLimit;
   return info;
+}
+
+std::vector<std::set<int>> BuildFunctionCallGraph(const std::vector<IRFunctionNode> &functions) {
+  std::vector<std::set<int>> graph(functions.size());
+  for (int func_id = 0; func_id < static_cast<int>(functions.size()); ++func_id) {
+    for (const auto &[block_id, block] : functions[func_id].blocks_) {
+      for (const auto &instruction : block.instructions_) {
+        if ((instruction.instruction_type_ == non_void_call_ ||
+             instruction.instruction_type_ == void_call_) &&
+            instruction.function_name_ >= 0 &&
+            instruction.function_name_ < static_cast<int>(functions.size())) {
+          graph[func_id].insert(instruction.function_name_);
+        }
+      }
+    }
+  }
+  return graph;
+}
+
+std::set<int> FindRecursiveCallChainFunctions(const std::vector<IRFunctionNode> &functions) {
+  const auto graph = BuildFunctionCallGraph(functions);
+  std::vector<int> index(functions.size(), -1);
+  std::vector<int> lowlink(functions.size(), 0);
+  std::vector<int> stack;
+  std::vector<bool> on_stack(functions.size(), false);
+  std::set<int> recursive_functions;
+  int next_index = 0;
+
+  std::function<void(int)> strong_connect = [&](const int func_id) {
+    index[func_id] = next_index;
+    lowlink[func_id] = next_index;
+    ++next_index;
+    stack.push_back(func_id);
+    on_stack[func_id] = true;
+
+    for (const int callee_id : graph[func_id]) {
+      if (index[callee_id] == -1) {
+        strong_connect(callee_id);
+        lowlink[func_id] = std::min(lowlink[func_id], lowlink[callee_id]);
+      } else if (on_stack[callee_id]) {
+        lowlink[func_id] = std::min(lowlink[func_id], index[callee_id]);
+      }
+    }
+
+    if (lowlink[func_id] != index[func_id]) {
+      return;
+    }
+
+    std::vector<int> component;
+    int member_id = -1;
+    do {
+      member_id = stack.back();
+      stack.pop_back();
+      on_stack[member_id] = false;
+      component.push_back(member_id);
+    } while (member_id != func_id);
+
+    const bool is_recursive_component =
+        component.size() > 1 ||
+        (component.size() == 1 && graph[component.front()].contains(component.front()));
+    if (is_recursive_component) {
+      recursive_functions.insert(component.begin(), component.end());
+    }
+  };
+
+  for (int func_id = 0; func_id < static_cast<int>(functions.size()); ++func_id) {
+    if (index[func_id] == -1) {
+      strong_connect(func_id);
+    }
+  }
+  return recursive_functions;
 }
 
 std::map<int, int> CountFunctionCalls(const std::vector<IRFunctionNode> &functions) {
@@ -591,6 +661,12 @@ std::map<int, int> CountFunctionCalls(const std::vector<IRFunctionNode> &functio
   return call_count;
 }
 
+void EnsureNextIdPastBlockLabels(IRFunctionNode &function) {
+  for (const auto &[block_id, block] : function.blocks_) {
+    function.var_id_ = std::max(function.var_id_, block_id + 1);
+  }
+}
+
 int CountFunctionInstructions(const IRFunctionNode &function) {
   int instruction_count = static_cast<int>(function.alloca_instructions_.size());
   for (const auto &[block_id, block] : function.blocks_) {
@@ -598,42 +674,6 @@ int CountFunctionInstructions(const IRFunctionNode &function) {
     instruction_count += static_cast<int>(block.instructions_.size());
   }
   return instruction_count;
-}
-
-int CountCallsInFunction(const IRFunctionNode &function) {
-  int call_count = 0;
-  for (const auto &[block_id, block] : function.blocks_) {
-    for (const auto &instruction : block.instructions_) {
-      if (instruction.instruction_type_ == non_void_call_ ||
-          instruction.instruction_type_ == void_call_) {
-        ++call_count;
-      }
-    }
-  }
-  return call_count;
-}
-
-bool ShouldInlineCall(const IRFunctionNode &caller, const int caller_id,
-    const int main_function_id, const InlineCandidateInfo &callee_info,
-    const int total_callee_call_count) {
-  if (!callee_info.eligible) {
-    return false;
-  }
-  if (callee_info.is_single_block) {
-    return total_callee_call_count == 1 || callee_info.instruction_count <= 12;
-  }
-
-  const int caller_instruction_count = CountFunctionInstructions(caller);
-  if (total_callee_call_count == 1 && caller_instruction_count <= 80) {
-    return true;
-  }
-
-  const bool small_wrapper = caller_id != main_function_id &&
-      !HasCFGCycle(caller) &&
-      caller.blocks_.size() <= 2 &&
-      caller_instruction_count <= 48 &&
-      CountCallsInFunction(caller) <= 2;
-  return small_wrapper && callee_info.instruction_count <= 16;
 }
 
 } // namespace
@@ -1167,9 +1207,11 @@ void IRVisitor::OptimizeShortFunctions() {
     changed = false;
     ++inline_rounds;
     const auto function_call_count = CountFunctionCalls(functions_);
+    const auto recursive_call_chain_functions = FindRecursiveCallChainFunctions(functions_);
     std::map<int, InlineCandidateInfo> inline_candidates;
     for (int func_id = 0; func_id < static_cast<int>(functions_.size()); ++func_id) {
-      if (func_id == main_function_id_) {
+      if (func_id == main_function_id_ ||
+          recursive_call_chain_functions.contains(func_id)) {
         continue;
       }
       const auto call_it = function_call_count.find(func_id);
@@ -1187,6 +1229,7 @@ void IRVisitor::OptimizeShortFunctions() {
 
     for (int caller_id = 0; caller_id < static_cast<int>(functions_.size()); ++caller_id) {
       auto &caller = functions_[caller_id];
+      EnsureNextIdPastBlockLabels(caller);
       std::vector<int> original_block_ids;
       original_block_ids.reserve(caller.blocks_.size());
       for (const auto &[block_id, block] : caller.blocks_) {
@@ -1196,6 +1239,9 @@ void IRVisitor::OptimizeShortFunctions() {
       for (const int original_block_id : original_block_ids) {
         auto original_it = caller.blocks_.find(original_block_id);
         if (original_it == caller.blocks_.end()) {
+          continue;
+        }
+        if (CountFunctionInstructions(caller) > kMaxInlineCallerInstructions) {
           continue;
         }
         const IRBlock original_block = original_it->second;
@@ -1251,9 +1297,12 @@ void IRVisitor::OptimizeShortFunctions() {
 
           std::map<int, int> block_map;
           const int callee_entry = callee.blocks_.begin()->first;
+          const int inline_entry_block_id = caller.var_id_++;
+          caller.blocks_[inline_entry_block_id] = IRBlock();
+          current_block->AddUnconditionalBranch(inline_entry_block_id);
           for (const auto &[callee_block_id, block] : callee.blocks_) {
             block_map[callee_block_id] =
-                (callee_block_id == callee_entry) ? current_block_id : caller.var_id_++;
+                (callee_block_id == callee_entry) ? inline_entry_block_id : caller.var_id_++;
           }
           const int after_block_id = caller.var_id_++;
 
@@ -1306,6 +1355,31 @@ void IRVisitor::OptimizeShortFunctions() {
                 instruction.result_id_ = map_var(instruction.result_id_);
                 instruction.pointer_ = map_var(instruction.pointer_);
                 break;
+              case get_element_ptr_by_value_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.pointer_ = map_var(instruction.pointer_);
+                break;
+              case get_element_ptr_by_variable_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                instruction.pointer_ = map_var(instruction.pointer_);
+                instruction.index_ = map_var(instruction.index_);
+                break;
+              case non_void_call_:
+              case builtin_call_:
+                instruction.result_id_ = map_var(instruction.result_id_);
+                for (auto &argument : instruction.function_call_arguments_) {
+                  if (argument.is_variable_) {
+                    argument.value_ = map_var(argument.value_);
+                  }
+                }
+                break;
+              case void_call_:
+                for (auto &argument : instruction.function_call_arguments_) {
+                  if (argument.is_variable_) {
+                    argument.value_ = map_var(argument.value_);
+                  }
+                }
+                break;
               case value_store_:
                 instruction.pointer_ = map_var(instruction.pointer_);
                 break;
@@ -1344,6 +1418,13 @@ void IRVisitor::OptimizeShortFunctions() {
               case variable_select_vv_:
                 instruction.result_id_ = map_var(instruction.result_id_);
                 instruction.condition_id_ = map_var(instruction.condition_id_);
+                break;
+              case builtin_memset_:
+                instruction.pointer_ = map_var(instruction.pointer_);
+                break;
+              case builtin_memcpy_:
+                instruction.destination_ = map_var(instruction.destination_);
+                instruction.pointer_ = map_var(instruction.pointer_);
                 break;
               default:
                 break;
@@ -1406,17 +1487,13 @@ void IRVisitor::OptimizeShortFunctions() {
               instruction.function_name_ != caller_id &&
               inline_candidates.contains(instruction.function_name_)) {
             const auto &callee = functions_[instruction.function_name_];
-            const auto call_count_it = function_call_count.find(instruction.function_name_);
-            const int callee_call_count = (call_count_it == function_call_count.end()) ? 0 :
-                call_count_it->second;
             const auto &candidate_info = inline_candidates.at(instruction.function_name_);
             if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
                 ((instruction.instruction_type_ == non_void_call_ &&
                   callee.return_type_->basic_type != unit_type) ||
                  (instruction.instruction_type_ == void_call_ &&
                   callee.return_type_->basic_type == unit_type)) &&
-                ShouldInlineCall(caller, caller_id, main_function_id_, candidate_info,
-                    callee_call_count)) {
+                candidate_info.eligible) {
               inline_call(instruction);
               block_changed = true;
               changed = true;
@@ -1436,7 +1513,7 @@ void IRVisitor::OptimizeShortFunctions() {
         }
       }
     }
-  } while (changed && inline_rounds < 3);
+  } while (changed && inline_rounds < kMaxInlineRounds);
 }
 
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
