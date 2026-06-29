@@ -416,7 +416,7 @@ void RegisterAllocator::LimitRegisterAllocationCandidates() {
   // liveness and interference are proportional to the number of tracked SSA
   // temporaries.  Still allocate registers, but only for the best scalar
   // candidates; all other values keep their existing stack homes.
-  constexpr int kMaxCandidates = 4096;
+  constexpr int kMaxCandidates = 81920;
   std::vector<int> score(max_var_id_ + 1, 0);
   auto add_use_score = [&](int id, int amount = 1) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
