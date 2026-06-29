@@ -118,12 +118,14 @@ private:
   std::vector<int> allocatable_nodes_;
   std::vector<long long> spill_cost_;
 
-  // ---- Interference graph: adjacency lists ----
+  // ---- Interference graph ----
   std::vector<std::vector<int>> interference_;
-  // Used only while initially building interference_ to avoid inserting the
-  // same edge many times before the final adjacency-list cleanup.
+  // Authoritative membership matrix. Coalescing keeps this current and may
+  // leave stale entries in interference_ to avoid linear vector erases.
   std::vector<std::vector<uint64_t>> interference_bits_;
   std::vector<std::vector<int>> move_edges_;
+  // Authoritative move-edge membership. move_edges_ is build-order metadata;
+  // mutation-heavy coloring paths use this bitset.
   std::vector<std::vector<uint64_t>> move_edge_bits_;
 
   // ---- Chaitin-Briggs worklists (bitsets + plain vectors) ----

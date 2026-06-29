@@ -150,6 +150,39 @@ long long MonotonicMillis() {
   return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
+template <typename Fn>
+void ForEachSetBit(const std::vector<uint64_t> &bits, const int max_id,
+                   const Fn &fn) {
+  for (int w = 0; w < static_cast<int>(bits.size()); ++w) {
+    uint64_t word = bits[w];
+    while (word) {
+      const int bit = __builtin_ctzll(word);
+      const int id = w * 64 + bit;
+      if (id <= max_id) {
+        fn(id);
+      }
+      word &= word - 1;
+    }
+  }
+}
+
+template <typename Fn>
+bool ForEachSetBitUntil(const std::vector<uint64_t> &bits, const int max_id,
+                        const Fn &fn) {
+  for (int w = 0; w < static_cast<int>(bits.size()); ++w) {
+    uint64_t word = bits[w];
+    while (word) {
+      const int bit = __builtin_ctzll(word);
+      const int id = w * 64 + bit;
+      if (id <= max_id && !fn(id)) {
+        return false;
+      }
+      word &= word - 1;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
@@ -1188,20 +1221,16 @@ void RegisterAllocator::RemoveMoveEdge(int lhs, int rhs) {
   BitClear(move_edge_bits_[lhs], rhs);
   BitClear(move_edge_bits_[rhs], lhs);
 
-  auto &lhs_moves = move_edges_[lhs];
-  lhs_moves.erase(std::remove(lhs_moves.begin(), lhs_moves.end(), rhs),
-                  lhs_moves.end());
-  auto &rhs_moves = move_edges_[rhs];
-  rhs_moves.erase(std::remove(rhs_moves.begin(), rhs_moves.end(), lhs),
-                  rhs_moves.end());
-
   RefreshMoveRelated(lhs);
   RefreshMoveRelated(rhs);
 }
 
 void RegisterAllocator::RemoveAllMoveEdges(int node) {
   if (node <= 0 || node > max_var_id_) return;
-  auto neighbors = move_edges_[node];
+  std::vector<int> neighbors;
+  ForEachSetBit(move_edge_bits_[node], max_var_id_, [&](int neighbor) {
+    neighbors.push_back(neighbor);
+  });
   for (int neighbor : neighbors) {
     RemoveMoveEdge(node, neighbor);
   }
@@ -1209,14 +1238,9 @@ void RegisterAllocator::RemoveAllMoveEdges(int node) {
 
 bool RegisterAllocator::HasActiveMoveEdge(int node) const {
   if (node <= 0 || node > max_var_id_) return false;
-  for (int neighbor : move_edges_[node]) {
-    if (neighbor > 0 && neighbor <= max_var_id_ &&
-        BitTest(in_worklist_, neighbor) &&
-        BitTest(move_edge_bits_[node], neighbor)) {
-      return true;
-    }
-  }
-  return false;
+  return !ForEachSetBitUntil(move_edge_bits_[node], max_var_id_, [&](int neighbor) {
+    return !BitTest(in_worklist_, neighbor);
+  });
 }
 
 void RegisterAllocator::RefreshMoveRelated(int node) {
@@ -1232,9 +1256,11 @@ void RegisterAllocator::RefreshMoveRelated(int node) {
 void RegisterAllocator::RecomputeCurrentDegree(int node) {
   if (node <= 0 || node > max_var_id_ || !BitTest(in_worklist_, node)) return;
   int degree = 0;
-  for (int neighbor : interference_[node]) {
-    if (BitTest(in_worklist_, neighbor)) ++degree;
-  }
+  ForEachSetBit(interference_bits_[node], max_var_id_, [&](int neighbor) {
+    if (BitTest(in_worklist_, neighbor)) {
+      ++degree;
+    }
+  });
   current_degree_[node] = degree;
 }
 
@@ -1248,11 +1274,11 @@ int RegisterAllocator::GetDegree(int node) const {
 
 int RegisterAllocator::GetSignificantDegree(int node, int k) const {
   int count = 0;
-  for (int neighbor : interference_[node]) {
+  ForEachSetBit(interference_bits_[node], max_var_id_, [&](int neighbor) {
     if (BitTest(in_worklist_, neighbor) && current_degree_[neighbor] >= k) {
       ++count;
     }
-  }
+  });
   return count;
 }
 
@@ -1273,17 +1299,13 @@ void RegisterAllocator::ColorGraph() {
   for (int v : allocatable_nodes_) {
     if (BitTest(in_worklist_, v)) {
       ++active_nodes;
-      int deg = 0;
-      for (int neighbor : interference_[v]) {
-        if (BitTest(in_worklist_, neighbor)) ++deg;
-      }
-      current_degree_[v] = deg;
+      RecomputeCurrentDegree(v);
       RefreshMoveRelated(v);
-      for (int neighbor : move_edges_[v]) {
-        if (neighbor > v && BitTest(move_edge_bits_[v], neighbor)) {
+      ForEachSetBit(move_edge_bits_[v], max_var_id_, [&](int neighbor) {
+        if (neighbor > v) {
           ++active_move_edge_visits;
         }
-      }
+      });
     }
   }
   const bool skip_coalescing =
@@ -1344,11 +1366,11 @@ void RegisterAllocator::Simplify() {
         BitClear(in_worklist_, node);
         RemoveAllMoveEdges(node);
         // Decrement cached degree of each neighbor still in worklist.
-        for (int neighbor : interference_[node]) {
+        ForEachSetBit(interference_bits_[node], max_var_id_, [&](int neighbor) {
           if (BitTest(in_worklist_, neighbor) && current_degree_[neighbor] > 0) {
             --current_degree_[neighbor];
           }
-        }
+        });
         current_degree_[node] = -1;
       }
     }
@@ -1366,10 +1388,14 @@ bool RegisterAllocator::Coalesce() {
       continue;
     }
 
-    auto neighbors = move_edges_[u];
+    std::vector<int> neighbors;
+    ForEachSetBit(move_edge_bits_[u], max_var_id_, [&](int neighbor) {
+      neighbors.push_back(neighbor);
+    });
     for (int v : neighbors) {
       if (!BitTest(in_worklist_, v)) continue;
       if (!BitTest(move_edge_bits_[u], v)) continue;
+      if (v < u) continue;
 
       // Real interference means both values are simultaneously live and cannot
       // share a register.  Move edges alone are not interference.
@@ -1392,7 +1418,7 @@ bool RegisterAllocator::Coalesce() {
           GeorgeTest(merged, rep, K)) {
         CoalesceNodes(rep, merged);
         changed = true;
-        u = rep;
+        break;
       }
     }
   }
@@ -1402,11 +1428,10 @@ bool RegisterAllocator::Coalesce() {
 
 bool RegisterAllocator::ShouldSkipCoalescingForHugeGraph(
     int active_nodes, int active_move_edges) const {
-  (void) active_move_edges;
-  // Measured pathological case after small-function inlining:
-  // candidates=1257, phi_moves=1652, edges=176038 spent >30s in coalescing.
-  // Keep the 985-candidate / 1296-move case coalesced; it stays under budget.
-  return active_nodes >= 1200;
+  // Measured after bitset-backed coalescing:
+  // 985 candidates / 1296 moves stays under the per-test budget with coalescing;
+  // 1257 candidates / 1652 moves spends ~39s in coloring if fully coalesced.
+  return active_nodes >= 1200 && active_move_edges >= 1500;
 }
 
 bool RegisterAllocator::BriggsTest(int u, int v, int k) {
@@ -1424,28 +1449,28 @@ bool RegisterAllocator::BriggsTest(int u, int v, int k) {
     seen_epoch_[n] = epoch;
     if (BitTest(in_worklist_, n) && current_degree_[n] >= k) ++significant;
   };
-  for (int n : interference_[u]) check(n);
-  for (int n : interference_[v]) check(n);
+  ForEachSetBit(interference_bits_[u], max_var_id_, check);
+  ForEachSetBit(interference_bits_[v], max_var_id_, check);
   return significant < k;
 }
 
 bool RegisterAllocator::GeorgeTest(int u, int v, int k) const {
-  for (int t : interference_[u]) {
-    if (t == v) continue;
-    if (!BitTest(in_worklist_, t)) continue;
+  return ForEachSetBitUntil(interference_bits_[u], max_var_id_, [&](int t) {
+    if (t == v) return true;
+    if (!BitTest(in_worklist_, t)) return true;
     // Check if t already interferes with v.
-    if (HasInterference(t, v)) continue;
+    if (HasInterference(t, v)) return true;
     // Check if t has degree < k (simplifiable).
-    if (current_degree_[t] < k) continue;
+    if (current_degree_[t] < k) return true;
     return false;
-  }
-  return true;
+  });
 }
 
 void RegisterAllocator::CoalesceNodes(int u, int v) {
   // Merge v into u.
   std::vector<int> touched_nodes;
   touched_nodes.push_back(u);
+  touched_nodes.push_back(v);
 
   auto mark_touched = [&](int node) {
     if (node <= 0 || node > max_var_id_) return;
@@ -1454,7 +1479,10 @@ void RegisterAllocator::CoalesceNodes(int u, int v) {
   };
 
   // Transfer interference edges from v to u.
-  auto old_v_neighbors = interference_[v];
+  std::vector<int> old_v_neighbors;
+  ForEachSetBit(interference_bits_[v], max_var_id_, [&](int neighbor) {
+    old_v_neighbors.push_back(neighbor);
+  });
   for (int neighbor : old_v_neighbors) {
     if (neighbor != u) {
       mark_touched(neighbor);
@@ -1463,23 +1491,21 @@ void RegisterAllocator::CoalesceNodes(int u, int v) {
         BitSet(interference_bits_[u], neighbor);
         BitSet(interference_bits_[neighbor], u);
         interference_[u].push_back(neighbor);
-      }
-      // Remove v from neighbor's list
-      auto &nlist = interference_[neighbor];
-      nlist.erase(std::remove(nlist.begin(), nlist.end(), v), nlist.end());
-      if (new_rep_edge) {
-        nlist.push_back(u);
+        interference_[neighbor].push_back(u);
       }
       BitClear(interference_bits_[neighbor], v);
     }
   }
-  for (int neighbor : interference_[u]) {
+  ForEachSetBit(interference_bits_[u], max_var_id_, [&](int neighbor) {
     mark_touched(neighbor);
-  }
+  });
   interference_bits_[v] = MakeBitSet();
 
   // Transfer move edges from v to u.
-  auto old_v_moves = move_edges_[v];
+  std::vector<int> old_v_moves;
+  ForEachSetBit(move_edge_bits_[v], max_var_id_, [&](int neighbor) {
+    old_v_moves.push_back(neighbor);
+  });
   for (int neighbor : old_v_moves) {
     if (neighbor != u) {
       AddMoveEdge(u, neighbor);
@@ -1521,7 +1547,10 @@ void RegisterAllocator::Freeze() {
 
     // Freeze: convert all move edges of this node into nothing
     // (they're already interference edges, just remove the move edges).
-    auto move_neighbors = move_edges_[node]; // copy
+    std::vector<int> move_neighbors;
+    ForEachSetBit(move_edge_bits_[node], max_var_id_, [&](int neighbor) {
+      move_neighbors.push_back(neighbor);
+    });
     for (int neighbor : move_neighbors) {
       // Remove the move edge from neighbor.
       RemoveMoveEdge(node, neighbor);
@@ -1545,11 +1574,11 @@ void RegisterAllocator::SelectSpill() {
   BitClear(in_worklist_, spill_node);
   RemoveAllMoveEdges(spill_node);
   // Decrement cached degree of each neighbor still in worklist.
-  for (int neighbor : interference_[spill_node]) {
+  ForEachSetBit(interference_bits_[spill_node], max_var_id_, [&](int neighbor) {
     if (BitTest(in_worklist_, neighbor) && current_degree_[neighbor] > 0) {
       --current_degree_[neighbor];
     }
-  }
+  });
   current_degree_[spill_node] = -1;
 }
 
@@ -1598,7 +1627,7 @@ void RegisterAllocator::AssignColors() {
 
     // Find colors used by neighbors.
     std::vector<bool> used_colors(K, false);
-    for (int neighbor : interference_[node]) {
+    ForEachSetBit(interference_bits_[node], max_var_id_, [&](int neighbor) {
       if (node_color[neighbor] >= 0) {
         // Map physical register back to color index
         int reg = node_color[neighbor];
@@ -1614,7 +1643,7 @@ void RegisterAllocator::AssignColors() {
           if (allocatable_regs_[ci] == reg) { used_colors[ci] = true; break; }
         }
       }
-    }
+    });
 
     // Handle spilled nodes: try to assign a color anyway (optimistic coloring).
     int assigned_color = -1;
