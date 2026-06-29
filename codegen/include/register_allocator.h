@@ -35,6 +35,8 @@ private:
   // Coloring sub-phases
   void Simplify();
   bool Coalesce();
+  bool ShouldSkipCoalescingForHugeGraph(int active_nodes,
+                                        int active_move_edges) const;
   void Freeze();
   void SelectSpill();
   void AssignColors();
@@ -43,9 +45,16 @@ private:
   static bool IsScalarType(const std::shared_ptr<IntegratedType> &type);
   int  GetDegree(int node) const;
   int  GetSignificantDegree(int node, int k) const;
-  bool BriggsTest(int u, int v, int k) const;
+  bool BriggsTest(int u, int v, int k);
   bool GeorgeTest(int u, int v, int k) const;
   void CoalesceNodes(int u, int v);
+  bool HasInterference(int lhs, int rhs) const;
+  bool HasActiveMoveEdge(int node) const;
+  void AddMoveEdge(int lhs, int rhs);
+  void RemoveMoveEdge(int lhs, int rhs);
+  void RemoveAllMoveEdges(int node);
+  void RefreshMoveRelated(int node);
+  void RecomputeCurrentDegree(int node);
   int  SelectSpillCandidate() const;
   void UpdateLocationMap();
 
@@ -115,6 +124,7 @@ private:
   // same edge many times before the final adjacency-list cleanup.
   std::vector<std::vector<uint64_t>> interference_bits_;
   std::vector<std::vector<int>> move_edges_;
+  std::vector<std::vector<uint64_t>> move_edge_bits_;
 
   // ---- Chaitin-Briggs worklists (bitsets + plain vectors) ----
   std::vector<uint64_t> in_worklist_;
@@ -124,6 +134,8 @@ private:
   std::vector<int> select_stack_;
   std::vector<int> coalesced_rep_;      // -1 = not coalesced
   std::vector<int> assignment_;         // -2 = unassigned, -1 = spill, >=0 = phys reg
+  std::vector<int> seen_epoch_;
+  int seen_epoch_counter_ = 1;
 
   // ---- Scratch bitset reused in dataflow loop ----
   std::vector<uint64_t> scratch_bs_;

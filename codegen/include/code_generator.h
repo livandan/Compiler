@@ -2,6 +2,7 @@
 #define CODE_GENERATOR_H
 
 #include "IR_generator.h"
+#include <cstdint>
 
 enum RISCVInstructionType {
   r_none_, r_add_, r_sub_, r_and_, r_or_, r_xor_, r_sll_, r_srl_, r_sra_,
@@ -472,8 +473,11 @@ private:
   // registers that actually hold live values instead of the whole ABI set.
   void AnalyzeUsedRegisters();
   void SaveCallerRegs(int func_id, RISCVBlock &r_block);
+  void SaveCallerRegs(int func_id, RISCVBlock &r_block, std::uint32_t reg_mask);
   void SaveCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs);
   void RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg = -1);
+  void RestoreCallerRegs(int func_id, RISCVBlock &r_block, std::uint32_t reg_mask,
+      int exclude_reg = -1);
   void RestoreCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs,
       int exclude_reg = -1);
   void SaveCallerRegsToTemp(int func_id, RISCVBlock &r_block);
@@ -481,7 +485,7 @@ private:
   void SaveCalleeRegs(int func_id, RISCVBlock &r_block);
   void RestoreCalleeRegs(int func_id, RISCVBlock &r_block);
   void FlushSavedRegisters(int func_id, RISCVBlock &r_block);
-  void PeepholeOptimizeBlock(RISCVBlock &r_block, const std::set<int> &live_out_regs) const;
+  void PeepholeOptimizeBlock(RISCVBlock &r_block, std::uint32_t live_out_reg_mask) const;
   void RelaxFarBranches(int func_id);
   // Returns the set of caller-saved registers (excluding ra) that are actually
   // assigned to variables after register allocation.  Call sites always save
@@ -507,6 +511,7 @@ private:
   // Computed by AnalyzeUsedRegisters() after RA runs.
   std::vector<std::set<int>> used_callee_regs_;  // callee-saved regs assigned to variables
   std::vector<std::set<int>> used_caller_regs_;  // caller-saved regs assigned to variables
+  std::vector<std::uint32_t> used_caller_reg_masks_;
   std::vector<std::map<int, int>> reg_save_offsets_;  // [func_id][reg] -> stack offset
   std::vector<bool> registers_saved_;  // legacy guard; phase-3 call saves restore immediately
   std::vector<bool> is_leaf_;         // per-function: leaf (no calls)

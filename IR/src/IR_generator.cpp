@@ -17,8 +17,6 @@ void IRThrow(const std::string &err_info) {
 namespace {
 
 constexpr int kInlineInstructionLimit = 32;
-constexpr int kMaxInlineRounds = 3;
-constexpr int kMaxInlineCallerInstructions = 900;
 
 void AddUse(std::map<int, int> &use_count, const int var_id) {
   if (var_id >= 0) {
@@ -399,7 +397,7 @@ bool IsMemcpyForwardable(const IRInstruction &first_copy,
   return use_it != use_count.end() && use_it->second == 2;
 }
 
-bool IsScalarIRType(const std::shared_ptr<IntegratedType> &type) {
+bool IsInlineSupportedType(const std::shared_ptr<IntegratedType> &type) {
   if (type == nullptr) {
     return false;
   }
@@ -412,10 +410,28 @@ bool IsScalarIRType(const std::shared_ptr<IntegratedType> &type) {
     case enumeration_type:
     case pointer_type:
     case unit_type:
+    case array_type:
+    case struct_type:
       return true;
     default:
       return false;
   }
+}
+
+bool CallMatchesCalleeReturn(const IRInstruction &call_instruction,
+    const IRFunctionNode &callee) {
+  if (callee.return_type_ == nullptr) {
+    return false;
+  }
+  const bool aggregate_return = callee.return_type_->basic_type == array_type ||
+      callee.return_type_->basic_type == struct_type;
+  if (call_instruction.instruction_type_ == non_void_call_) {
+    return !aggregate_return && callee.return_type_->basic_type != unit_type;
+  }
+  if (call_instruction.instruction_type_ == void_call_) {
+    return aggregate_return || callee.return_type_->basic_type == unit_type;
+  }
+  return false;
 }
 
 bool IsInlineTerminator(const IRInstructionType type) {
@@ -517,11 +533,11 @@ struct InlineCandidateInfo {
 InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
   InlineCandidateInfo info;
   info.block_count = static_cast<int>(function.blocks_.size());
-  if (!IsScalarIRType(function.return_type_)) {
+  if (!IsInlineSupportedType(function.return_type_)) {
     return info;
   }
   for (const auto &type : function.parameter_types_) {
-    if (!IsScalarIRType(type) || type->basic_type == unit_type) {
+    if (!IsInlineSupportedType(type) || type->basic_type == unit_type) {
       return info;
     }
   }
@@ -533,7 +549,8 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
   int return_count = 0;
   const int entry_block = function.blocks_.begin()->first;
   for (const auto &alloca : function.alloca_instructions_) {
-    if (alloca.result_type_ == nullptr || alloca.result_type_->basic_type == unit_type) {
+    if (!IsInlineSupportedType(alloca.result_type_) ||
+        alloca.result_type_->basic_type == unit_type) {
       return info;
     }
   }
@@ -545,7 +562,7 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
       return info;
     }
     for (const auto &phi : block.phi_instructions_) {
-      if (!IsScalarIRType(phi.type) || phi.type->basic_type == unit_type) {
+      if (!IsInlineSupportedType(phi.type) || phi.type->basic_type == unit_type) {
         return info;
       }
       ++info.instruction_count;
@@ -665,15 +682,6 @@ void EnsureNextIdPastBlockLabels(IRFunctionNode &function) {
   for (const auto &[block_id, block] : function.blocks_) {
     function.var_id_ = std::max(function.var_id_, block_id + 1);
   }
-}
-
-int CountFunctionInstructions(const IRFunctionNode &function) {
-  int instruction_count = static_cast<int>(function.alloca_instructions_.size());
-  for (const auto &[block_id, block] : function.blocks_) {
-    instruction_count += static_cast<int>(block.phi_instructions_.size());
-    instruction_count += static_cast<int>(block.instructions_.size());
-  }
-  return instruction_count;
 }
 
 } // namespace
@@ -1202,13 +1210,12 @@ void IRVisitor::OptimizeAggregateCopies() {
 
 void IRVisitor::OptimizeShortFunctions() {
   bool changed = false;
-  int inline_rounds = 0;
   do {
     changed = false;
-    ++inline_rounds;
     const auto function_call_count = CountFunctionCalls(functions_);
     const auto recursive_call_chain_functions = FindRecursiveCallChainFunctions(functions_);
     std::map<int, InlineCandidateInfo> inline_candidates;
+    std::map<int, IRFunctionNode> inline_candidate_bodies;
     for (int func_id = 0; func_id < static_cast<int>(functions_.size()); ++func_id) {
       if (func_id == main_function_id_ ||
           recursive_call_chain_functions.contains(func_id)) {
@@ -1220,7 +1227,8 @@ void IRVisitor::OptimizeShortFunctions() {
       }
       auto info = AnalyzeInlineCandidate(functions_[func_id]);
       if (info.eligible) {
-        inline_candidates[func_id] = info;
+        inline_candidates.emplace(func_id, info);
+        inline_candidate_bodies.emplace(func_id, functions_[func_id]);
       }
     }
     if (inline_candidates.empty()) {
@@ -1239,9 +1247,6 @@ void IRVisitor::OptimizeShortFunctions() {
       for (const int original_block_id : original_block_ids) {
         auto original_it = caller.blocks_.find(original_block_id);
         if (original_it == caller.blocks_.end()) {
-          continue;
-        }
-        if (CountFunctionInstructions(caller) > kMaxInlineCallerInstructions) {
           continue;
         }
         const IRBlock original_block = original_it->second;
@@ -1273,7 +1278,7 @@ void IRVisitor::OptimizeShortFunctions() {
         };
 
         auto inline_call = [&](const IRInstruction &call_instruction) {
-          const auto &callee = functions_[call_instruction.function_name_];
+          const auto &callee = inline_candidate_bodies.at(call_instruction.function_name_);
           std::map<int, int> var_map;
           for (int arg_id = 0; arg_id < static_cast<int>(call_instruction.function_call_arguments_.size());
                ++arg_id) {
@@ -1486,13 +1491,10 @@ void IRVisitor::OptimizeShortFunctions() {
                instruction.instruction_type_ == void_call_) &&
               instruction.function_name_ != caller_id &&
               inline_candidates.contains(instruction.function_name_)) {
-            const auto &callee = functions_[instruction.function_name_];
+            const auto &callee = inline_candidate_bodies.at(instruction.function_name_);
             const auto &candidate_info = inline_candidates.at(instruction.function_name_);
             if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
-                ((instruction.instruction_type_ == non_void_call_ &&
-                  callee.return_type_->basic_type != unit_type) ||
-                 (instruction.instruction_type_ == void_call_ &&
-                  callee.return_type_->basic_type == unit_type)) &&
+                CallMatchesCalleeReturn(instruction, callee) &&
                 candidate_info.eligible) {
               inline_call(instruction);
               block_changed = true;
@@ -1513,7 +1515,7 @@ void IRVisitor::OptimizeShortFunctions() {
         }
       }
     }
-  } while (changed && inline_rounds < kMaxInlineRounds);
+  } while (changed);
 }
 
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,

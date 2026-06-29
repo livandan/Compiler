@@ -28,6 +28,18 @@ static bool IsCallerSavedReg(int reg) {
   return it != register_saver.end() && it->second == caller_save;
 }
 
+static std::uint32_t RegisterMask(const int reg) {
+  return reg >= 0 && reg < 32 ? (1u << reg) : 0;
+}
+
+static std::uint32_t ToRegisterMask(const std::set<int> &regs) {
+  std::uint32_t result = 0;
+  for (int reg : regs) {
+    result |= RegisterMask(reg);
+  }
+  return result;
+}
+
 static int AlignUp(int value, int alignment) {
   return (value + alignment - 1) / alignment * alignment;
 }
@@ -237,6 +249,128 @@ static std::vector<int> ComputeBlockLayout(const IRFunctionNode &function) {
     append_trace(block_id);
   }
   return layout;
+}
+
+template <typename AddDef, typename AddUse>
+static void ForEachIRDefUse(const IRInstruction &inst, AddDef add_def, AddUse add_use) {
+  switch (inst.instruction_type_) {
+    case two_var_binary_operation_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case var_const_binary_operation_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case const_var_binary_operation_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case conditional_br_:
+      add_use(inst.condition_id_);
+      break;
+    case variable_ret_:
+      add_use(inst.result_id_);
+      break;
+    case load_:
+    case ptr_load_:
+      add_use(inst.pointer_);
+      add_def(inst.result_id_);
+      break;
+    case variable_store_:
+    case ptr_store_:
+      add_use(inst.result_id_);
+      add_use(inst.pointer_);
+      break;
+    case value_store_:
+      add_use(inst.pointer_);
+      break;
+    case get_element_ptr_by_value_:
+      add_use(inst.pointer_);
+      add_def(inst.result_id_);
+      break;
+    case get_element_ptr_by_variable_:
+      add_use(inst.pointer_);
+      add_use(inst.index_);
+      add_def(inst.result_id_);
+      break;
+    case two_var_icmp_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case var_const_icmp_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case const_var_icmp_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case non_void_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      add_def(inst.result_id_);
+      break;
+    case void_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      break;
+    case builtin_call_:
+      for (const auto &arg : inst.function_call_arguments_) {
+        if (arg.is_variable_) add_use(arg.value_);
+      }
+      if (inst.function_name_ == 2) add_def(inst.result_id_);
+      break;
+    case value_select_ii_:
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_iv_:
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_vi_:
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case value_select_vv_:
+      add_def(inst.result_id_);
+      break;
+    case variable_select_ii_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_1_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_vv_:
+      add_use(inst.condition_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_iv_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_1_id_);
+      add_def(inst.result_id_);
+      break;
+    case variable_select_vi_:
+      add_use(inst.condition_id_);
+      add_use(inst.operand_2_id_);
+      add_def(inst.result_id_);
+      break;
+    case builtin_memset_:
+      add_use(inst.pointer_);
+      break;
+    case builtin_memcpy_:
+      add_use(inst.destination_);
+      add_use(inst.pointer_);
+      break;
+    default:
+      break;
+  }
 }
 
 void CodegenThrow(const std::string &err_info) {
@@ -692,186 +826,210 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     }
   }
 
-  std::map<int, std::set<int>> block_defs;
-  std::map<int, std::set<int>> block_uses;
-  std::map<int, std::set<int>> live_in;
-  std::map<int, std::set<int>> live_out;
-  auto record_use = [&](std::set<int> &defs, std::set<int> &uses, const int var_id) {
-    if (var_id > 0 && !defs.contains(var_id)) {
-      uses.insert(var_id);
+  std::map<int, int> block_index;
+  std::vector<int> block_ids;
+  block_ids.reserve(ir_func.blocks_.size());
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    block_index[block_id] = static_cast<int>(block_ids.size());
+    block_ids.push_back(block_id);
+  }
+
+  std::map<int, int> var_bit;
+  std::vector<int> bit_var;
+  auto remember_var = [&](const int var_id) {
+    if (var_id <= 0 || var_bit.contains(var_id)) {
+      return;
     }
+    var_bit[var_id] = static_cast<int>(bit_var.size());
+    bit_var.push_back(var_id);
   };
-  auto record_def = [&](std::set<int> &defs, const int var_id) {
-    if (var_id > 0) {
-      defs.insert(var_id);
-    }
-  };
-  auto record_call_argument_uses = [&](std::set<int> &defs, std::set<int> &uses,
-      const std::vector<FunctionCallArgument> &arguments) {
-    for (const auto &argument : arguments) {
-      if (argument.is_variable_) {
-        record_use(defs, uses, argument.value_);
+  for (int param = 0; param < static_cast<int>(ir_func.parameter_types_.size()); ++param) {
+    remember_var(param);
+  }
+  for (const auto &[var_id, location] : riscv_func.location_) {
+    remember_var(var_id);
+  }
+  for (const auto &instruction : ir_func.alloca_instructions_) {
+    remember_var(instruction.result_id_);
+  }
+  for (const auto &[block_id, block] : ir_func.blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
+      remember_var(phi.result_id);
+      for (const auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          remember_var(condition.var_id);
+        }
       }
+    }
+    for (const auto &instruction : block.instructions_) {
+      ForEachIRDefUse(instruction, remember_var, remember_var);
+    }
+  }
+  for (const auto &[block_id, r_block] : riscv_func.blocks_) {
+    for (const auto &mv : r_block.move_instructions_) {
+      remember_var(mv.dest_);
+      if (!mv.src_is_value_) {
+        remember_var(mv.src_);
+      }
+    }
+  }
+
+  const int block_count = static_cast<int>(block_ids.size());
+  const int bit_words = std::max(1, static_cast<int>((bit_var.size() + 63) / 64));
+  auto make_bitset = [&]() {
+    return std::vector<std::uint64_t>(bit_words, 0);
+  };
+  auto bit_set = [&](std::vector<std::uint64_t> &bits, const int bit) {
+    bits[bit >> 6] |= 1ULL << (bit & 63);
+  };
+  auto bit_clear = [&](std::vector<std::uint64_t> &bits, const int bit) {
+    bits[bit >> 6] &= ~(1ULL << (bit & 63));
+  };
+  auto bit_test = [&](const std::vector<std::uint64_t> &bits, const int bit) {
+    return (bits[bit >> 6] & (1ULL << (bit & 63))) != 0;
+  };
+  auto bit_or = [&](std::vector<std::uint64_t> &dest,
+      const std::vector<std::uint64_t> &src) {
+    for (int word = 0; word < bit_words; ++word) {
+      dest[word] |= src[word];
+    }
+  };
+  auto bit_equal = [&](const std::vector<std::uint64_t> &lhs,
+      const std::vector<std::uint64_t> &rhs) {
+    for (int word = 0; word < bit_words; ++word) {
+      if (lhs[word] != rhs[word]) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  std::vector<std::vector<std::uint64_t>> block_defs(block_count, make_bitset());
+  std::vector<std::vector<std::uint64_t>> block_uses(block_count, make_bitset());
+  std::vector<std::vector<std::uint64_t>> live_in(block_count, make_bitset());
+  std::vector<std::vector<std::uint64_t>> live_out(block_count, make_bitset());
+  std::vector<std::vector<int>> indexed_successors(block_count);
+  std::vector<std::vector<int>> predecessors(block_count);
+  auto add_successor = [&](const int from_block, const int to_block) {
+    const auto from_it = block_index.find(from_block);
+    const auto to_it = block_index.find(to_block);
+    if (from_it == block_index.end() || to_it == block_index.end()) {
+      return;
+    }
+    indexed_successors[from_it->second].push_back(to_it->second);
+    predecessors[to_it->second].push_back(from_it->second);
+  };
+  for (const auto &[block_id, succs] : successors) {
+    for (const int succ : succs) {
+      add_successor(block_id, succ);
+    }
+  }
+
+  auto set_var_bit = [&](std::vector<std::uint64_t> &bits, const int var_id) {
+    const auto it = var_bit.find(var_id);
+    if (it != var_bit.end()) {
+      bit_set(bits, it->second);
     }
   };
 
   for (const auto &[block_id, block] : ir_func.blocks_) {
-    std::set<int> defs;
-    std::set<int> uses;
-    for (const auto &instruction : block.instructions_) {
-      switch (instruction.instruction_type_) {
-        case two_var_binary_operation_:
-        case two_var_icmp_:
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case var_const_binary_operation_:
-        case var_const_icmp_:
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case const_var_binary_operation_:
-        case const_var_icmp_:
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case conditional_br_:
-          record_use(defs, uses, instruction.condition_id_);
-          break;
-        case variable_ret_:
-          record_use(defs, uses, instruction.result_id_);
-          break;
-        case load_:
-        case ptr_load_:
-          record_use(defs, uses, instruction.pointer_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case variable_store_:
-        case ptr_store_:
-          record_use(defs, uses, instruction.result_id_);
-          record_use(defs, uses, instruction.pointer_);
-          break;
-        case value_store_:
-        case builtin_memset_:
-          record_use(defs, uses, instruction.pointer_);
-          break;
-        case get_element_ptr_by_value_:
-          record_use(defs, uses, instruction.pointer_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case get_element_ptr_by_variable_:
-          record_use(defs, uses, instruction.pointer_);
-          record_use(defs, uses, instruction.index_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case non_void_call_:
-          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case void_call_:
-          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
-          break;
-        case builtin_call_:
-          record_call_argument_uses(defs, uses, instruction.function_call_arguments_);
-          if (instruction.function_name_ == 2) {
-            record_def(defs, instruction.result_id_);
-          }
-          break;
-        case value_select_ii_:
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case value_select_iv_:
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case value_select_vi_:
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case value_select_vv_:
-          record_def(defs, instruction.result_id_);
-          break;
-        case variable_select_ii_:
-          record_use(defs, uses, instruction.condition_id_);
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case variable_select_iv_:
-          record_use(defs, uses, instruction.condition_id_);
-          record_use(defs, uses, instruction.operand_1_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case variable_select_vi_:
-          record_use(defs, uses, instruction.condition_id_);
-          record_use(defs, uses, instruction.operand_2_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case variable_select_vv_:
-          record_use(defs, uses, instruction.condition_id_);
-          record_def(defs, instruction.result_id_);
-          break;
-        case builtin_memcpy_:
-          record_use(defs, uses, instruction.destination_);
-          record_use(defs, uses, instruction.pointer_);
-          break;
-        default:
-          break;
+    const int bidx = block_index[block_id];
+    auto &defs = block_defs[bidx];
+    auto &uses = block_uses[bidx];
+    auto add_use = [&](const int var_id) {
+      if (var_id <= 0) {
+        return;
       }
+      const auto var_it = var_bit.find(var_id);
+      if (var_it != var_bit.end() && !bit_test(defs, var_it->second)) {
+        bit_set(uses, var_it->second);
+      }
+    };
+    auto add_def = [&](const int var_id) {
+      if (var_id <= 0) {
+        return;
+      }
+      set_var_bit(defs, var_id);
+    };
+
+    for (const auto &instruction : block.instructions_) {
+      ForEachIRDefUse(instruction, add_def, add_use);
     }
     for (const auto &phi : block.phi_instructions_) {
-      record_def(defs, phi.result_id);
+      add_def(phi.result_id);
       for (const auto &condition : phi.conditions) {
         if (!condition.is_const) {
-          block_uses[condition.from_block_id].insert(condition.var_id);
+          const auto pred_it = block_index.find(condition.from_block_id);
+          if (pred_it != block_index.end()) {
+            set_var_bit(block_uses[pred_it->second], condition.var_id);
+          }
         }
       }
     }
-    block_uses[block_id].insert(uses.begin(), uses.end());
-    block_defs[block_id] = std::move(defs);
-    live_in[block_id] = {};
-    live_out[block_id] = {};
   }
 
   std::queue<int> live_worklist;
-  for (const auto &[block_id, block] : ir_func.blocks_) {
-    live_worklist.push(block_id);
+  std::vector<unsigned char> in_live_worklist(block_count, 0);
+  auto enqueue_live = [&](const int bidx) {
+    if (!in_live_worklist[bidx]) {
+      in_live_worklist[bidx] = 1;
+      live_worklist.push(bidx);
+    }
+  };
+  for (int bidx = 0; bidx < block_count; ++bidx) {
+    enqueue_live(bidx);
   }
   while (!live_worklist.empty()) {
-    const int block_id = live_worklist.front();
+    const int bidx = live_worklist.front();
     live_worklist.pop();
-    std::set<int> new_live_out;
-    for (int succ : successors[block_id]) {
-      new_live_out.insert(live_in[succ].begin(), live_in[succ].end());
+    in_live_worklist[bidx] = 0;
+
+    std::vector<std::uint64_t> new_live_out = make_bitset();
+    for (const int succ : indexed_successors[bidx]) {
+      bit_or(new_live_out, live_in[succ]);
     }
-    std::set<int> new_live_in = block_uses[block_id];
-    for (int id : new_live_out) {
-      if (!block_defs[block_id].contains(id)) {
-        new_live_in.insert(id);
-      }
+    std::vector<std::uint64_t> new_live_in = new_live_out;
+    for (int word = 0; word < bit_words; ++word) {
+      new_live_in[word] &= ~block_defs[bidx][word];
+      new_live_in[word] |= block_uses[bidx][word];
     }
-    if (new_live_in != live_in[block_id] || new_live_out != live_out[block_id]) {
-      live_in[block_id] = std::move(new_live_in);
-      live_out[block_id] = std::move(new_live_out);
-      for (const auto &[pred, succs] : successors) {
-        if (std::find(succs.begin(), succs.end(), block_id) != succs.end()) {
-          live_worklist.push(pred);
+    const bool live_in_changed = !bit_equal(new_live_in, live_in[bidx]);
+    const bool live_out_changed = !bit_equal(new_live_out, live_out[bidx]);
+    if (live_in_changed || live_out_changed) {
+      live_in[bidx] = std::move(new_live_in);
+      live_out[bidx] = std::move(new_live_out);
+      if (live_in_changed) {
+        for (const int pred : predecessors[bidx]) {
+          enqueue_live(pred);
         }
       }
     }
   }
 
-  std::set<int> call_crossing_vars;
+  std::vector<unsigned char> call_crossing_vars(bit_var.size(), 0);
+  auto mark_live_call_crossing = [&](const std::vector<std::uint64_t> &live,
+      const long long score) {
+    for (int word = 0; word < bit_words; ++word) {
+      std::uint64_t active = live[word];
+      while (active != 0) {
+        const int bit = word * 64 + __builtin_ctzll(active);
+        if (bit < static_cast<int>(bit_var.size())) {
+          call_crossing_vars[bit] = 1;
+          add_score(bit_var[bit], score);
+        }
+        active &= active - 1;
+      }
+    }
+  };
+
   for (const auto &[block_id, block] : ir_func.blocks_) {
-    std::set<int> live = live_out[block_id];
+    const int bidx = block_index[block_id];
+    std::vector<std::uint64_t> live = live_out[bidx];
     const auto move_it = riscv_func.blocks_.find(block_id);
     if (move_it != riscv_func.blocks_.end()) {
       for (const auto &mv : move_it->second.move_instructions_) {
         if (!mv.src_is_value_ && mv.src_ > 0) {
-          live.insert(mv.src_);
+          set_var_bit(live, mv.src_);
         }
       }
     }
@@ -884,126 +1042,25 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
           instruction.instruction_type_ == builtin_call_ ||
           instruction.instruction_type_ == builtin_memset_ ||
           instruction.instruction_type_ == builtin_memcpy_) {
-        for (int id : live) {
-          if (id > 0) {
-            call_crossing_vars.insert(id);
-            add_score(id, 10LL * weight);
-          }
-        }
+        mark_live_call_crossing(live, 10LL * weight);
       }
 
-      std::set<int> defs;
-      std::set<int> uses;
-      switch (instruction.instruction_type_) {
-        case two_var_binary_operation_:
-        case two_var_icmp_:
-          uses.insert(instruction.operand_1_id_);
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case var_const_binary_operation_:
-        case var_const_icmp_:
-          uses.insert(instruction.operand_1_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case const_var_binary_operation_:
-        case const_var_icmp_:
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case conditional_br_:
-          uses.insert(instruction.condition_id_);
-          break;
-        case variable_ret_:
-          uses.insert(instruction.result_id_);
-          break;
-        case load_:
-        case ptr_load_:
-          uses.insert(instruction.pointer_);
-          defs.insert(instruction.result_id_);
-          break;
-        case variable_store_:
-        case ptr_store_:
-          uses.insert(instruction.result_id_);
-          uses.insert(instruction.pointer_);
-          break;
-        case value_store_:
-        case builtin_memset_:
-          uses.insert(instruction.pointer_);
-          break;
-        case get_element_ptr_by_value_:
-          uses.insert(instruction.pointer_);
-          defs.insert(instruction.result_id_);
-          break;
-        case get_element_ptr_by_variable_:
-          uses.insert(instruction.pointer_);
-          uses.insert(instruction.index_);
-          defs.insert(instruction.result_id_);
-          break;
-        case non_void_call_:
-          for (const auto &arg : instruction.function_call_arguments_) {
-            if (arg.is_variable_) uses.insert(arg.value_);
-          }
-          defs.insert(instruction.result_id_);
-          break;
-        case void_call_:
-          for (const auto &arg : instruction.function_call_arguments_) {
-            if (arg.is_variable_) uses.insert(arg.value_);
-          }
-          break;
-        case builtin_call_:
-          for (const auto &arg : instruction.function_call_arguments_) {
-            if (arg.is_variable_) uses.insert(arg.value_);
-          }
-          if (instruction.function_name_ == 2) defs.insert(instruction.result_id_);
-          break;
-        case value_select_ii_:
-          uses.insert(instruction.operand_1_id_);
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case value_select_iv_:
-          uses.insert(instruction.operand_1_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case value_select_vi_:
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case value_select_vv_:
-          defs.insert(instruction.result_id_);
-          break;
-        case variable_select_ii_:
-          uses.insert(instruction.condition_id_);
-          uses.insert(instruction.operand_1_id_);
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case variable_select_iv_:
-          uses.insert(instruction.condition_id_);
-          uses.insert(instruction.operand_1_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case variable_select_vi_:
-          uses.insert(instruction.condition_id_);
-          uses.insert(instruction.operand_2_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case variable_select_vv_:
-          uses.insert(instruction.condition_id_);
-          defs.insert(instruction.result_id_);
-          break;
-        case builtin_memcpy_:
-          uses.insert(instruction.destination_);
-          uses.insert(instruction.pointer_);
-          break;
-        default:
-          break;
-      }
-      for (int def : defs) live.erase(def);
-      for (int use : uses) {
-        if (use > 0) live.insert(use);
-      }
+      ForEachIRDefUse(instruction,
+          [&](const int var_id) {
+            if (var_id <= 0) {
+              return;
+            }
+            const auto var_it = var_bit.find(var_id);
+            if (var_it != var_bit.end()) {
+              bit_clear(live, var_it->second);
+            }
+          },
+          [&](const int var_id) {
+            if (var_id <= 0) {
+              return;
+            }
+            set_var_bit(live, var_id);
+          });
     }
   }
 
@@ -1012,14 +1069,17 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     if (it == riscv_func.location_.end() || it->second.first) return;
     auto existing = stack_slots.find(var_id);
     if (existing != stack_slots.end() && existing->second.is_alloca_pointer) return;
+    const auto bit_it = var_bit.find(var_id);
     stack_slots[var_id] = {size, alignment, false, pointer_like,
-        call_crossing_vars.contains(var_id), hotness[var_id]};
+        bit_it != var_bit.end() && call_crossing_vars[bit_it->second], hotness[var_id]};
   };
 
   auto remember_alloca = [&](int var_id, int data_size, int data_alignment) {
     const auto it = riscv_func.location_.find(var_id);
     if (it == riscv_func.location_.end() || it->second.first) return;
-    stack_slots[var_id] = {8, 8, true, true, call_crossing_vars.contains(var_id),
+    const auto bit_it = var_bit.find(var_id);
+    stack_slots[var_id] = {8, 8, true, true,
+        bit_it != var_bit.end() && call_crossing_vars[bit_it->second],
         hotness[var_id] + 1000};
     payload_slots.push_back({var_id, data_size, data_alignment});
   };
@@ -1313,6 +1373,7 @@ void CodeGenerator::ValueAssignment(const int func_id, RISCVBlock &r_block, cons
 void CodeGenerator::AnalyzeUsedRegisters() {
   used_callee_regs_.resize(IR_functions_.size());
   used_caller_regs_.resize(IR_functions_.size());
+  used_caller_reg_masks_.assign(IR_functions_.size(), 0);
   for (int i = 0; i < IR_functions_.size(); ++i) {
     for (const auto &[var_id, loc] : RISCV_functions_[i].location_) {
       if (loc.first) {  // variable is in a register
@@ -1330,31 +1391,45 @@ void CodeGenerator::AnalyzeUsedRegisters() {
     // x1 (ra) is always live across calls — the `call` instruction overwrites it.
     // It is not allocatable so it will never appear in location_.  Add it unconditionally.
     used_caller_regs_[i].insert(1);
+    used_caller_reg_masks_[i] = ToRegisterMask(used_caller_regs_[i]);
   }
 }
 
 void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block) {
-  SaveCallerRegs(func_id, r_block, used_caller_regs_[func_id]);
+  SaveCallerRegs(func_id, r_block, used_caller_reg_masks_[func_id]);
 }
 
-void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs) {
-  for (int reg : regs) {
-    if (!used_caller_regs_[func_id].contains(reg)) continue;
+void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block, std::uint32_t reg_mask) {
+  reg_mask &= used_caller_reg_masks_[func_id];
+  while (reg_mask != 0) {
+    const int reg = __builtin_ctz(reg_mask);
     r_block.PushMemory_S(r_sd_, reg, RegSavedLocation(func_id, reg), 2);
+    reg_mask &= reg_mask - 1;
   }
 }
 
+void CodeGenerator::SaveCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs) {
+  SaveCallerRegs(func_id, r_block, ToRegisterMask(regs));
+}
+
 void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, int exclude_reg) {
-  RestoreCallerRegs(func_id, r_block, used_caller_regs_[func_id], exclude_reg);
+  RestoreCallerRegs(func_id, r_block, used_caller_reg_masks_[func_id], exclude_reg);
+}
+
+void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, std::uint32_t reg_mask,
+    int exclude_reg) {
+  reg_mask &= used_caller_reg_masks_[func_id];
+  reg_mask &= ~RegisterMask(exclude_reg);
+  while (reg_mask != 0) {
+    const int reg = __builtin_ctz(reg_mask);
+    r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+    reg_mask &= reg_mask - 1;
+  }
 }
 
 void CodeGenerator::RestoreCallerRegs(int func_id, RISCVBlock &r_block, const std::set<int> &regs,
     int exclude_reg) {
-  for (int reg : regs) {
-    if (reg == exclude_reg) continue;
-    if (!used_caller_regs_[func_id].contains(reg)) continue;
-    r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
-  }
+  RestoreCallerRegs(func_id, r_block, ToRegisterMask(regs), exclude_reg);
 }
 
 void CodeGenerator::FlushSavedRegisters(int func_id, RISCVBlock &r_block) {
@@ -1435,18 +1510,6 @@ static bool RegisterUsedBeforeDef(const std::vector<RISCVInstruction> &instructi
   return false;
 }
 
-static std::uint32_t RegisterMask(const int reg) {
-  return reg >= 0 && reg < 32 ? (1u << reg) : 0;
-}
-
-static std::uint32_t ToRegisterMask(const std::set<int> &regs) {
-  std::uint32_t result = 0;
-  for (int reg : regs) {
-    result |= RegisterMask(reg);
-  }
-  return result;
-}
-
 struct RegUseDefMasks {
   std::uint32_t uses = 0;
   std::uint32_t defs = 0;
@@ -1513,8 +1576,7 @@ static std::vector<RegUseDefMasks> ComputeRegUseDefMasks(
 static std::vector<std::uint32_t> ComputeRegNeededBeforeDefMasks(
     const std::vector<RISCVInstruction> &instructions,
     const std::vector<RegUseDefMasks> &reg_masks,
-    const std::set<int> &live_out_regs) {
-  const std::uint32_t live_out_mask = ToRegisterMask(live_out_regs);
+    const std::uint32_t live_out_mask) {
   std::vector<std::uint32_t> needed(instructions.size() + 1, 0);
   needed[instructions.size()] = live_out_mask;
 
@@ -1549,131 +1611,13 @@ static bool HasRestoreSavePeepholeCandidates(
 }
 
 static void CollectIRDefUse(const IRInstruction &inst, std::set<int> &defs, std::set<int> &uses) {
-  auto add_def = [&](int id) {
-    if (id > 0) defs.insert(id);
-  };
-  auto add_use = [&](int id) {
-    if (id >= 0) uses.insert(id);
-  };
-
-  switch (inst.instruction_type_) {
-    case two_var_binary_operation_:
-      add_use(inst.operand_1_id_);
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case var_const_binary_operation_:
-      add_use(inst.operand_1_id_);
-      add_def(inst.result_id_);
-      break;
-    case const_var_binary_operation_:
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case conditional_br_:
-      add_use(inst.condition_id_);
-      break;
-    case variable_ret_:
-      add_use(inst.result_id_);
-      break;
-    case load_:
-    case ptr_load_:
-      add_use(inst.pointer_);
-      add_def(inst.result_id_);
-      break;
-    case variable_store_:
-    case ptr_store_:
-      add_use(inst.result_id_);
-      add_use(inst.pointer_);
-      break;
-    case value_store_:
-      add_use(inst.pointer_);
-      break;
-    case get_element_ptr_by_value_:
-      add_use(inst.pointer_);
-      add_def(inst.result_id_);
-      break;
-    case get_element_ptr_by_variable_:
-      add_use(inst.pointer_);
-      add_use(inst.index_);
-      add_def(inst.result_id_);
-      break;
-    case two_var_icmp_:
-      add_use(inst.operand_1_id_);
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case var_const_icmp_:
-      add_use(inst.operand_1_id_);
-      add_def(inst.result_id_);
-      break;
-    case const_var_icmp_:
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case non_void_call_:
-      for (const auto &arg : inst.function_call_arguments_) {
-        if (arg.is_variable_) add_use(arg.value_);
-      }
-      add_def(inst.result_id_);
-      break;
-    case void_call_:
-      for (const auto &arg : inst.function_call_arguments_) {
-        if (arg.is_variable_) add_use(arg.value_);
-      }
-      break;
-    case builtin_call_:
-      for (const auto &arg : inst.function_call_arguments_) {
-        if (arg.is_variable_) add_use(arg.value_);
-      }
-      if (inst.function_name_ == 2) add_def(inst.result_id_);
-      break;
-    case value_select_ii_:
-      add_use(inst.operand_1_id_);
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case value_select_iv_:
-      add_use(inst.operand_1_id_);
-      add_def(inst.result_id_);
-      break;
-    case value_select_vi_:
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case value_select_vv_:
-      add_def(inst.result_id_);
-      break;
-    case variable_select_ii_:
-      add_use(inst.condition_id_);
-      add_use(inst.operand_1_id_);
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case variable_select_vv_:
-      add_use(inst.condition_id_);
-      add_def(inst.result_id_);
-      break;
-    case variable_select_iv_:
-      add_use(inst.condition_id_);
-      add_use(inst.operand_1_id_);
-      add_def(inst.result_id_);
-      break;
-    case variable_select_vi_:
-      add_use(inst.condition_id_);
-      add_use(inst.operand_2_id_);
-      add_def(inst.result_id_);
-      break;
-    case builtin_memset_:
-      add_use(inst.pointer_);
-      break;
-    case builtin_memcpy_:
-      add_use(inst.destination_);
-      add_use(inst.pointer_);
-      break;
-    default:
-      break;
-  }
+  ForEachIRDefUse(inst,
+      [&](int id) {
+        if (id > 0) defs.insert(id);
+      },
+      [&](int id) {
+        if (id >= 0) uses.insert(id);
+      });
 }
 
 static void AddIRUseCount(std::map<int, int> &use_count, const int id) {
@@ -1728,7 +1672,7 @@ static std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &
 }
 
 void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
-    const std::set<int> &live_out_regs) const {
+    const std::uint32_t live_out_reg_mask) const {
   std::vector<RISCVInstruction> optimized;
   optimized.reserve(r_block.instructions_.size());
   std::vector<char> removed_indices(r_block.instructions_.size(), 0);
@@ -1736,7 +1680,7 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
   if (HasRestoreSavePeepholeCandidates(r_block.instructions_)) {
     const auto reg_masks = ComputeRegUseDefMasks(r_block.instructions_);
     const auto reg_needed_before_def =
-        ComputeRegNeededBeforeDefMasks(r_block.instructions_, reg_masks, live_out_regs);
+        ComputeRegNeededBeforeDefMasks(r_block.instructions_, reg_masks, live_out_reg_mask);
 
     std::vector<int> pending_restore_offset(32, 0);
     std::vector<int> pending_restore_index(32, -1);
@@ -1853,7 +1797,7 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
             next.rd_ == inst.rs1_ &&
             ((next.instruction_type_ == r_add_ && next.rs1_ == inst.rd_ && next.rs2_ == 0) ||
              (next.instruction_type_ == r_mv_ && next.rs1_ == inst.rd_));
-        bool tmp_dead = !live_out_regs.contains(inst.rd_);
+        bool tmp_dead = (live_out_reg_mask & RegisterMask(inst.rd_)) == 0;
         if (is_move_back) {
           for (int j = i + 2; j < r_block.instructions_.size(); ++j) {
             const RISCVInstruction &later = r_block.instructions_[j];
@@ -2015,127 +1959,272 @@ void CodeGenerator::Generate() {
   registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
     const auto direct_branch_icmps = FindDirectBranchIcmps(IR_functions_[i]);
-    std::map<int, std::set<int>> block_defs;
-    std::map<int, std::set<int>> block_uses;
-    std::map<int, std::set<int>> live_in_vars;
-    std::map<int, std::set<int>> live_out_vars;
-    std::map<int, std::vector<int>> successors;
-    std::map<int, std::vector<int>> predecessors;
+    std::vector<int> block_ids;
+    std::map<int, int> block_index;
+    block_ids.reserve(IR_functions_[i].blocks_.size());
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
-      std::set<int> defs;
-      std::set<int> uses;
-      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size()); ++inst_index) {
-        const auto &instruction = block.instructions_[inst_index];
-        std::set<int> inst_defs;
-        std::set<int> inst_uses;
-        CollectIRDefUse(instruction, inst_defs, inst_uses);
-        for (int use : inst_uses) {
-          if (!defs.contains(use)) uses.insert(use);
-        }
-        for (int def : inst_defs) {
-          defs.insert(def);
-        }
+      block_index[block_id] = static_cast<int>(block_ids.size());
+      block_ids.push_back(block_id);
+    }
+
+    std::map<int, int> var_bit;
+    std::vector<int> bit_var;
+    auto remember_var = [&](int var_id) {
+      if (var_id < 0 || var_bit.contains(var_id)) {
+        return;
       }
+      var_bit[var_id] = static_cast<int>(bit_var.size());
+      bit_var.push_back(var_id);
+    };
+    for (int param = 0; param < static_cast<int>(IR_functions_[i].parameter_types_.size()); ++param) {
+      remember_var(param);
+    }
+    for (const auto &[var_id, location] : RISCV_functions_[i].location_) {
+      remember_var(var_id);
+    }
+    for (const auto &instruction : IR_functions_[i].alloca_instructions_) {
+      remember_var(instruction.result_id_);
+    }
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
       for (const auto &phi : block.phi_instructions_) {
-        defs.insert(phi.result_id);
+        remember_var(phi.result_id);
         for (const auto &condition : phi.conditions) {
           if (!condition.is_const) {
-            block_uses[condition.from_block_id].insert(condition.var_id);
+            remember_var(condition.var_id);
           }
         }
       }
-      for (int use : uses) {
-        block_uses[block_id].insert(use);
+      for (const auto &instruction : block.instructions_) {
+        ForEachIRDefUse(instruction, remember_var, remember_var);
       }
-      block_defs[block_id] = std::move(defs);
-      live_in_vars[block_id] = {};
-      live_out_vars[block_id] = {};
+    }
+    for (const auto &[block_id, r_block] : RISCV_functions_[i].blocks_) {
+      for (const auto &mv : r_block.move_instructions_) {
+        remember_var(mv.dest_);
+        if (!mv.src_is_value_) {
+          remember_var(mv.src_);
+        }
+      }
+    }
 
+    const int bit_words = std::max(1, static_cast<int>((bit_var.size() + 63) / 64));
+    auto make_bitset = [&]() {
+      return std::vector<std::uint64_t>(bit_words, 0);
+    };
+    auto bit_set = [&](std::vector<std::uint64_t> &bits, int bit) {
+      bits[bit >> 6] |= 1ULL << (bit & 63);
+    };
+    auto bit_clear = [&](std::vector<std::uint64_t> &bits, int bit) {
+      bits[bit >> 6] &= ~(1ULL << (bit & 63));
+    };
+    auto bit_test = [&](const std::vector<std::uint64_t> &bits, int bit) {
+      return (bits[bit >> 6] & (1ULL << (bit & 63))) != 0;
+    };
+    auto bit_or = [&](std::vector<std::uint64_t> &dest,
+        const std::vector<std::uint64_t> &src) {
+      for (int word = 0; word < bit_words; ++word) {
+        dest[word] |= src[word];
+      }
+    };
+    auto bit_equal = [&](const std::vector<std::uint64_t> &lhs,
+        const std::vector<std::uint64_t> &rhs) {
+      for (int word = 0; word < bit_words; ++word) {
+        if (lhs[word] != rhs[word]) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    const int block_count = static_cast<int>(block_ids.size());
+    std::vector<std::vector<std::uint64_t>> block_defs(block_count, make_bitset());
+    std::vector<std::vector<std::uint64_t>> block_uses(block_count, make_bitset());
+    std::vector<std::vector<std::uint64_t>> live_in_vars(block_count, make_bitset());
+    std::vector<std::vector<std::uint64_t>> live_out_vars(block_count, make_bitset());
+    std::vector<std::vector<int>> successors(block_count);
+    std::vector<std::vector<int>> predecessors(block_count);
+
+    auto add_successor = [&](int from_block, int to_block) {
+      const auto from_it = block_index.find(from_block);
+      const auto to_it = block_index.find(to_block);
+      if (from_it == block_index.end() || to_it == block_index.end()) {
+        return;
+      }
+      successors[from_it->second].push_back(to_it->second);
+      predecessors[to_it->second].push_back(from_it->second);
+    };
+
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      const int bidx = block_index[block_id];
+      auto &defs = block_defs[bidx];
+      auto &uses = block_uses[bidx];
+      auto add_use = [&](int var_id) {
+        if (var_id < 0) {
+          return;
+        }
+        const auto var_it = var_bit.find(var_id);
+        if (var_it != var_bit.end() && !bit_test(defs, var_it->second)) {
+          bit_set(uses, var_it->second);
+        }
+      };
+      auto add_def = [&](int var_id) {
+        if (var_id <= 0) {
+          return;
+        }
+        const auto var_it = var_bit.find(var_id);
+        if (var_it != var_bit.end()) {
+          bit_set(defs, var_it->second);
+        }
+      };
+
+      for (const auto &instruction : block.instructions_) {
+        ForEachIRDefUse(instruction, add_def, add_use);
+      }
+      for (const auto &phi : block.phi_instructions_) {
+        add_def(phi.result_id);
+      }
       if (!block.instructions_.empty()) {
         const auto &last = block.instructions_.back();
         if (last.instruction_type_ == conditional_br_) {
-          successors[block_id].push_back(last.if_true_);
-          successors[block_id].push_back(last.if_false_);
-          predecessors[last.if_true_].push_back(block_id);
-          predecessors[last.if_false_].push_back(block_id);
+          add_successor(block_id, last.if_true_);
+          add_successor(block_id, last.if_false_);
         } else if (last.instruction_type_ == unconditional_br_) {
-          successors[block_id].push_back(last.destination_);
-          predecessors[last.destination_].push_back(block_id);
-        }
-      }
-    }
-    std::queue<int> live_worklist;
-    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
-      live_worklist.push(block_id);
-    }
-    while (!live_worklist.empty()) {
-      const int block_id = live_worklist.front();
-      live_worklist.pop();
-      std::set<int> new_live_out;
-      for (int succ : successors[block_id]) {
-        new_live_out.insert(live_in_vars[succ].begin(), live_in_vars[succ].end());
-      }
-      std::set<int> new_live_in = block_uses[block_id];
-      for (int id : new_live_out) {
-        if (!block_defs[block_id].contains(id)) {
-          new_live_in.insert(id);
-        }
-      }
-      if (new_live_in != live_in_vars[block_id] ||
-          new_live_out != live_out_vars[block_id]) {
-        live_in_vars[block_id] = std::move(new_live_in);
-        live_out_vars[block_id] = std::move(new_live_out);
-        for (int pred : predecessors[block_id]) {
-          live_worklist.push(pred);
-        }
-      }
-    }
-    std::map<int, std::set<int>> live_out_regs;
-    for (const auto &[block_id, vars] : live_out_vars) {
-      for (int var : vars) {
-        const auto it = RISCV_functions_[i].location_.find(var);
-        if (it != RISCV_functions_[i].location_.end() && it->second.first) {
-          live_out_regs[block_id].insert(it->second.second);
+          add_successor(block_id, last.destination_);
         }
       }
     }
 
-    auto vars_to_caller_regs = [&](const std::set<int> &vars) {
-      std::set<int> regs;
-      for (int var : vars) {
-        const auto it = RISCV_functions_[i].location_.find(var);
-        if (it != RISCV_functions_[i].location_.end() && it->second.first &&
-            IsCallerSavedReg(it->second.second)) {
-          regs.insert(it->second.second);
+    for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
+      for (const auto &phi : block.phi_instructions_) {
+        for (const auto &condition : phi.conditions) {
+          if (condition.is_const) {
+            continue;
+          }
+          const auto pred_it = block_index.find(condition.from_block_id);
+          const auto var_it = var_bit.find(condition.var_id);
+          if (pred_it != block_index.end() && var_it != var_bit.end()) {
+            bit_set(block_uses[pred_it->second], var_it->second);
+          }
         }
       }
-      return regs;
+    }
+
+    std::queue<int> live_worklist;
+    std::vector<unsigned char> in_live_worklist(block_count, 0);
+    auto enqueue_live = [&](int bidx) {
+      if (!in_live_worklist[bidx]) {
+        in_live_worklist[bidx] = 1;
+        live_worklist.push(bidx);
+      }
+    };
+    for (int bidx = 0; bidx < block_count; ++bidx) {
+      enqueue_live(bidx);
+    }
+
+    while (!live_worklist.empty()) {
+      const int bidx = live_worklist.front();
+      live_worklist.pop();
+      in_live_worklist[bidx] = 0;
+
+      std::vector<std::uint64_t> new_live_out = make_bitset();
+      for (int succ : successors[bidx]) {
+        bit_or(new_live_out, live_in_vars[succ]);
+      }
+      std::vector<std::uint64_t> new_live_in = new_live_out;
+      for (int word = 0; word < bit_words; ++word) {
+        new_live_in[word] &= ~block_defs[bidx][word];
+        new_live_in[word] |= block_uses[bidx][word];
+      }
+      const bool live_in_changed = !bit_equal(new_live_in, live_in_vars[bidx]);
+      const bool live_out_changed = !bit_equal(new_live_out, live_out_vars[bidx]);
+      if (live_in_changed || live_out_changed) {
+        live_in_vars[bidx] = std::move(new_live_in);
+        live_out_vars[bidx] = std::move(new_live_out);
+        if (live_in_changed) {
+          for (int pred : predecessors[bidx]) {
+            enqueue_live(pred);
+          }
+        }
+      }
+    }
+
+    std::vector<std::uint32_t> dense_var_reg_mask(bit_var.size(), 0);
+    std::vector<std::uint32_t> dense_var_caller_reg_mask(bit_var.size(), 0);
+    for (int bit = 0; bit < static_cast<int>(bit_var.size()); ++bit) {
+      const int var = bit_var[bit];
+      const auto loc_it = RISCV_functions_[i].location_.find(var);
+      if (loc_it != RISCV_functions_[i].location_.end() && loc_it->second.first) {
+        const int reg = loc_it->second.second;
+        dense_var_reg_mask[bit] = RegisterMask(reg);
+        if (IsCallerSavedReg(reg)) {
+          dense_var_caller_reg_mask[bit] = RegisterMask(reg);
+        }
+      }
+    }
+
+    auto bits_to_reg_mask = [&](const std::vector<std::uint64_t> &bits,
+        const std::vector<std::uint32_t> &var_reg_masks) {
+      std::uint32_t mask = 0;
+      for (int word = 0; word < bit_words; ++word) {
+        std::uint64_t active = bits[word];
+        while (active != 0) {
+          const int bit = word * 64 + __builtin_ctzll(active);
+          if (bit < static_cast<int>(var_reg_masks.size())) {
+            mask |= var_reg_masks[bit];
+          }
+          active &= active - 1;
+        }
+      }
+      return mask;
     };
 
-    std::map<int, std::vector<std::set<int>>> live_after_caller_regs;
+    std::vector<std::uint32_t> live_out_reg_masks(block_count, 0);
+    for (int bidx = 0; bidx < block_count; ++bidx) {
+      live_out_reg_masks[bidx] =
+          bits_to_reg_mask(live_out_vars[bidx], dense_var_reg_mask);
+    }
+
+    std::vector<std::vector<std::uint32_t>> live_after_caller_reg_masks(block_count);
     for (const auto &[block_id, block] : IR_functions_[i].blocks_) {
-      std::set<int> live = live_out_vars[block_id];
+      const int bidx = block_index[block_id];
+      std::vector<std::uint64_t> live = live_out_vars[bidx];
       const auto move_it = RISCV_functions_[i].blocks_.find(block_id);
       if (move_it != RISCV_functions_[i].blocks_.end()) {
         for (const auto &mv : move_it->second.move_instructions_) {
           if (!mv.src_is_value_ && mv.src_ >= 0) {
-            live.insert(mv.src_);
+            const auto var_it = var_bit.find(mv.src_);
+            if (var_it != var_bit.end()) {
+              bit_set(live, var_it->second);
+            }
           }
         }
       }
 
-      auto &after = live_after_caller_regs[block_id];
+      auto &after = live_after_caller_reg_masks[bidx];
       after.resize(block.instructions_.size());
       for (int inst_index = static_cast<int>(block.instructions_.size()) - 1;
            inst_index >= 0; --inst_index) {
-        after[inst_index] = vars_to_caller_regs(live);
-        std::set<int> defs;
-        std::set<int> uses;
-        CollectIRDefUse(block.instructions_[inst_index], defs, uses);
-        for (int def : defs) {
-          live.erase(def);
-        }
-        live.insert(uses.begin(), uses.end());
+        after[inst_index] =
+            bits_to_reg_mask(live, dense_var_caller_reg_mask);
+        ForEachIRDefUse(block.instructions_[inst_index],
+            [&](int var_id) {
+              if (var_id <= 0) {
+                return;
+              }
+              const auto var_it = var_bit.find(var_id);
+              if (var_it != var_bit.end()) {
+                bit_clear(live, var_it->second);
+              }
+            },
+            [&](int var_id) {
+              if (var_id < 0) {
+                return;
+              }
+              const auto var_it = var_bit.find(var_id);
+              if (var_it != var_bit.end()) {
+                bit_set(live, var_it->second);
+              }
+            });
       }
     }
 
@@ -2153,7 +2242,7 @@ void CodeGenerator::Generate() {
       bb0.PushMemory_S(r_sd_, 31, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
     }
     FlushSavedRegisters(i, bb0);
-    PeepholeOptimizeBlock(bb0, {});
+    PeepholeOptimizeBlock(bb0, 0);
     // Build next_block_map from the final block layout so branch lowering sees
     // the same fall-throughs that Output() will emit.
     std::map<int, int> next_block_map;
@@ -2168,13 +2257,16 @@ void CodeGenerator::Generate() {
     }
 
     auto current_call_save_regs = [&](int block_id, int inst_index) {
-      std::set<int> regs = live_after_caller_regs[block_id][inst_index];
-      regs.insert(1);
-      return regs;
+      const auto block_it = block_index.find(block_id);
+      if (block_it == block_index.end()) {
+        return RegisterMask(1);
+      }
+      return live_after_caller_reg_masks[block_it->second][inst_index] |
+          RegisterMask(1);
     };
-    auto add_argument_setup_save_regs = [&](std::set<int> &regs,
+    auto add_argument_setup_save_regs = [&](std::uint32_t &regs,
         const std::vector<FunctionCallArgument> &arguments, const auto &param_pass_pos) {
-      std::set<int> modified_reg;
+      std::uint32_t modified_reg_mask = 0;
       for (int arg_id = 0; arg_id < static_cast<int>(arguments.size()); ++arg_id) {
         const auto [passed_by_reg, unused] = param_pass_pos(arg_id);
         if (passed_by_reg) {
@@ -2190,13 +2282,14 @@ void CodeGenerator::Generate() {
         }
         if (loc_it->second.first) {
           const int var_reg = loc_it->second.second;
-          if (IsCallerSavedReg(var_reg) && modified_reg.contains(var_reg)) {
-            regs.insert(var_reg);
+          if (IsCallerSavedReg(var_reg) &&
+              (modified_reg_mask & RegisterMask(var_reg)) != 0) {
+            regs |= RegisterMask(var_reg);
           }
         } else {
           const auto [data_size, need_alignment] = GetSize(arg.type_);
           if (data_size != 1 && !(data_size == 4 && need_alignment)) {
-            modified_reg.insert(used_caller_regs_[i].begin(), used_caller_regs_[i].end());
+            modified_reg_mask |= used_caller_reg_masks_[i];
           }
         }
       }
@@ -2211,21 +2304,22 @@ void CodeGenerator::Generate() {
           const auto loc_it = RISCV_functions_[i].location_.find(arg.value_);
           if (loc_it != RISCV_functions_[i].location_.end() && loc_it->second.first) {
             const int var_reg = loc_it->second.second;
-            if (IsCallerSavedReg(var_reg) && modified_reg.contains(var_reg)) {
-              regs.insert(var_reg);
+            if (IsCallerSavedReg(var_reg) &&
+                (modified_reg_mask & RegisterMask(var_reg)) != 0) {
+              regs |= RegisterMask(var_reg);
             }
           }
         }
         if (IsCallerSavedReg(reg_id)) {
-          modified_reg.insert(reg_id);
+          modified_reg_mask |= RegisterMask(reg_id);
         }
       }
     };
-    auto erase_result_reg = [&](std::set<int> &regs, int result_id) {
+    auto erase_result_reg = [&](std::uint32_t &regs, int result_id) {
       const auto it = RISCV_functions_[i].location_.find(result_id);
       if (it != RISCV_functions_[i].location_.end() && it->second.first &&
           IsCallerSavedReg(it->second.second)) {
-        regs.erase(it->second.second);
+        regs &= ~RegisterMask(it->second.second);
       }
     };
     auto deferred_load_typed_operand = [&](RISCVBlock &r_block, int var_id,
@@ -2794,11 +2888,11 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sd_, 5, result_address_offset, 2);
               } else {
-                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                std::uint32_t call_save_regs = current_call_save_regs(block_id, inst_index);
                 int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (RISCV_functions_[i].location_[instruction.pointer_].first &&
                     IsCallerSavedReg(src_register)) {
-                  call_save_regs.insert(src_register);
+                  call_save_regs |= RegisterMask(src_register);
                 }
                 SaveCallerRegs(i, r_block, call_save_regs);
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
@@ -2909,11 +3003,11 @@ void CodeGenerator::Generate() {
                 r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
               } else {
-                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                std::uint32_t call_save_regs = current_call_save_regs(block_id, inst_index);
                 auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
                 if (RISCV_functions_[i].location_[instruction.pointer_].first &&
                     IsCallerSavedReg(dest_reg)) {
-                  call_save_regs.insert(dest_reg);
+                  call_save_regs |= RegisterMask(dest_reg);
                 }
                 SaveCallerRegs(i, r_block, call_save_regs);
                 if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
@@ -3586,9 +3680,9 @@ void CodeGenerator::Generate() {
           }
           case non_void_call_: {
             const auto &arguments = instruction.function_call_arguments_;
-            std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
+            std::uint32_t restore_regs = current_call_save_regs(block_id, inst_index);
             erase_result_reg(restore_regs, instruction.result_id_);
-            std::set<int> call_save_regs = restore_regs;
+            std::uint32_t call_save_regs = restore_regs;
             add_argument_setup_save_regs(call_save_regs, arguments, [&](int arg_id) {
               return GetParamPassPos(instruction.function_name_, arg_id);
             });
@@ -3711,8 +3805,8 @@ void CodeGenerator::Generate() {
           }
           case void_call_: {
             const auto &arguments = instruction.function_call_arguments_;
-            std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
-            std::set<int> call_save_regs = restore_regs;
+            std::uint32_t restore_regs = current_call_save_regs(block_id, inst_index);
+            std::uint32_t call_save_regs = restore_regs;
             add_argument_setup_save_regs(call_save_regs, arguments, [&](int arg_id) {
               return GetParamPassPos(instruction.function_name_, arg_id);
             });
@@ -3821,8 +3915,8 @@ void CodeGenerator::Generate() {
             switch (instruction.function_name_) {
               case 0: { // printInt
                 const auto &arguments = instruction.function_call_arguments_;
-                std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
-                std::set<int> call_save_regs = restore_regs;
+                std::uint32_t restore_regs = current_call_save_regs(block_id, inst_index);
+                std::uint32_t call_save_regs = restore_regs;
                 add_argument_setup_save_regs(call_save_regs, arguments, [](int) {
                   return std::pair<bool, int>{true, 10};
                 });
@@ -3850,8 +3944,8 @@ void CodeGenerator::Generate() {
               }
               case 1: { // printlnInt
                 const auto &arguments = instruction.function_call_arguments_;
-                std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
-                std::set<int> call_save_regs = restore_regs;
+                std::uint32_t restore_regs = current_call_save_regs(block_id, inst_index);
+                std::uint32_t call_save_regs = restore_regs;
                 add_argument_setup_save_regs(call_save_regs, arguments, [](int) {
                   return std::pair<bool, int>{true, 10};
                 });
@@ -3878,7 +3972,7 @@ void CodeGenerator::Generate() {
                 break;
               }
               case 2: { // getInt
-                std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+                std::uint32_t call_save_regs = current_call_save_regs(block_id, inst_index);
                 erase_result_reg(call_save_regs, instruction.result_id_);
                 SaveCallerRegs(i, r_block, call_save_regs);
                 r_block.PushCall(true, 5);
@@ -3966,12 +4060,12 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memset_: {
-            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            std::uint32_t call_save_regs = current_call_save_regs(block_id, inst_index);
             const auto ptr_it = RISCV_functions_[i].location_.find(instruction.pointer_);
             if (ptr_it != RISCV_functions_[i].location_.end() && ptr_it->second.first &&
                 IsCallerSavedReg(ptr_it->second.second) &&
-                call_save_regs.contains(ptr_it->second.second)) {
-              call_save_regs.insert(ptr_it->second.second);
+                (call_save_regs & RegisterMask(ptr_it->second.second)) != 0) {
+              call_save_regs |= RegisterMask(ptr_it->second.second);
             }
             SaveCallerRegs(i, r_block, call_save_regs);
             int dest_register = RISCV_functions_[i].location_[instruction.pointer_].second;
@@ -3990,18 +4084,18 @@ void CodeGenerator::Generate() {
             break;
           }
           case builtin_memcpy_: {
-            std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
+            std::uint32_t call_save_regs = current_call_save_regs(block_id, inst_index);
             const auto dest_it = RISCV_functions_[i].location_.find(instruction.destination_);
             if (dest_it != RISCV_functions_[i].location_.end() && dest_it->second.first &&
                 IsCallerSavedReg(dest_it->second.second) &&
-                call_save_regs.contains(dest_it->second.second)) {
-              call_save_regs.insert(dest_it->second.second);
+                (call_save_regs & RegisterMask(dest_it->second.second)) != 0) {
+              call_save_regs |= RegisterMask(dest_it->second.second);
             }
             const auto src_it = RISCV_functions_[i].location_.find(instruction.pointer_);
             if (src_it != RISCV_functions_[i].location_.end() && src_it->second.first &&
                 IsCallerSavedReg(src_it->second.second) &&
-                call_save_regs.contains(src_it->second.second)) {
-              call_save_regs.insert(src_it->second.second);
+                (call_save_regs & RegisterMask(src_it->second.second)) != 0) {
+              call_save_regs |= RegisterMask(src_it->second.second);
             }
             SaveCallerRegs(i, r_block, call_save_regs);
             int dest_register = RISCV_functions_[i].location_[instruction.destination_].second;
@@ -4080,7 +4174,7 @@ void CodeGenerator::Generate() {
         r_block.instructions_.push_back(jump_instructions.back());
         jump_instructions.pop_back();
       }
-      PeepholeOptimizeBlock(r_block, live_out_regs[block_id]);
+      PeepholeOptimizeBlock(r_block, live_out_reg_masks[block_index[block_id]]);
     }
     RelaxFarBranches(i);
   }
