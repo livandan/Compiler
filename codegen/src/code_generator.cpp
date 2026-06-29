@@ -143,6 +143,12 @@ static bool IsUnconditionalJump(const RISCVInstruction &inst) {
 }
 
 static int ConservativeInstructionBytes(const RISCVInstruction &inst) {
+  if ((inst.instruction_type_ == r_beq_ || inst.instruction_type_ == r_bge_ ||
+       inst.instruction_type_ == r_bgeu_ || inst.instruction_type_ == r_blt_ ||
+       inst.instruction_type_ == r_bltu_ || inst.instruction_type_ == r_bne_) &&
+      inst.imm_ == 2) {
+    return 8;
+  }
   switch (inst.instruction_type_) {
     case r_li_:
     case r_la_:
@@ -1947,8 +1953,8 @@ void CodeGenerator::RelaxFarBranches(const int func_id) {
         }
 
         const int long_target = inst.label_;
-        inst.label_ = static_cast<int>(block.jump_blocks_.size());
-        inst.imm_ = -1;
+        inst.label_ = long_target;
+        inst.imm_ = 2;
 
         if (inst.instruction_type_ == r_beqz_) {
           inst.instruction_type_ = r_beq_;
@@ -1957,21 +1963,6 @@ void CodeGenerator::RelaxFarBranches(const int func_id) {
           inst.instruction_type_ = r_bne_;
           inst.rs2_ = 0;
         }
-
-        const bool has_existing_skip =
-            inst_index + 1 < static_cast<int>(block.instructions_.size()) &&
-            IsUnconditionalJump(block.instructions_[inst_index + 1]);
-        if (!has_existing_skip) {
-          const auto next_it = next_block_map.find(block_id);
-          if (next_it == next_block_map.end()) {
-            CodegenThrow("Cannot relax far branch without a fall-through target.");
-          }
-          block.instructions_.insert(block.instructions_.begin() + inst_index + 1,
-              RISCVInstruction(r_j_, -1, -1, -1, -1, next_it->second));
-        }
-
-        block.jump_blocks_.push_back(
-            RISCVInstruction(r_j_, -1, -1, -1, -1, long_target));
         changed = true;
         break;
       }
@@ -2692,7 +2683,8 @@ void CodeGenerator::Generate() {
               r_block.instructions_.push_back(
                   RISCVInstruction(r_bnez_, -1, 5, -1, -1, instruction.if_true_));
             } else {
-              r_block.PushControl_B(r_beq_, 0, 5, instruction.if_false_);
+              r_block.instructions_.push_back(
+                  RISCVInstruction(r_beq_, -1, 0, 5, 1, instruction.if_false_));
               r_block.PushJ(instruction.if_true_);
             }
             break;
@@ -4208,6 +4200,8 @@ void CodeGenerator::Print_B(std::ofstream &file, const RISCVInstruction &instruc
   file << ", ";
   if (instruction.imm_ == 1) {
     PrintLabel(file, instruction.label_, func_id);
+  } else if (instruction.imm_ == 2) {
+    PrintLabel(file, instruction.label_, func_id);
   } else {
     PrintJumpLabel(file, block_id, instruction.label_, func_id);
   }
@@ -4390,9 +4384,13 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
         PrintReg(file, instruction.rs1_);
         file << ", ";
         PrintReg(file, instruction.rs2_);
-        file << ", 1f\n\tla\tt2, ";
-        PrintJumpLabel(file, block_id, instruction.label_, func_id);
-        file << "\n\tjr\tt2\n1:";
+        file << ", 1f\n\tj\t";
+        if (instruction.imm_ == 2) {
+          PrintLabel(file, instruction.label_, func_id);
+        } else {
+          PrintJumpLabel(file, block_id, instruction.label_, func_id);
+        }
+        file << "\n1:";
       }
       break;
     }
@@ -4458,19 +4456,17 @@ void CodeGenerator::Print(std::ofstream &file, const RISCVInstruction &instructi
       break;
     }
     case r_beqz_: {
-      file << "bnez\t";
+      file << "beqz\t";
       PrintReg(file, instruction.rs1_);
-      file << ", 1f\n\tla\tt2, ";
+      file << ", ";
       PrintLabel(file, instruction.label_, func_id);
-      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_bnez_: {
-      file << "beqz\t";
+      file << "bnez\t";
       PrintReg(file, instruction.rs1_);
-      file << ", 1f\n\tla\tt2, ";
+      file << ", ";
       PrintLabel(file, instruction.label_, func_id);
-      file << "\n\tjr\tt2\n1:";
       break;
     }
     case r_j_: {
