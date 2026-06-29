@@ -1,6 +1,8 @@
 #include "register_allocator.h"
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <queue>
 
@@ -136,6 +138,17 @@ std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &functio
   return result;
 }
 
+bool RegAllocStatsEnabled() {
+  const char *flag = std::getenv("RX_REGALLOC_STATS");
+  return flag != nullptr && flag[0] != '\0' && flag[0] != '0';
+}
+
+long long MonotonicMillis() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<long long>(ts.tv_sec) * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
 } // namespace
 
 RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
@@ -171,10 +184,50 @@ RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
 void RegisterAllocator::Run() {
   ClassifyVariables();
   BuildCFG();
-  LimitRegisterAllocationCandidates();
+  const int original_candidate_count = static_cast<int>(allocatable_nodes_.size());
+
+  int instruction_count = 0;
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    instruction_count += static_cast<int>(block.instructions_.size());
+    instruction_count += static_cast<int>(block.phi_instructions_.size());
+  }
+  int phi_move_count = 0;
+  for (const auto &[block_id, block] : riscv_func_.blocks_) {
+    phi_move_count += static_cast<int>(block.move_instructions_.size());
+  }
+
+  ComputeSpillCosts();
+
+  const bool dump_stats = RegAllocStatsEnabled();
+  const long long liveness_start = MonotonicMillis();
   ComputeLiveness();
+  const long long liveness_end = MonotonicMillis();
+  const long long interference_start = MonotonicMillis();
   BuildInterferenceGraph();
+  const long long interference_end = MonotonicMillis();
+  long long interference_edge_count = 0;
+  if (dump_stats) {
+    for (int v : allocatable_nodes_) {
+      interference_edge_count += static_cast<long long>(interference_[v].size());
+    }
+    interference_edge_count /= 2;
+  }
+  const long long coloring_start = MonotonicMillis();
   ColorGraph();
+  const long long coloring_end = MonotonicMillis();
+
+  if (dump_stats) {
+    std::cerr << "[regalloc] candidates=" << original_candidate_count
+              << " blocks=" << ir_func_.blocks_.size()
+              << " instructions=" << instruction_count
+              << " phi_moves=" << phi_move_count
+              << " live_ms=" << (liveness_end - liveness_start)
+              << " interference_ms=" << (interference_end - interference_start)
+              << " coloring_ms=" << (coloring_end - coloring_start)
+              << " edges=" << interference_edge_count
+              << '\n';
+  }
+
   UpdateLocationMap();
 }
 
@@ -214,6 +267,7 @@ void RegisterAllocator::InitializeVectors() {
   is_allocatable_ = MakeBitSet();
   is_stack_bound_ = MakeBitSet();
   var_size_.assign(n, 0);
+  spill_cost_.assign(n, 1);
   allocatable_nodes_.clear();
 
   // Interference graph
@@ -346,8 +400,9 @@ void RegisterAllocator::ClassifyVariables() {
     for (const auto &phi : block.phi_instructions_) {
       int result_id = phi.result_id;
       if (!BitTest(is_stack_bound_, result_id)) {
-        if (IsScalarType(phi.type) && phi.type->basic_type != pointer_type) {
+        if (IsScalarType(phi.type)) {
           BitSet(is_allocatable_, result_id);
+          var_size_[result_id] = (phi.type->basic_type == pointer_type) ? 8 : 4;
         } else {
           BitSet(is_stack_bound_, result_id);
         }
@@ -394,38 +449,16 @@ void RegisterAllocator::BuildCFG() {
   }
 }
 
-void RegisterAllocator::LimitRegisterAllocationCandidates() {
-  int instruction_count = 0;
-  int move_count = 0;
-  for (const auto &[block_id, block] : ir_func_.blocks_) {
-    instruction_count += static_cast<int>(block.instructions_.size());
-    instruction_count += static_cast<int>(block.phi_instructions_.size());
-  }
-  for (const auto &[block_id, block] : riscv_func_.blocks_) {
-    move_count += static_cast<int>(block.move_instructions_.size());
-  }
-
-  const long long scale =
-      static_cast<long long>(max_var_id_) * static_cast<long long>(ir_func_.blocks_.size());
-  if (max_var_id_ <= 12000 && instruction_count + move_count <= 18000 && scale <= 500000) {
-    RebuildAllocatableNodes();
-    return;
-  }
-
-  // Full graph coloring is expensive on generated stress programs because
-  // liveness and interference are proportional to the number of tracked SSA
-  // temporaries.  Still allocate registers, but only for the best scalar
-  // candidates; all other values keep their existing stack homes.
-  constexpr int kMaxCandidates = 81920;
-  std::vector<int> score(max_var_id_ + 1, 0);
+void RegisterAllocator::ComputeSpillCosts() {
+  std::fill(spill_cost_.begin(), spill_cost_.end(), 1);
   auto add_use_score = [&](int id, int amount = 1) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
-      score[id] += amount;
+      spill_cost_[id] += amount;
     }
   };
   auto add_def_score = [&](int id, int amount = 1) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
-      score[id] += amount;
+      spill_cost_[id] += amount;
     }
   };
 
@@ -453,23 +486,23 @@ void RegisterAllocator::LimitRegisterAllocationCandidates() {
           break;
         case load_:
         case ptr_load_:
-          add_use_score(inst.pointer_);
+          add_use_score(inst.pointer_, 5);
           add_def_score(inst.result_id_, 2);
           break;
         case variable_store_:
         case ptr_store_:
           add_use_score(inst.result_id_, 4);
-          add_use_score(inst.pointer_);
+          add_use_score(inst.pointer_, 5);
           break;
         case value_store_:
-          add_use_score(inst.pointer_);
+          add_use_score(inst.pointer_, 5);
           break;
         case get_element_ptr_by_value_:
-          add_use_score(inst.pointer_, 2);
+          add_use_score(inst.pointer_, 8);
           add_def_score(inst.result_id_, 2);
           break;
         case get_element_ptr_by_variable_:
-          add_use_score(inst.pointer_, 2);
+          add_use_score(inst.pointer_, 8);
           add_use_score(inst.index_, 3);
           add_def_score(inst.result_id_, 2);
           break;
@@ -534,48 +567,32 @@ void RegisterAllocator::LimitRegisterAllocationCandidates() {
           add_def_score(inst.result_id_, 2);
           break;
         case builtin_memset_:
-          add_use_score(inst.pointer_);
+          add_use_score(inst.pointer_, 6);
           break;
         case builtin_memcpy_:
-          add_use_score(inst.destination_);
-          add_use_score(inst.pointer_);
+          add_use_score(inst.destination_, 6);
+          add_use_score(inst.pointer_, 6);
           break;
         default:
           break;
       }
     }
     for (const auto &phi : block.phi_instructions_) {
-      add_def_score(phi.result_id, 3);
+      const int phi_weight = (phi.type && phi.type->basic_type == pointer_type) ? 8 : 4;
+      add_def_score(phi.result_id, phi_weight);
       for (const auto &cond : phi.conditions) {
-        if (!cond.is_const) add_use_score(cond.var_id, 3);
+        if (!cond.is_const) add_use_score(cond.var_id, phi_weight);
       }
     }
   }
   for (const auto &[block_id, block] : riscv_func_.blocks_) {
     for (const auto &mv : block.move_instructions_) {
-      add_def_score(mv.dest_, 3);
-      if (!mv.src_is_value_) add_use_score(mv.src_, 3);
+      const int move_weight = (mv.type_ && mv.type_->basic_type == pointer_type) ? 8 : 4;
+      add_def_score(mv.dest_, move_weight);
+      if (!mv.src_is_value_) add_use_score(mv.src_, move_weight);
     }
   }
 
-  std::vector<int> candidates = allocatable_nodes_;
-  if (static_cast<int>(candidates.size()) <= kMaxCandidates) {
-    return;
-  }
-  std::nth_element(candidates.begin(), candidates.begin() + kMaxCandidates,
-      candidates.end(), [&](int lhs, int rhs) {
-        if (score[lhs] != score[rhs]) return score[lhs] > score[rhs];
-        return lhs < rhs;
-      });
-  std::vector<uint64_t> keep = MakeBitSet();
-  for (int i = 0; i < kMaxCandidates; ++i) {
-    BitSet(keep, candidates[i]);
-  }
-  for (int v : allocatable_nodes_) {
-    if (!BitTest(keep, v)) {
-      BitClear(is_allocatable_, v);
-    }
-  }
   RebuildAllocatableNodes();
 }
 
@@ -1447,11 +1464,21 @@ void RegisterAllocator::SelectSpill() {
 
 int RegisterAllocator::SelectSpillCandidate() const {
   int best_node = -1;
-  int best_degree = -1;
+  long long best_cost = 0;
+  int best_degree = 1;
   for (int node : allocatable_nodes_) {
     if (!BitTest(in_worklist_, node)) continue;
-    int deg = current_degree_[node];
-    if (deg > best_degree) {
+    const int deg = std::max(1, current_degree_[node]);
+    const long long cost = node >= 0 && node < static_cast<int>(spill_cost_.size())
+        ? spill_cost_[node]
+        : 1;
+    if (best_node < 0 ||
+        cost * static_cast<long long>(best_degree) <
+            best_cost * static_cast<long long>(deg) ||
+        (cost * static_cast<long long>(best_degree) ==
+             best_cost * static_cast<long long>(deg) &&
+         current_degree_[node] > current_degree_[best_node])) {
+      best_cost = cost;
       best_degree = deg;
       best_node = node;
     }

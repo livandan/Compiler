@@ -22,7 +22,7 @@ private:
   // Step 1: Build CFG and compute liveness
   void BuildCFG();
   void ComputeLiveness();
-  void LimitRegisterAllocationCandidates();
+  void ComputeSpillCosts();
   void RebuildAllocatableNodes();
 
   // Step 2: Build the interference graph
@@ -107,6 +107,7 @@ private:
   std::vector<uint64_t> is_stack_bound_;
   std::vector<int> var_size_;           // 0 = not set, 4 or 8
   std::vector<int> allocatable_nodes_;
+  std::vector<long long> spill_cost_;
 
   // ---- Interference graph: adjacency lists ----
   std::vector<std::vector<int>> interference_;
