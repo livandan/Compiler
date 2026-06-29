@@ -1727,113 +1727,8 @@ static std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &
   return result;
 }
 
-static bool IsLoadInstruction(const RISCVInstructionType type) {
-  return type == r_lb_ || type == r_lbu_ || type == r_lh_ ||
-      type == r_lhu_ || type == r_lw_ || type == r_ld_;
-}
-
-static bool IsStoreInstruction(const RISCVInstructionType type) {
-  return type == r_sb_ || type == r_sh_ || type == r_sw_ || type == r_sd_;
-}
-
-static bool IsMemoryInstruction(const RISCVInstructionType type) {
-  return IsLoadInstruction(type) || IsStoreInstruction(type);
-}
-
-static bool IsBlockBoundaryInstruction(const RISCVInstruction &inst) {
-  return inst.instruction_type_ == r_call_ || inst.instruction_type_ == r_j_ ||
-      inst.instruction_type_ == r_ret_ || IsDirectLabelBranch(inst);
-}
-
-static bool LoadsCompatibleWithStore(const RISCVInstructionType load_type,
-    const RISCVInstructionType store_type) {
-  switch (store_type) {
-    case r_sb_:
-      return load_type == r_lb_ || load_type == r_lbu_;
-    case r_sh_:
-      return load_type == r_lh_ || load_type == r_lhu_;
-    case r_sw_:
-      return load_type == r_lw_;
-    case r_sd_:
-      return load_type == r_ld_;
-    default:
-      return false;
-  }
-}
-
-static bool IsZeroRegisterMove(const RISCVInstruction &inst) {
-  return inst.instruction_type_ == r_li_ && inst.imm_ == 0;
-}
-
-static void ReplaceRegUse(RISCVInstruction &inst, const int old_reg, const int new_reg) {
-  switch (inst.instruction_type_) {
-    case r_add_: case r_sub_: case r_and_: case r_or_: case r_xor_:
-    case r_sll_: case r_srl_: case r_sra_: case r_slt_: case r_sltu_:
-    case r_addw_: case r_subw_: case r_sllw_: case r_srlw_: case r_sraw_:
-    case r_mul_: case r_div_: case r_divu_: case r_rem_: case r_remu_:
-    case r_mulw_: case r_divw_: case r_divuw_: case r_remw_: case r_remuw_:
-    case r_beq_: case r_bge_: case r_bgeu_: case r_blt_: case r_bltu_:
-    case r_bne_:
-      if (inst.rs1_ == old_reg) inst.rs1_ = new_reg;
-      if (inst.rs2_ == old_reg) inst.rs2_ = new_reg;
-      break;
-    case r_addi_: case r_andi_: case r_ori_: case r_xori_:
-    case r_slli_: case r_srli_: case r_srai_: case r_slti_: case r_sltiu_:
-    case r_addiw_: case r_slliw_: case r_srliw_: case r_sraiw_:
-    case r_jalr_: case r_jr_: case r_mv_: case r_neg_: case r_not_:
-    case r_lb_: case r_lbu_: case r_lh_: case r_lhu_: case r_lw_:
-    case r_ld_: case r_beqz_: case r_bnez_:
-      if (inst.rs1_ == old_reg) inst.rs1_ = new_reg;
-      break;
-    case r_sb_: case r_sh_: case r_sw_: case r_sd_:
-      if (inst.rs1_ == old_reg) inst.rs1_ = new_reg;
-      if (inst.rs2_ == old_reg) inst.rs2_ = new_reg;
-      break;
-    default:
-      break;
-  }
-}
-
-static bool CanForwardMoveIntoNext(const RISCVInstruction &move,
-    const RISCVInstruction &next, const std::set<int> &live_out_regs,
-    const std::vector<RISCVInstruction> &instructions, const int next_index) {
-  if (move.instruction_type_ != r_mv_ || move.rd_ == 0 ||
-      !InstructionUsesReg(next, move.rd_)) {
-    return false;
-  }
-  if (next.instruction_type_ == r_call_ || next.instruction_type_ == r_j_ ||
-      next.instruction_type_ == r_ret_) {
-    return false;
-  }
-  if (InstructionDefsReg(next, move.rd_)) {
-    switch (next.instruction_type_) {
-      case r_addi_: case r_andi_: case r_ori_: case r_xori_:
-      case r_slli_: case r_srli_: case r_srai_: case r_slti_: case r_sltiu_:
-      case r_addiw_: case r_slliw_: case r_srliw_: case r_sraiw_:
-      case r_neg_: case r_not_: case r_lb_: case r_lbu_: case r_lh_:
-      case r_lhu_: case r_lw_: case r_ld_:
-        if (next.rd_ != move.rd_ || next.rs1_ != move.rd_) {
-          return false;
-        }
-        break;
-      default:
-        return false;
-    }
-  }
-  for (int i = next_index + 1; i < static_cast<int>(instructions.size()); ++i) {
-    const auto &later = instructions[i];
-    if (InstructionUsesReg(later, move.rd_)) {
-      return false;
-    }
-    if (InstructionDefsReg(later, move.rd_) || IsBlockBoundaryInstruction(later)) {
-      break;
-    }
-  }
-  return !live_out_regs.contains(move.rd_);
-}
-
 void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
-    const std::set<int> &live_out_regs, const std::set<int> &live_out_stack_offsets) const {
+    const std::set<int> &live_out_regs) const {
   std::vector<RISCVInstruction> optimized;
   optimized.reserve(r_block.instructions_.size());
   std::vector<char> removed_indices(r_block.instructions_.size(), 0);
@@ -1923,20 +1818,7 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     optimized.push_back(inst);
   };
 
-  auto stack_slot_live_after = [&](const int inst_index, const int offset) {
-    for (int j = inst_index + 1; j < static_cast<int>(r_block.instructions_.size()); ++j) {
-      const auto &later = r_block.instructions_[j];
-      if (IsBlockBoundaryInstruction(later)) {
-        return live_out_stack_offsets.contains(offset);
-      }
-      if (later.rs1_ == 2 && later.imm_ == offset && IsMemoryInstruction(later.instruction_type_)) {
-        return IsLoadInstruction(later.instruction_type_);
-      }
-    }
-    return live_out_stack_offsets.contains(offset);
-  };
-
-  for (int i = 0; i < static_cast<int>(r_block.instructions_.size()); ++i) {
+  for (int i = 0; i < r_block.instructions_.size(); ++i) {
     if (removed_indices[i]) {
       continue;
     }
@@ -1990,65 +1872,6 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
           ++i;
           continue;
         }
-      }
-    }
-
-    if (inst.instruction_type_ == r_mv_ &&
-        i + 1 < static_cast<int>(r_block.instructions_.size()) &&
-        !removed_indices[i + 1]) {
-      RISCVInstruction next = r_block.instructions_[i + 1];
-      if (CanForwardMoveIntoNext(inst, next, live_out_regs, r_block.instructions_, i + 1)) {
-        ReplaceRegUse(next, inst.rd_, inst.rs1_);
-        emit(next);
-        ++i;
-        continue;
-      }
-    }
-
-    if (IsLoadInstruction(inst.instruction_type_) &&
-        i + 1 < static_cast<int>(r_block.instructions_.size()) &&
-        !removed_indices[i + 1]) {
-      RISCVInstruction next = r_block.instructions_[i + 1];
-      if (next.instruction_type_ == r_mv_ && next.rs1_ == inst.rd_ &&
-          !InstructionUsesReg(inst, next.rd_) && !live_out_regs.contains(inst.rd_) &&
-          !RegisterUsedBeforeDef(r_block.instructions_, i + 2, inst.rd_)) {
-        inst.rd_ = next.rd_;
-        emit(inst);
-        ++i;
-        continue;
-      }
-    }
-
-    if (IsZeroRegisterMove(inst) &&
-        i + 1 < static_cast<int>(r_block.instructions_.size()) &&
-        !removed_indices[i + 1]) {
-      RISCVInstruction next = r_block.instructions_[i + 1];
-      if (IsStoreInstruction(next.instruction_type_) && next.rs2_ == inst.rd_ &&
-          !InstructionUsesReg(next, inst.rd_) &&
-          !RegisterUsedBeforeDef(r_block.instructions_, i + 2, inst.rd_)) {
-        next.rs2_ = 0;
-        emit(next);
-        ++i;
-        continue;
-      }
-    }
-
-    if (IsStoreInstruction(inst.instruction_type_) && inst.rs1_ == 2 &&
-        i + 2 < static_cast<int>(r_block.instructions_.size()) &&
-        !removed_indices[i + 1] && !removed_indices[i + 2]) {
-      const auto &load = r_block.instructions_[i + 1];
-      RISCVInstruction store = r_block.instructions_[i + 2];
-      if (IsLoadInstruction(load.instruction_type_) && load.rs1_ == 2 &&
-          load.imm_ == inst.imm_ &&
-          LoadsCompatibleWithStore(load.instruction_type_, inst.instruction_type_) &&
-          IsStoreInstruction(store.instruction_type_) && store.rs2_ == load.rd_ &&
-          !InstructionUsesReg(store, inst.rs2_) &&
-          !RegisterUsedBeforeDef(r_block.instructions_, i + 3, load.rd_) &&
-          !stack_slot_live_after(i + 2, inst.imm_)) {
-        store.rs2_ = inst.rs2_;
-        emit(store);
-        i += 2;
-        continue;
       }
     }
 
@@ -2268,17 +2091,11 @@ void CodeGenerator::Generate() {
       }
     }
     std::map<int, std::set<int>> live_out_regs;
-    std::map<int, std::set<int>> live_out_stack_offsets;
     for (const auto &[block_id, vars] : live_out_vars) {
       for (int var : vars) {
         const auto it = RISCV_functions_[i].location_.find(var);
-        if (it == RISCV_functions_[i].location_.end()) {
-          continue;
-        }
-        if (it->second.first) {
+        if (it != RISCV_functions_[i].location_.end() && it->second.first) {
           live_out_regs[block_id].insert(it->second.second);
-        } else {
-          live_out_stack_offsets[block_id].insert(it->second.second);
         }
       }
     }
@@ -2336,7 +2153,7 @@ void CodeGenerator::Generate() {
       bb0.PushMemory_S(r_sd_, 31, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
     }
     FlushSavedRegisters(i, bb0);
-    PeepholeOptimizeBlock(bb0, {}, {});
+    PeepholeOptimizeBlock(bb0, {});
     // Build next_block_map from the final block layout so branch lowering sees
     // the same fall-throughs that Output() will emit.
     std::map<int, int> next_block_map;
@@ -4263,8 +4080,7 @@ void CodeGenerator::Generate() {
         r_block.instructions_.push_back(jump_instructions.back());
         jump_instructions.pop_back();
       }
-      PeepholeOptimizeBlock(r_block, live_out_regs[block_id],
-          live_out_stack_offsets[block_id]);
+      PeepholeOptimizeBlock(r_block, live_out_regs[block_id]);
     }
     RelaxFarBranches(i);
   }
