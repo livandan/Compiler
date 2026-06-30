@@ -462,15 +462,199 @@ Expected impact:
 - Fewer spilled 8-byte pointer temporaries.
 - Fewer `sd`/`ld` pairs around array accesses.
 
-### Step 7: Recheck Call-Site Save Sets After Cleanup
+### Step 7: Kill Dead Phi Cycles In `Mem2Reg::RemoveDeadPhis()`
 
-After Steps 4 to 6, recompute assembly metrics. If save/restore traffic is still
-high around `pm_rand_update`, inspect call-site liveness and make sure only
-actually live caller-saved registers are saved at each call.
+After Steps 1–6 the remaining bare-metal gap is **call-site `sd`/`ld` traffic**
+in the inner `j` loop of `run_grid_dp`. The static `lw`/`sw` numbers are now
+close to the optimized target (`lw=6`, `sw=3` vs target `8`/`3`), but `ld`/`sd`
+are still inflated: `ld=61`, `sd=52` against the optimized `ld=45`, `sd=43`.
+Per inner iteration that is **two extra `sd`/`ld` pairs around `pm_rand_update`
+and `norm`**, which dominates the dynamic instruction mix because the inner
+loop runs `h * w * rounds` times.
 
-Do not start here unless Step 4 does not move the numbers. Current call-save
-sets are already liveness-based, but allocator choices still make too many hot
-values cross calls in caller-saved registers or spill slots.
+#### Root Cause: Mem2Reg Leaves Pure Phi Cycles Alive
+
+Look at `var.177`, `var.180`, `var.183`, `var.186`, `var.190`, `var.193` at
+`label_24` in the post-mem2reg IR for `run_grid_dp`:
+
+```text
+RCompiler-Testcases/working_space/debugging.ll:150
+```
+
+```llvm
+%var.177 = phi i32 [ 0, %label_15 ], [ %var.176, %label_52 ]
+%var.180 = phi i32 [ 0, %label_15 ], [ %var.179, %label_52 ]
+%var.183 = phi i32 [ 0, %label_15 ], [ %var.182, %label_52 ]
+%var.186 = phi i32 [ 0, %label_15 ], [ %var.185, %label_52 ]
+%var.190 = phi i32 [ 0, %label_15 ], [ %var.189, %label_52 ]
+%var.193 = phi i32 [ 0, %label_15 ], [ %var.192, %label_52 ]
+```
+
+These are paired at `label_50` and `label_61`:
+
+```llvm
+%var.176 = phi i32 [ %var.177, %label_33 ], [ %var.60,  %label_138 ]
+%var.179 = phi i32 [ %var.180, %label_33 ], [ %var.178, %label_138 ]
+%var.182 = phi i32 [ %var.183, %label_33 ], [ %var.181, %label_138 ]
+...
+%var.178 = phi i32 [ %var.179, %label_51 ], [ %var.76,  %label_99 ]
+%var.181 = phi i32 [ %var.182, %label_51 ], [ %var.80,  %label_99 ]
+...
+```
+
+They are phi nodes mem2reg inserted for **block-scoped locals** (`row_bias`,
+`weight`, `up`, `left`, `diag`, the normalized `cur[j]`). The alloca is at
+function scope, so mem2reg dominance-frontier insertion places phis at every
+outer merge point — even though the value is defined-before-use on every
+dynamic path that actually reads it.
+
+Each of these phis is **referenced only by other phis**. They form closed
+phi-only cycles. No regular instruction consumes them. They should be deleted.
+
+#### Why The Current `RemoveDeadPhis()` Misses Them
+
+```text
+IR/src/mem2reg.cpp:1248
+```
+
+The existing algorithm seeds `alive_phis` with *all* phis and removes one only
+if **no alive phi references it** in `phi_refs_from_phis`. For a cycle
+`A → B → A` both A and B are initially alive, each references the other, so
+neither ever gets killed. Classic dead-cycle-of-phis correctness bug in a
+"backward retire" algorithm.
+
+The fix is to flip the dataflow direction:
+
+1. Seed `alive_phis` with only the phis directly referenced by a non-phi
+   instruction (`referenced_from_insts`).
+2. Iterate forward: for each phi P already marked alive, mark every phi-typed
+   operand of P alive as well.
+3. After fixpoint, any phi not in `alive_phis` is dead and is removed.
+
+This kills the closed cycles because they have no non-phi root.
+
+#### Why It Fixes The Hot Loop
+
+Once those phis go away:
+
+- `var.176`, `var.178`, `var.181`, `var.184`, `var.187`, `var.191` no longer
+  flow back into `label_50` → `label_24` and out again.
+- The corresponding virtual registers stop being live across the calls to
+  `pm_rand_update` and `norm`.
+- The codegen call-site save/restore is liveness-based
+  (`code_generator.cpp:2596-2667`), so the per-call save set shrinks: roughly
+  6 fewer caller-saved values to push/pop per call. With three calls per
+  inner iteration this removes ~9 `sd` + ~9 `ld` per iteration body.
+
+Expected `run_grid_dp` impact:
+
+| Metric | Pre-Step-7 | Target |
+| --- | ---: | ---: |
+| `ld` | 61 | near 45 |
+| `sd` | 52 | near 43 |
+| `mv` | 32 | near 22 |
+
+`lw`/`sw` should be unchanged (already near optimized). Inner loop wall-clock
+should drop because each iteration removes several `sd`/`ld` to the
+caller-save stack area; this is the dominant per-iteration cost on bare RV64
+because pipeline stalls on dependent loads off the stack pointer compound.
+
+#### Implementation
+
+In `IR/src/mem2reg.cpp`:
+
+1. Keep `phi_results`, `phi_refs_from_phis`, and `referenced_from_insts` as
+   they are — they are still useful.
+2. Build a `phi_map[result_id] -> const PhiInstruction*` from the function's
+   blocks so the propagation loop can read operands cheaply.
+3. Replace the `alive_phis = phi_results; worklist = phi_results;` seed with
+   `alive_phis = {phis in referenced_from_insts}`, queue those, then BFS:
+   for each alive phi P, iterate its conditions; any condition whose `var_id`
+   is itself a phi result becomes alive if not already.
+4. Remove the existing `is_live = referenced_from_insts.contains(...)` /
+   "any alive ref" loop entirely — that logic is what kept cycles alive.
+5. Delete every phi not in the final `alive_phis` set, same as before.
+
+#### Correctness Considerations
+
+- The fix never deletes a phi reached from any non-phi instruction, so all
+  observable program values are preserved.
+- mem2reg already inserts phis only at dominance frontier merges, so removing
+  a dead-cycle phi cannot reintroduce undefined values into reachable code.
+- The pass already runs to fixpoint inside `Run()`
+  (`IR/src/mem2reg.cpp:78`, `:90`); the new forward propagation is itself a
+  single fixpoint pass and composes with the surrounding iteration safely.
+
+#### Verification Plan
+
+```bash
+cmake --build cmake-build-debug --target code -j 4
+cp RCompiler-Testcases/hidden_case/opti_dp_suite.rx \
+   RCompiler-Testcases/working_space/debugging.rx
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu LSAN_OPTIONS=detect_leaks=0 \
+  ./cmake-build-debug/codegen_tests --gtest_filter=CodegenTestSingle.debugging_test
+```
+
+Then:
+
+1. Confirm `debugging.ll` no longer contains the `var.176-193` family at
+   `label_24`/`label_50`/`label_61`.
+2. Count `ld`/`sd` in `fn.3` of `debugging_my.s`; expect a substantial drop.
+3. Run the IR-1 suite end-to-end to confirm no correctness regression:
+
+```bash
+env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu ./run.sh
+```
+
+#### Result After Landing Step 7
+
+The 6 pairs of dead-cycle phis in `label_24` / `label_50` / `label_61` of
+`run_grid_dp` are gone. Both `run_grid_dp` and `run_knapsack` produce
+byte-identical output to the optimized `.s` on the inputs tested
+(`seed grid_h grid_w grid_rounds item_count capacity` = `12345 10 32 3 8 256`,
+`1729 32 128 5 16 1024`, `9999 80 256 8 30 4096`). Static instruction counts
+in `fn.3` (`run_grid_dp`) and `fn.1` (`run_knapsack`):
+
+| Function | Metric | Pre-Step-7 | Post-Step-7 | Expected |
+| --- | --- | ---: | ---: | ---: |
+| `run_grid_dp` | total | 259 | 206 | 236 |
+| `run_grid_dp` | `lw` | 6 | 6 | 8 |
+| `run_grid_dp` | `sw` | 3 | 3 | 3 |
+| `run_grid_dp` | `ld` | 61 | 40 | 45 |
+| `run_grid_dp` | `sd` | 52 | 31 | 43 |
+| `run_grid_dp` | `mv` | 32 | 28 | 22 |
+| `run_grid_dp` | `call` | 7 | 7 | 6 |
+| `run_grid_dp` | `remw` | 6 | 6 | 7 |
+| `run_knapsack` | total | ~130 | 127 | 158 |
+| `run_knapsack` | `ld` | ~22 | 24 | 32 |
+| `run_knapsack` | `sd` | ~17 | 19 | 27 |
+
+Post-Step-7 current is now smaller than the optimized assembly on both hot
+functions in total instruction count, and `ld`/`sd` are below the optimized
+targets — which means each inner-loop iteration in `run_grid_dp` does fewer
+caller-save stack traffic instructions than the reference. The earlier 2x
+bare-metal slowdown was being paid in the form of these excess `sd`/`ld`
+pairs at every `pm_rand_update`/`norm` call; eliminating the dead phi cycles
+made the live-across-call set smaller and the per-call save/restore set
+shrank to match.
+
+All 50 IR-1 end-to-end tests pass with the new `RemoveDeadPhis()`. The full
+`CodegenTest.test_all` GoogleTest target (50 IR-1 + 50 semantic-2) also
+passes.
+
+### Step 8 (Fallback): Recheck Call-Site Save Sets
+
+If after Step 7 the call-site save sets are still bigger than necessary,
+inspect `current_call_save_regs` and `live_after_caller_regs` in
+`codegen/src/code_generator.cpp` and ensure they exclude registers that are
+about to be redefined before the next use (a value whose *next use* on every
+path is a redefinition is not actually live across the call). Today the
+allocator-derived liveness uses standard backward dataflow, which conservatively
+calls a value live if it might be read on some path; that is correct but can
+over-save when the program structure guarantees a redef.
+
+Do not start Step 8 unless Step 7 still leaves an `ld`/`sd` gap larger than
+~3 per call site relative to the optimized assembly.
 
 ## Regression Metrics
 

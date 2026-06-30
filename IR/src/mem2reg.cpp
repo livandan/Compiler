@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <functional>
 #include <map>
+#include <queue>
 #include <stack>
 
 void Mem2RegThrow(const std::string &err_info) {
@@ -1246,33 +1247,16 @@ void Mem2Reg::RemoveDeadInstructions() const {
 // ============================================================================
 
 void Mem2Reg::RemoveDeadPhis() {
-  // Step 1: Collect all phi result ids and build a reverse-reference map:
-  // phi result → set of phi result_ids that reference it (among phis only).
-  // Also collect all phi results referenced from regular instructions.
+  // Step 1: Collect all phi result ids and the set of phi results referenced
+  // from any non-phi instruction.
 
   std::set<int> phi_results;
-  // phi_result → which other phi results reference it (so when we delete
-  // that phi, we know which phis to re-check)
-  std::map<int, std::set<int>> phi_refs_from_phis;
   // phi result ids that are referenced from at least one regular instruction
   std::set<int> referenced_from_insts;
 
   for (const auto &[block_id, block] : func_->blocks_) {
     for (const auto &inst : block.phi_instructions_) {
       phi_results.insert(inst.result_id);
-    }
-  }
-
-  // Scan phi conditions to build phi_refs_from_phis
-  for (const auto &[block_id, block] : func_->blocks_) {
-    for (const auto &inst : block.phi_instructions_) {
-      for (const auto &cond : inst.conditions) {
-        if (!cond.is_const && cond.var_id != 0) {
-          if (phi_results.contains(cond.var_id)) {
-            phi_refs_from_phis[cond.var_id].insert(inst.result_id);
-          }
-        }
-      }
     }
   }
 
@@ -1351,44 +1335,42 @@ void Mem2Reg::RemoveDeadPhis() {
     }
   }
 
-  // Worklist: phis that need re-checking (initially all of them)
-  std::set<int> worklist = phi_results;
-  std::set<int> alive_phis = phi_results; // currently alive
+  // Worklist-based forward propagation.
+  //
+  // Seed `alive_phis` with phis that have at least one non-phi use. Then
+  // propagate: every phi reachable through phi-operand edges from a seeded phi
+  // is also alive. Anything left over is part of a closed phi-only cycle (or
+  // a chain that only feeds into one) and is dead.
+  //
+  // The earlier "start with everything alive and retire" formulation kept
+  // mutually-referencing phi cycles alive forever, because each member always
+  // had another alive member referencing it.
+
+  std::map<int, const PhiInstruction *> phi_map;
+  for (const auto &[block_id, block] : func_->blocks_) {
+    for (const auto &inst : block.phi_instructions_) {
+      phi_map[inst.result_id] = &inst;
+    }
+  }
+
+  std::set<int> alive_phis;
+  std::queue<int> worklist;
+  for (const int phi_id : referenced_from_insts) {
+    if (phi_results.contains(phi_id) && alive_phis.insert(phi_id).second) {
+      worklist.push(phi_id);
+    }
+  }
 
   while (!worklist.empty()) {
-    // Pop one phi to check
-    int candidate = *worklist.begin();
-    worklist.erase(worklist.begin());
-
-    if (!alive_phis.contains(candidate)) continue; // already removed
-
-    // A phi is dead if nothing references it
-    bool is_live = referenced_from_insts.contains(candidate);
-    if (!is_live) {
-      // Check if another alive phi references it
-      auto ref_it = phi_refs_from_phis.find(candidate);
-      if (ref_it != phi_refs_from_phis.end()) {
-        for (int ref : ref_it->second) {
-          if (alive_phis.contains(ref)) {
-            is_live = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!is_live) {
-      // Remove this phi
-      alive_phis.erase(candidate);
-
-      // Any phi that referenced this now-dead phi may itself become dead
-      auto ref_it = phi_refs_from_phis.find(candidate);
-      if (ref_it != phi_refs_from_phis.end()) {
-        for (int ref : ref_it->second) {
-          if (alive_phis.contains(ref)) {
-            worklist.insert(ref);
-          }
-        }
+    const int p = worklist.front();
+    worklist.pop();
+    const auto it = phi_map.find(p);
+    if (it == phi_map.end()) continue;
+    for (const auto &cond : it->second->conditions) {
+      if (cond.is_const || cond.var_id == 0) continue;
+      if (!phi_results.contains(cond.var_id)) continue;
+      if (alive_phis.insert(cond.var_id).second) {
+        worklist.push(cond.var_id);
       }
     }
   }
