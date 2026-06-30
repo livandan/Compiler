@@ -83,7 +83,8 @@ private:
   void RemoveDeadInstructions() const;
   void RemoveDeadPhis();
   void SimplifyCFG();
-  void SimplifyPhiCopies();
+  bool SimplifyPhiCopies();
+  bool PropagateCopyAliases();
   bool RemoveTrivialSelects();
   bool EliminateTrivialPhis();
   bool MergePhiOnlyBlock();

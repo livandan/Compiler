@@ -78,12 +78,20 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
   RemoveDeadPhis();
 
   SimplifyCFG();
-  SimplifyPhiCopies();
-  while (RemoveTrivialSelects()) {
-    BuildUseList();
+  bool cleanup_changed = true;
+  while (cleanup_changed) {
+    cleanup_changed = false;
+    if (PropagateCopyAliases()) {
+      cleanup_changed = true;
+    }
+    if (RemoveTrivialSelects()) {
+      cleanup_changed = true;
+    }
     RemoveDeadPhis();
     SimplifyCFG();
-    SimplifyPhiCopies();
+    if (SimplifyPhiCopies()) {
+      cleanup_changed = true;
+    }
   }
 }
 
@@ -1593,6 +1601,265 @@ bool Mem2Reg::EliminateTrivialPhis() {
   return changed;
 }
 
+bool Mem2Reg::PropagateCopyAliases() {
+  bool changed = false;
+
+  struct AliasDef {
+    int source_id = -1;
+  };
+
+  auto add_alias = [](std::map<int, AliasDef> &aliases, const int result_id,
+      const int source_id) {
+    if (result_id > 0 && source_id >= 0 && result_id != source_id) {
+      aliases[result_id] = {source_id};
+    }
+  };
+
+  std::map<int, AliasDef> aliases;
+  for (const auto &[block_id, block] : func_->blocks_) {
+    for (const auto &phi : block.phi_instructions_) {
+      int candidate = -1;
+      bool is_copy = !phi.conditions.empty();
+      for (const auto &condition : phi.conditions) {
+        if (condition.is_const) {
+          is_copy = false;
+          break;
+        }
+        if (condition.var_id == phi.result_id) {
+          continue;
+        }
+        if (candidate == -1) {
+          candidate = condition.var_id;
+        } else if (candidate != condition.var_id) {
+          is_copy = false;
+          break;
+        }
+      }
+      if (is_copy && candidate != -1) {
+        add_alias(aliases, phi.result_id, candidate);
+      }
+    }
+
+    for (const auto &instruction : block.instructions_) {
+      switch (instruction.instruction_type_) {
+        case value_select_ii_: {
+          add_alias(aliases, instruction.result_id_,
+              instruction.condition_id_ == 0 ? instruction.operand_2_id_ : instruction.operand_1_id_);
+          break;
+        }
+        case value_select_iv_: {
+          if (instruction.condition_id_ != 0) {
+            add_alias(aliases, instruction.result_id_, instruction.operand_1_id_);
+          }
+          break;
+        }
+        case value_select_vi_: {
+          if (instruction.condition_id_ == 0) {
+            add_alias(aliases, instruction.result_id_, instruction.operand_2_id_);
+          }
+          break;
+        }
+        case variable_select_ii_: {
+          if (instruction.operand_1_id_ == instruction.operand_2_id_) {
+            add_alias(aliases, instruction.result_id_, instruction.operand_1_id_);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
+  const auto original_aliases = aliases;
+  auto resolve_alias = [&](int var_id) {
+    std::set<int> visited;
+    while (original_aliases.contains(var_id) && !visited.contains(var_id)) {
+      visited.insert(var_id);
+      var_id = original_aliases.at(var_id).source_id;
+    }
+    return std::make_pair(var_id, !original_aliases.contains(var_id));
+  };
+
+  std::map<int, AliasDef> resolved_aliases;
+  for (const auto &[result_id, alias] : original_aliases) {
+    const auto [source_id, has_root] = resolve_alias(alias.source_id);
+    if (!has_root || source_id == result_id) {
+      continue;
+    }
+    resolved_aliases[result_id] = {source_id};
+  }
+  aliases = std::move(resolved_aliases);
+  if (aliases.empty()) {
+    return false;
+  }
+
+  auto rewrite_var = [&](int &var_id) {
+    if (!aliases.contains(var_id)) {
+      return;
+    }
+    const int replacement = aliases.at(var_id).source_id;
+    if (replacement != var_id) {
+      var_id = replacement;
+      changed = true;
+    }
+  };
+
+  auto rewrite_instruction = [&](IRInstruction &instruction) {
+    switch (instruction.instruction_type_) {
+      case two_var_binary_operation_:
+      case two_var_icmp_: {
+        rewrite_var(instruction.operand_1_id_);
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case var_const_binary_operation_:
+      case var_const_icmp_: {
+        rewrite_var(instruction.operand_1_id_);
+        break;
+      }
+      case const_var_binary_operation_:
+      case const_var_icmp_: {
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case conditional_br_: {
+        rewrite_var(instruction.condition_id_);
+        break;
+      }
+      case variable_ret_: {
+        rewrite_var(instruction.result_id_);
+        break;
+      }
+      case load_:
+      case ptr_load_: {
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      case variable_store_:
+      case ptr_store_: {
+        rewrite_var(instruction.result_id_);
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      case value_store_: {
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      case get_element_ptr_by_value_: {
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      case get_element_ptr_by_variable_: {
+        rewrite_var(instruction.pointer_);
+        rewrite_var(instruction.index_);
+        break;
+      }
+      case non_void_call_:
+      case void_call_:
+      case builtin_call_: {
+        for (auto &argument : instruction.function_call_arguments_) {
+          if (argument.is_variable_) {
+            rewrite_var(argument.value_);
+          }
+        }
+        break;
+      }
+      case value_select_ii_: {
+        rewrite_var(instruction.operand_1_id_);
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case value_select_iv_: {
+        rewrite_var(instruction.operand_1_id_);
+        break;
+      }
+      case value_select_vi_: {
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case variable_select_ii_: {
+        rewrite_var(instruction.condition_id_);
+        rewrite_var(instruction.operand_1_id_);
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case variable_select_iv_: {
+        rewrite_var(instruction.condition_id_);
+        rewrite_var(instruction.operand_1_id_);
+        break;
+      }
+      case variable_select_vi_: {
+        rewrite_var(instruction.condition_id_);
+        rewrite_var(instruction.operand_2_id_);
+        break;
+      }
+      case variable_select_vv_: {
+        rewrite_var(instruction.condition_id_);
+        break;
+      }
+      case builtin_memset_: {
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      case builtin_memcpy_: {
+        rewrite_var(instruction.destination_);
+        rewrite_var(instruction.pointer_);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  for (auto &[block_id, block] : func_->blocks_) {
+    for (auto &phi : block.phi_instructions_) {
+      for (auto &condition : phi.conditions) {
+        if (!condition.is_const) {
+          rewrite_var(condition.var_id);
+        }
+      }
+    }
+    for (auto &instruction : block.instructions_) {
+      rewrite_instruction(instruction);
+    }
+  }
+
+  for (auto &[block_id, block] : func_->blocks_) {
+    for (auto it = block.phi_instructions_.begin();
+         it != block.phi_instructions_.end();) {
+      if (aliases.contains(it->result_id)) {
+        it = block.phi_instructions_.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+
+    for (auto &instruction : block.instructions_) {
+      switch (instruction.instruction_type_) {
+        case value_select_ii_:
+        case value_select_iv_:
+        case value_select_vi_:
+        case variable_select_ii_: {
+          if (aliases.contains(instruction.result_id_)) {
+            instruction.instruction_type_ = unknown_;
+            changed = true;
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
+  if (changed) {
+    RemoveDeadInstructions();
+  }
+  return changed;
+}
+
 bool Mem2Reg::RemoveTrivialSelects() {
   bool changed = false;
 
@@ -1982,7 +2249,8 @@ bool Mem2Reg::MergePhiOnlyBlock() {
   return false;
 }
 
-void Mem2Reg::SimplifyPhiCopies() {
+bool Mem2Reg::SimplifyPhiCopies() {
+  bool any_changed = false;
   bool changed = true;
   while (changed) {
     changed = false;
@@ -1990,12 +2258,15 @@ void Mem2Reg::SimplifyPhiCopies() {
       RemoveDeadPhis();
       SimplifyCFG();
       changed = true;
+      any_changed = true;
       continue;
     }
     if (MergePhiOnlyBlock()) {
       RemoveDeadPhis();
       SimplifyCFG();
       changed = true;
+      any_changed = true;
     }
   }
+  return any_changed;
 }
