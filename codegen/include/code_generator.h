@@ -312,7 +312,9 @@ struct RISCVBlock {
     instructions_.push_back(RISCVInstruction(r_li_, rd, -1, -1, imm, -1));
   }
   void PushReturn(const int released_stack_space) {
-    if (released_stack_space < 2048) {
+    if (released_stack_space == 0) {
+      // No frame to release — skip the sp adjustment entirely.
+    } else if (released_stack_space < 2048) {
       PushArithmetic_I(r_addi_, 2, 2, released_stack_space);
     } else {
       PushLi(31, released_stack_space);

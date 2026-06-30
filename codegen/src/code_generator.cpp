@@ -510,6 +510,11 @@ void CodeGenerator::MemAlloc(const int func_id) {
   }
 }
 
+// Forward declaration of helper defined later in this file so that
+// CompactStackFrame can skip stack slots for icmps that are fused into the
+// following conditional branch and never materialize a value.
+static std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &function);
+
 void CodeGenerator::CompactStackFrame(const int func_id) {
   auto &riscv_func = RISCV_functions_[func_id];
   const auto &ir_func = IR_functions_[func_id];
@@ -1038,6 +1043,12 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
     const int data_size = GetSize(instruction.result_type_).first;
     remember_alloca(instruction.result_id_, data_size, GetAlignment(instruction.result_type_));
   }
+  // Direct-branch icmps are fused with their following conditional branch
+  // and never materialize a value; they need no stack slot.
+  std::set<int> direct_icmp_result_ids;
+  for (const auto &[bid, cmp] : FindDirectBranchIcmps(ir_func)) {
+    direct_icmp_result_ids.insert(cmp.result_id_);
+  }
   for (const auto &[block_id, block] : ir_func.blocks_) {
     for (const auto &instruction : block.instructions_) {
       switch (instruction.instruction_type_) {
@@ -1076,6 +1087,7 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
         case two_var_icmp_:
         case var_const_icmp_:
         case const_var_icmp_: {
+          if (direct_icmp_result_ids.contains(instruction.result_id_)) break;
           remember_stack_var(instruction.result_id_, 1, 1, false);
           break;
         }
@@ -1104,10 +1116,15 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   auto &save_offsets = reg_save_offsets_[func_id];
   save_offsets.clear();
   const int save_area_start = offset;
-  for (int reg : used_caller_regs_[func_id]) {
-    offset = AlignUp(offset, 8);
-    save_offsets[reg] = offset;
-    offset += 8;
+  // Leaf functions never make calls, so caller-saved registers are never
+  // saved across calls and need no save slots.  Only callee-saved registers
+  // (which the callee must preserve for its caller) require frame space.
+  if (!is_leaf_[func_id]) {
+    for (int reg : used_caller_regs_[func_id]) {
+      offset = AlignUp(offset, 8);
+      save_offsets[reg] = offset;
+      offset += 8;
+    }
   }
   for (int reg : used_callee_regs_[func_id]) {
     if (save_offsets.contains(reg)) continue;
@@ -2637,7 +2654,9 @@ void CodeGenerator::Generate() {
     // alloca
     auto &bb0 = RISCV_functions_[i].alloca_block_;
     // move sp & store registers
-    bb0.PushArithmetic_I(r_addi_, 2, 2, -stack_space);
+    if (stack_space != 0) {
+      bb0.PushArithmetic_I(r_addi_, 2, 2, -stack_space);
+    }
     SaveCalleeRegs(i, bb0);
     for (const auto &instruction : IR_functions_[i].alloca_instructions_) {
       const int allocated_start_addr_offset = alloca_data_offsets_[i].at(instruction.result_id_);

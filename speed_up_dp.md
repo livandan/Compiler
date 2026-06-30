@@ -996,6 +996,104 @@ optimized reference on three test inputs.
 Next: Fix A2 to drop the now-empty leaf-function stack frames, then Fix B1
 (`mv + slli` peephole) for the per-iter savings inside `run_grid_dp` itself.
 
+#### Result After Landing Fix A2
+
+After A1 the leaf-function frames were *unused* but still allocated. `norm`
+still emitted `addi sp, sp, -48` / `addi sp, sp, 48` even though no
+instruction inside the body touched the stack; `pm_rand_update` did the
+same with a 64-byte frame.
+
+Three independent things were keeping the frame alive:
+
+1. **`CompactStackFrame` reserved save slots for every register listed in
+   `used_caller_regs_[func_id]`** (`code_generator.cpp:1107`). Leaf
+   functions never `call`, so the caller-save area is unreachable — these
+   slots are dead reserved space.
+
+2. **The prologue unconditionally emitted `addi sp, sp, -stack_space`**
+   (`code_generator.cpp:2640`) and **`PushReturn` unconditionally emitted
+   the matching positive `addi`** (`codegen/include/code_generator.h:314`),
+   even when `stack_space` was 0.
+
+3. **Direct-branch icmps still got a 1-byte stack slot in
+   `CompactStackFrame`** even though the icmp is fused into the following
+   conditional branch and never materializes a value. For `norm`,
+   `var.8 = icmp slt var.4, 0` is fused with `bge a2, x0, .LBB10_6` — no
+   slot needed, but `remember_stack_var(result_id, 1, 1, false)` was being
+   called anyway. After dropping the caller-save slots, this 1-byte slot
+   was rounding the frame up to 16 bytes (RV64 alignment).
+
+The fix is three small changes, all in `codegen/`:
+
+- `code_generator.cpp:1107` — skip the `used_caller_regs_` save-slot loop
+  when `is_leaf_[func_id]` is true. Callee-saved registers still get
+  slots because a leaf still has to preserve them for its caller.
+- `code_generator.cpp:2640` — guard the prologue `addi sp, sp,
+  -stack_space` behind `if (stack_space != 0)`.
+- `codegen/include/code_generator.h:314` — `PushReturn(0)` now skips the
+  positive `addi sp, sp, 0` and emits only the `ret`.
+- `code_generator.cpp:1043` — collect direct-branch icmp result ids once
+  and skip them in the icmp `remember_stack_var` case
+  (`code_generator.cpp:1078`). A forward declaration of the existing
+  `FindDirectBranchIcmps` helper makes the call available to
+  `CompactStackFrame`.
+
+Resulting leaf-function asm (no `addi sp`, no `sw`/`lw` at all):
+
+```text
+RCompiler-Testcases/working_space/debugging_my.s:325  (norm, fn.2)
+```
+
+```asm
+fn.2:
+.LBB10_0:
+    li      t1, 1000003
+    remw    a2, a0, t1
+    mv      a1, a2
+    bge     a2, x0, .LBB10_6
+.LBB10_5:
+    li      t6, 1000003
+    addw    a2, a2, t6
+    mv      a1, a2
+.LBB10_6:
+    mv      a0, a1
+    ret
+```
+
+11 instructions vs the optimized reference's 6, and vs 14 pre-A1. The
+remaining 5-instruction gap is entirely the three residual phi-coalescing
+`mv`s and the reload of `1000003` into `t6` — neither involves memory.
+
+`pm_rand_update` (`fn.4`) lands at 16 instructions vs the reference's 13,
+again with no stack ops.
+
+Per-function static count after A2 (vs reference and pre-A1):
+
+| Function | Pre-A1 | Post-A1 | Post-A2 | Reference |
+| --- | ---: | ---: | ---: | ---: |
+| `norm` (fn.2) | 14 (incl 2 sw + 1 lw + 2 addi sp) | 13 (incl 2 addi sp) | **11** (no mem, no sp) | 6 |
+| `pm_rand_update` (fn.4) | 19 (incl 2 sw + 1 lw + 2 addi sp) | 18 (incl 2 addi sp) | **16** (no mem, no sp) | 13 |
+
+Dynamic impact in `run_grid_dp`'s inner `j` loop (3 calls per iter):
+
+| | Pre-A1 | Post-A1 | Post-A2 |
+| --- | ---: | ---: | ---: |
+| Stack `sw`+`lw` inside callees | 9 | 0 | 0 |
+| `addi sp, sp, ±X` inside callees | 6 | 6 | 0 |
+| Total leaf-ceremony instructions / iter | 15 | 6 | 0 |
+
+On bare RV64 this eliminates a sequence of dependent ops (`addi sp`,
+followed by stores using `sp + offset`, followed by the `call`/`ret`
+hazard, followed by `addi sp` restore) at every call site of the hot loop.
+This was the largest remaining contributor to the 3x slowdown.
+
+Correctness: `CodegenTest.test_all` (100 cases) passes; all 50 IR-1
+end-to-end tests pass; `opti_dp_suite` produces byte-identical output to
+the optimized reference on three test inputs.
+
+Next: Fix B1 (`mv + slli` peephole) — about 5 instructions per inner-`j`
+iter inside `run_grid_dp` itself.
+
 ## Regression Metrics
 
 For `opti_dp_suite`, track per-function:
