@@ -84,6 +84,7 @@ private:
   void RemoveDeadPhis();
   void SimplifyCFG();
   void SimplifyPhiCopies();
+  bool RemoveTrivialSelects();
   bool EliminateTrivialPhis();
   bool MergePhiOnlyBlock();
 

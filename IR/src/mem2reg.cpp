@@ -79,6 +79,12 @@ void Mem2Reg::RunOnFunction(IRFunctionNode &func) {
 
   SimplifyCFG();
   SimplifyPhiCopies();
+  while (RemoveTrivialSelects()) {
+    BuildUseList();
+    RemoveDeadPhis();
+    SimplifyCFG();
+    SimplifyPhiCopies();
+  }
 }
 
 // ============================================================================
@@ -1582,6 +1588,169 @@ bool Mem2Reg::EliminateTrivialPhis() {
         ++it;
       }
     }
+  }
+
+  return changed;
+}
+
+bool Mem2Reg::RemoveTrivialSelects() {
+  bool changed = false;
+
+  struct SelectReplacement {
+    bool found = false;
+    ReachingDef replacement = ReachingDef::Undef();
+  };
+
+  auto get_select_replacement = [](const IRInstruction &instruction) {
+    SelectReplacement result;
+    switch (instruction.instruction_type_) {
+      case value_select_ii_: {
+        result.found = true;
+        result.replacement = instruction.condition_id_ == 0
+            ? ReachingDef::Var(instruction.operand_2_id_)
+            : ReachingDef::Var(instruction.operand_1_id_);
+        break;
+      }
+      case value_select_iv_: {
+        result.found = true;
+        result.replacement = instruction.condition_id_ == 0
+            ? ReachingDef::Const(instruction.operand_2_id_)
+            : ReachingDef::Var(instruction.operand_1_id_);
+        break;
+      }
+      case value_select_vi_: {
+        result.found = true;
+        result.replacement = instruction.condition_id_ == 0
+            ? ReachingDef::Var(instruction.operand_2_id_)
+            : ReachingDef::Const(instruction.operand_1_id_);
+        break;
+      }
+      case value_select_vv_: {
+        result.found = true;
+        result.replacement = instruction.condition_id_ == 0
+            ? ReachingDef::Const(instruction.operand_2_id_)
+            : ReachingDef::Const(instruction.operand_1_id_);
+        break;
+      }
+      case variable_select_ii_: {
+        if (instruction.operand_1_id_ == instruction.operand_2_id_) {
+          result.found = true;
+          result.replacement = ReachingDef::Var(instruction.operand_1_id_);
+        }
+        break;
+      }
+      case variable_select_iv_: {
+        // No same-value proof is possible across variable vs literal operands.
+        break;
+      }
+      case variable_select_vi_: {
+        // No same-value proof is possible across literal vs variable operands.
+        break;
+      }
+      case variable_select_vv_: {
+        if (instruction.operand_1_id_ == instruction.operand_2_id_) {
+          result.found = true;
+          result.replacement = ReachingDef::Const(instruction.operand_1_id_);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    return result;
+  };
+
+  auto count_definitions = [&]() {
+    std::map<int, int> definition_count;
+    auto add_definition = [&](const int id) {
+      if (id >= 0) {
+        ++definition_count[id];
+      }
+    };
+
+    for (int parameter_id = 0;
+         parameter_id < static_cast<int>(func_->parameter_types_.size());
+         ++parameter_id) {
+      add_definition(parameter_id);
+    }
+    for (const auto &instruction : func_->alloca_instructions_) {
+      add_definition(instruction.result_id_);
+    }
+    for (const auto &[block_id, block] : func_->blocks_) {
+      for (const auto &phi : block.phi_instructions_) {
+        add_definition(phi.result_id);
+      }
+      for (const auto &instruction : block.instructions_) {
+        switch (instruction.instruction_type_) {
+          case two_var_binary_operation_:
+          case var_const_binary_operation_:
+          case const_var_binary_operation_:
+          case load_:
+          case ptr_load_:
+          case get_element_ptr_by_value_:
+          case get_element_ptr_by_variable_:
+          case two_var_icmp_:
+          case var_const_icmp_:
+          case const_var_icmp_:
+          case non_void_call_:
+          case builtin_call_:
+          case value_select_ii_:
+          case value_select_iv_:
+          case value_select_vi_:
+          case value_select_vv_:
+          case variable_select_ii_:
+          case variable_select_iv_:
+          case variable_select_vi_:
+          case variable_select_vv_: {
+            add_definition(instruction.result_id_);
+            break;
+          }
+          default:
+            break;
+        }
+      }
+    }
+    return definition_count;
+  };
+
+  while (true) {
+    BuildUseList();
+    const auto definition_count = count_definitions();
+    bool removed_one = false;
+
+    for (auto &[block_id, block] : func_->blocks_) {
+      for (auto &instruction : block.instructions_) {
+        const auto replacement = get_select_replacement(instruction);
+        if (!replacement.found) {
+          continue;
+        }
+        const auto definition_it = definition_count.find(instruction.result_id_);
+        if (definition_it == definition_count.end() || definition_it->second != 1) {
+          continue;
+        }
+        if (!replacement.replacement.is_constant &&
+            replacement.replacement.var_id == instruction.result_id_) {
+          continue;
+        }
+        if (replacement.replacement.is_constant && instruction.result_type_ != nullptr &&
+            instruction.result_type_->basic_type == pointer_type) {
+          continue;
+        }
+        ReplaceAllUses(instruction.result_id_, replacement.replacement);
+        instruction.instruction_type_ = unknown_;
+        changed = true;
+        removed_one = true;
+        break;
+      }
+      if (removed_one) {
+        break;
+      }
+    }
+
+    if (!removed_one) {
+      break;
+    }
+    RemoveDeadInstructions();
   }
 
   return changed;
