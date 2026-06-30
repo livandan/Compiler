@@ -392,6 +392,23 @@ void RegisterAllocator::ClassifyVariables() {
             BitSet(is_allocatable_, result_id);
             var_size_[result_id] = 8;
             break;
+          // Non-defining instructions reuse `result_id_` to carry an *operand*
+          // (the value being returned/stored, the branch condition, etc.). They
+          // do not introduce a new SSA value, so they must not influence the
+          // classification of the variable whose id they're carrying — otherwise
+          // a phi result that shares the id (e.g. a phi feeding a `ret`) gets
+          // wrongly stack-bound and never coalesced.
+          case variable_ret_:
+          case value_ret_:
+          case void_ret_:
+          case conditional_br_:
+          case unconditional_br_:
+          case variable_store_:
+          case value_store_:
+          case ptr_store_:
+          case void_call_:
+          case builtin_memcpy_:
+            break;
           default:
             BitSet(is_stack_bound_, result_id);
             break;
