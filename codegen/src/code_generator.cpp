@@ -1,11 +1,15 @@
 #include "code_generator.h"
 #include "register_allocator.h"
 #include "fstream"
+#include <iostream>
 #include "item.h"
 #include <algorithm>
+#include <array>
+#include <climits>
 #include <cstdint>
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 enum saver {no_saver, caller_save, callee_save};
@@ -1727,6 +1731,235 @@ static std::map<int, IRInstruction> FindDirectBranchIcmps(const IRFunctionNode &
   return result;
 }
 
+// Step 5: block-local store-to-load forwarding for sp-relative scalar slots.
+// Replaces `lw rB, off(sp)` (resp. `ld`) with `mv rB, rA` when the most recent
+// store to the same slot has source register rA and rA still holds the same
+// value at the load.  Safe across plain integer/move instructions; bails out
+// on control flow, calls, unknown-base stores, and conflicting overlapping
+// writes.
+static void ForwardScalarStackStoreLoads(
+    std::vector<RISCVInstruction> &instructions,
+    const std::vector<char> &removed_indices) {
+  std::unordered_map<int, int> word_slot;
+  std::unordered_map<int, int> dword_slot;
+
+  auto invalidate_all = [&]() {
+    word_slot.clear();
+    dword_slot.clear();
+  };
+  auto invalidate_by_reg = [&](int reg) {
+    if (reg < 0) return;
+    for (auto it = word_slot.begin(); it != word_slot.end();) {
+      if (it->second == reg) it = word_slot.erase(it); else ++it;
+    }
+    for (auto it = dword_slot.begin(); it != dword_slot.end();) {
+      if (it->second == reg) it = dword_slot.erase(it); else ++it;
+    }
+  };
+  auto invalidate_overlap = [&](int off, int len) {
+    for (auto it = word_slot.begin(); it != word_slot.end();) {
+      const int k = it->first;
+      if (k + 4 > off && k < off + len) it = word_slot.erase(it); else ++it;
+    }
+    for (auto it = dword_slot.begin(); it != dword_slot.end();) {
+      const int k = it->first;
+      if (k + 8 > off && k < off + len) it = dword_slot.erase(it); else ++it;
+    }
+  };
+
+  for (int i = 0; i < static_cast<int>(instructions.size()); ++i) {
+    if (removed_indices[i]) continue;
+    auto &inst = instructions[i];
+    const auto t = inst.instruction_type_;
+
+    if (t == r_call_ || t == r_j_ || t == r_ret_ || t == r_jal_ ||
+        t == r_jalr_ || t == r_jr_ || IsDirectLabelBranch(inst) ||
+        t == r_beq_ || t == r_bge_ || t == r_bgeu_ || t == r_blt_ ||
+        t == r_bltu_ || t == r_bne_ || t == r_beqz_ || t == r_bnez_) {
+      invalidate_all();
+      continue;
+    }
+
+    if (t == r_sw_ && inst.rs1_ == 2) {
+      invalidate_overlap(inst.imm_, 4);
+      word_slot[inst.imm_] = inst.rs2_;
+      continue;
+    }
+    if (t == r_sd_ && inst.rs1_ == 2) {
+      invalidate_overlap(inst.imm_, 8);
+      dword_slot[inst.imm_] = inst.rs2_;
+      continue;
+    }
+    if (t == r_sb_ && inst.rs1_ == 2) {
+      invalidate_overlap(inst.imm_, 1);
+      continue;
+    }
+    if (t == r_sh_ && inst.rs1_ == 2) {
+      invalidate_overlap(inst.imm_, 2);
+      continue;
+    }
+    if (t == r_sb_ || t == r_sh_ || t == r_sw_ || t == r_sd_) {
+      // Store through a non-sp base; could alias spill slots.
+      invalidate_all();
+      continue;
+    }
+
+    if (t == r_lw_ && inst.rs1_ == 2) {
+      auto it = word_slot.find(inst.imm_);
+      if (it != word_slot.end()) {
+        const int src_reg = it->second;
+        const int dst_reg = inst.rd_;
+        inst.instruction_type_ = r_mv_;
+        inst.rs1_ = src_reg;
+        inst.rs2_ = -1;
+        inst.imm_ = -1;
+        invalidate_by_reg(dst_reg);
+        // The destination now equals src_reg.  Tracking it as a synonymous
+        // word_slot helps catch chained forwarding (`mv rB, rA; sw rB, off2`
+        // is captured by the alias pass instead, so nothing to do here).
+        continue;
+      }
+      invalidate_by_reg(inst.rd_);
+      continue;
+    }
+    if (t == r_ld_ && inst.rs1_ == 2) {
+      auto it = dword_slot.find(inst.imm_);
+      if (it != dword_slot.end()) {
+        const int src_reg = it->second;
+        const int dst_reg = inst.rd_;
+        inst.instruction_type_ = r_mv_;
+        inst.rs1_ = src_reg;
+        inst.rs2_ = -1;
+        inst.imm_ = -1;
+        invalidate_by_reg(dst_reg);
+        continue;
+      }
+      invalidate_by_reg(inst.rd_);
+      continue;
+    }
+
+    const auto masks = InstructionRegUseDefMasks(inst);
+    std::uint32_t defs = masks.defs;
+    while (defs) {
+      const int reg = __builtin_ctz(defs);
+      invalidate_by_reg(reg);
+      defs &= defs - 1;
+    }
+  }
+}
+
+// Block-local copy propagation: when `mv rD, rS` precedes uses of rD with no
+// intervening redefinition of rD or rS, rewrite those uses to read rS instead.
+// Dead mvs become removable after this rewrite.
+static void LocalCopyPropagate(
+    std::vector<RISCVInstruction> &instructions,
+    const std::vector<char> &removed_indices) {
+  std::array<int, 32> alias;
+  alias.fill(-1);
+
+  auto kill_def = [&](int reg) {
+    if (reg < 0 || reg >= 32) return;
+    alias[reg] = -1;
+    for (int i = 0; i < 32; ++i) {
+      if (alias[i] == reg) alias[i] = -1;
+    }
+  };
+  auto rewrite_use = [&](int reg) -> int {
+    if (reg <= 0 || reg >= 32) return reg;
+    return alias[reg] != -1 ? alias[reg] : reg;
+  };
+
+  for (int i = 0; i < static_cast<int>(instructions.size()); ++i) {
+    if (removed_indices[i]) continue;
+    auto &inst = instructions[i];
+    const auto t = inst.instruction_type_;
+
+    if (t == r_call_) {
+      kill_def(1);
+      for (int r = 5; r <= 7; ++r) kill_def(r);
+      for (int r = 10; r <= 17; ++r) kill_def(r);
+      for (int r = 28; r <= 31; ++r) kill_def(r);
+      continue;
+    }
+
+    const auto masks = InstructionRegUseDefMasks(inst);
+    if (inst.rs1_ >= 1 && inst.rs1_ < 32 && (masks.uses & RegisterMask(inst.rs1_))) {
+      inst.rs1_ = rewrite_use(inst.rs1_);
+    }
+    if (inst.rs2_ >= 1 && inst.rs2_ < 32 && (masks.uses & RegisterMask(inst.rs2_))) {
+      inst.rs2_ = rewrite_use(inst.rs2_);
+    }
+
+    std::uint32_t defs = masks.defs;
+    while (defs) {
+      const int reg = __builtin_ctz(defs);
+      kill_def(reg);
+      defs &= defs - 1;
+    }
+
+    if (t == r_mv_) {
+      const int dst = inst.rd_;
+      const int src = inst.rs1_;
+      if (dst >= 1 && dst < 32 && src >= 0 && src < 32 && dst != src) {
+        alias[dst] = src;
+      }
+    }
+  }
+}
+
+// Remove `mv rD, rS` instructions whose destination is dead at exit and dead
+// in the rest of the block.  Calls are modelled as using a0..a7 to keep
+// argument-passing moves alive.
+static void RemoveDeadMoves(
+    std::vector<RISCVInstruction> &instructions,
+    std::vector<char> &removed_indices,
+    const std::set<int> &live_out_regs) {
+  std::set<int> live = live_out_regs;
+
+  auto remove_defs = [&](std::uint32_t defs) {
+    while (defs) {
+      live.erase(__builtin_ctz(defs));
+      defs &= defs - 1;
+    }
+  };
+  auto add_uses = [&](std::uint32_t uses) {
+    while (uses) {
+      live.insert(__builtin_ctz(uses));
+      uses &= uses - 1;
+    }
+  };
+
+  for (int i = static_cast<int>(instructions.size()) - 1; i >= 0; --i) {
+    if (removed_indices[i]) continue;
+    auto &inst = instructions[i];
+    const auto t = inst.instruction_type_;
+
+    if (t == r_call_) {
+      const auto masks = InstructionRegUseDefMasks(inst);
+      remove_defs(masks.defs);
+      // Conservative argument-use set: a0..a7.  Keeps caller-side argument
+      // setup moves alive.
+      for (int r = 10; r <= 17; ++r) live.insert(r);
+      continue;
+    }
+
+    if (t == r_mv_) {
+      const int dst = inst.rd_;
+      if (dst >= 0 && dst < 32 && live.find(dst) == live.end()) {
+        removed_indices[i] = 1;
+        continue;
+      }
+      if (dst >= 0 && dst < 32) live.erase(dst);
+      if (inst.rs1_ > 0 && inst.rs1_ < 32) live.insert(inst.rs1_);
+      continue;
+    }
+
+    const auto masks = InstructionRegUseDefMasks(inst);
+    remove_defs(masks.defs);
+    add_uses(masks.uses);
+  }
+}
+
 void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     const std::set<int> &live_out_regs) const {
   std::vector<RISCVInstruction> optimized;
@@ -1799,6 +2032,13 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
       clear_pending_mask(reg_masks[i].uses | reg_masks[i].defs);
     }
   }
+
+  // Step 5: scalar stack-slot store-to-load forwarding, followed by local
+  // copy propagation and dead-mv removal.  Runs after restore-save elim so
+  // that its `removed_indices` entries are respected.
+  ForwardScalarStackStoreLoads(r_block.instructions_, removed_indices);
+  LocalCopyPropagate(r_block.instructions_, removed_indices);
+  RemoveDeadMoves(r_block.instructions_, removed_indices, live_out_regs);
 
   auto emit = [&](RISCVInstruction inst) {
     if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
@@ -1904,6 +2144,174 @@ void CodeGenerator::SaveCalleeRegs(int func_id, RISCVBlock &r_block) {
 void CodeGenerator::RestoreCalleeRegs(int func_id, RISCVBlock &r_block) {
   for (int reg : used_callee_regs_[func_id]) {
     r_block.PushMemory_I(r_ld_, reg, RegSavedLocation(func_id, reg), 2);
+  }
+}
+
+void CodeGenerator::EliminateDeadStackStores(const int func_id) {
+  auto &riscv_func = RISCV_functions_[func_id];
+
+  // Pass 1: collect sp-relative read offsets (with sizes) and minimum non-sp
+  // pointer base that could potentially alias spill slots.
+  std::vector<std::pair<int, int>> reads;  // (offset, size)
+  int min_ptr_base = INT_MAX;
+  bool unknown_ptr_base = false;
+
+  auto scan_block = [&](const RISCVBlock &block) {
+    std::array<int, 32> sp_alias{};
+    std::array<int, 32> li_value{};
+    sp_alias.fill(INT_MIN);
+    li_value.fill(INT_MIN);
+
+    for (const auto &inst : block.instructions_) {
+      const auto t = inst.instruction_type_;
+
+      // Collect sp-relative loads (with size).
+      int load_size = 0;
+      switch (t) {
+        case r_lb_: case r_lbu_: load_size = 1; break;
+        case r_lh_: case r_lhu_: load_size = 2; break;
+        case r_lw_: load_size = 4; break;
+        case r_ld_: load_size = 8; break;
+        default: break;
+      }
+      if (load_size > 0 && inst.rs1_ == 2) {
+        reads.emplace_back(inst.imm_, load_size);
+      }
+
+      // Track sp-derived pointer offsets to bound the alias-risk region.
+      // Skip stack-pointer adjustments (rd == sp) — those just slide the
+      // frame, they don't create aliased pointers.
+      if (t == r_addi_ && inst.rs1_ == 2 && inst.rd_ != 2) {
+        if (inst.rd_ >= 0 && inst.rd_ < 32) {
+          sp_alias[inst.rd_] = inst.imm_;
+          li_value[inst.rd_] = INT_MIN;
+        }
+        if (inst.imm_ < min_ptr_base) min_ptr_base = inst.imm_;
+        continue;
+      }
+      if (t == r_li_) {
+        if (inst.rd_ >= 0 && inst.rd_ < 32) {
+          li_value[inst.rd_] = inst.imm_;
+          sp_alias[inst.rd_] = INT_MIN;
+        }
+        continue;
+      }
+      if (t == r_add_ && (inst.rs1_ == 2 || inst.rs2_ == 2) && inst.rd_ != 2) {
+        int other = (inst.rs1_ == 2) ? inst.rs2_ : inst.rs1_;
+        if (other >= 0 && other < 32 && li_value[other] != INT_MIN) {
+          const int new_offset = li_value[other];
+          if (inst.rd_ >= 0 && inst.rd_ < 32) {
+            sp_alias[inst.rd_] = new_offset;
+            li_value[inst.rd_] = INT_MIN;
+          }
+          if (new_offset < min_ptr_base) min_ptr_base = new_offset;
+        } else {
+          // sp combined with unknown value — could be any offset.
+          unknown_ptr_base = true;
+          if (inst.rd_ >= 0 && inst.rd_ < 32) {
+            sp_alias[inst.rd_] = INT_MIN;
+            li_value[inst.rd_] = INT_MIN;
+          }
+        }
+        continue;
+      }
+      if (t == r_addi_ && inst.rd_ == 2) {
+        // Stack-pointer adjustment; ignore.
+        continue;
+      }
+      if (t == r_add_ && inst.rd_ == 2) {
+        // Stack-pointer adjustment; ignore.
+        continue;
+      }
+      if (t == r_add_) {
+        // add rD, rS, rT — propagate sp_alias if exactly one of rs1/rs2 holds
+        // a known sp-offset and the other holds a known constant.
+        int alias_base = INT_MIN;
+        int const_addend = INT_MIN;
+        if (inst.rs1_ >= 0 && inst.rs1_ < 32 && sp_alias[inst.rs1_] != INT_MIN &&
+            inst.rs2_ >= 0 && inst.rs2_ < 32 && li_value[inst.rs2_] != INT_MIN) {
+          alias_base = sp_alias[inst.rs1_];
+          const_addend = li_value[inst.rs2_];
+        } else if (inst.rs2_ >= 0 && inst.rs2_ < 32 && sp_alias[inst.rs2_] != INT_MIN &&
+                   inst.rs1_ >= 0 && inst.rs1_ < 32 && li_value[inst.rs1_] != INT_MIN) {
+          alias_base = sp_alias[inst.rs2_];
+          const_addend = li_value[inst.rs1_];
+        }
+        if (alias_base != INT_MIN) {
+          int new_base = alias_base + const_addend;
+          if (inst.rd_ >= 0 && inst.rd_ < 32) sp_alias[inst.rd_] = new_base;
+          if (new_base < min_ptr_base) min_ptr_base = new_base;
+        } else {
+          if (inst.rd_ >= 0 && inst.rd_ < 32) {
+            sp_alias[inst.rd_] = INT_MIN;
+            li_value[inst.rd_] = INT_MIN;
+          }
+        }
+        continue;
+      }
+
+      // Any other defs kill alias tracking.
+      const auto masks = InstructionRegUseDefMasks(inst);
+      std::uint32_t defs = masks.defs;
+      while (defs) {
+        const int reg = __builtin_ctz(defs);
+        if (reg >= 0 && reg < 32) {
+          sp_alias[reg] = INT_MIN;
+          li_value[reg] = INT_MIN;
+        }
+        defs &= defs - 1;
+      }
+    }
+  };
+
+  scan_block(riscv_func.alloca_block_);
+  for (const auto &[id, block] : riscv_func.blocks_) {
+    scan_block(block);
+  }
+
+  if (unknown_ptr_base) {
+    // Can't safely eliminate any stack-relative store.
+    return;
+  }
+
+  auto store_size = [](RISCVInstructionType t) -> int {
+    switch (t) {
+      case r_sb_: return 1;
+      case r_sh_: return 2;
+      case r_sw_: return 4;
+      case r_sd_: return 8;
+      default: return 0;
+    }
+  };
+
+  auto store_dead = [&](const RISCVInstruction &inst) -> bool {
+    if (inst.rs1_ != 2) return false;
+    const auto t = inst.instruction_type_;
+    const int size = store_size(t);
+    if (size == 0) return false;
+    const int off = inst.imm_;
+    // Spill region must be strictly below any computed pointer base.
+    if (off + size > min_ptr_base) return false;
+    // Precise overlap check against tracked reads.
+    for (const auto &[r_off, r_size] : reads) {
+      if (r_off < off + size && r_off + r_size > off) return false;
+    }
+    return true;
+  };
+
+  auto remove_dead = [&](RISCVBlock &block) {
+    std::vector<RISCVInstruction> kept;
+    kept.reserve(block.instructions_.size());
+    for (const auto &inst : block.instructions_) {
+      if (store_dead(inst)) continue;
+      kept.push_back(inst);
+    }
+    block.instructions_ = std::move(kept);
+  };
+
+  remove_dead(riscv_func.alloca_block_);
+  for (auto &[id, block] : riscv_func.blocks_) {
+    remove_dead(block);
   }
 }
 
@@ -4082,6 +4490,7 @@ void CodeGenerator::Generate() {
       }
       PeepholeOptimizeBlock(r_block, live_out_regs[block_id]);
     }
+    EliminateDeadStackStores(i);
     RelaxFarBranches(i);
   }
 }

@@ -482,6 +482,7 @@ private:
   void RestoreCalleeRegs(int func_id, RISCVBlock &r_block);
   void FlushSavedRegisters(int func_id, RISCVBlock &r_block);
   void PeepholeOptimizeBlock(RISCVBlock &r_block, const std::set<int> &live_out_regs) const;
+  void EliminateDeadStackStores(int func_id);
   void RelaxFarBranches(int func_id);
   // Returns the set of caller-saved registers (excluding ra) that are actually
   // assigned to variables after register allocation.  Call sites always save
