@@ -2293,6 +2293,9 @@ void CodeGenerator::EliminateDeadStackStores(const int func_id) {
     const int size = store_size(t);
     if (size == 0) return false;
     const int off = inst.imm_;
+    // Negative sp offsets are outgoing stack arguments. They are consumed by
+    // the callee, so this function-local read analysis must not remove them.
+    if (off < 0) return false;
     // Spill region must be strictly below any computed pointer base.
     if (off + size > min_ptr_base) return false;
     // Precise overlap check against tracked reads.
@@ -2664,32 +2667,10 @@ void CodeGenerator::Generate() {
     };
     auto user_call_clobber_regs = [&](int callee_id) {
       std::set<int> regs;
-      regs.insert(1);
-      if (callee_id < 0 || callee_id >= static_cast<int>(IR_functions_.size()) ||
-          !is_leaf_[callee_id]) {
-        static constexpr int kCallerSaved[] = {
-          1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31
-        };
-        regs.insert(std::begin(kCallerSaved), std::end(kCallerSaved));
-        return regs;
-      }
-      regs.insert(5);
-      regs.insert(6);
-      regs.insert(7);
-      regs.insert(31);
-      regs.insert(used_caller_regs_[callee_id].begin(), used_caller_regs_[callee_id].end());
-      const int reg_param_count =
-          std::min(8, static_cast<int>(IR_functions_[callee_id].parameter_types_.size()));
-      for (int param_id = 0; param_id < reg_param_count; ++param_id) {
-        const auto &type = IR_functions_[callee_id].parameter_types_[param_id];
-        if (type->basic_type != array_type && type->basic_type != struct_type) {
-          regs.insert(10 + param_id);
-        }
-      }
-      if (IR_functions_[callee_id].return_type_ &&
-          IR_functions_[callee_id].return_type_->basic_type != unit_type) {
-        regs.insert(10);
-      }
+      static constexpr int kCallerSaved[] = {
+        1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31
+      };
+      regs.insert(std::begin(kCallerSaved), std::end(kCallerSaved));
       return regs;
     };
     auto argument_setup_clobber_regs = [&](const std::vector<FunctionCallArgument> &arguments,
