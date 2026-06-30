@@ -17,6 +17,7 @@ void IRThrow(const std::string &err_info) {
 namespace {
 
 constexpr int kInlineInstructionLimit = 32;
+constexpr long long kInlineCallerInstructionGuard = 1400;
 
 void AddUse(std::map<int, int> &use_count, const int var_id) {
   if (var_id >= 0) {
@@ -553,6 +554,14 @@ long long CountModuleBlocks(const std::vector<IRFunctionNode> &functions) {
     count += static_cast<long long>(function.blocks_.size());
   }
   return count;
+}
+
+long long EstimateInlineInstructionGrowth(const InlineCandidateInfo &candidate) {
+  // The original call instruction disappears. The cloned callee contributes its
+  // body plus split/return bridge instructions. Use a conservative estimate so
+  // repeated small calls in a large caller stop before backend costs spike.
+  return std::max(0, candidate.instruction_count - 1) +
+      2LL * static_cast<long long>(candidate.block_count) + 4;
 }
 
 InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
@@ -1268,6 +1277,7 @@ void IRVisitor::OptimizeShortFunctions() {
     for (int caller_id = 0; caller_id < static_cast<int>(functions_.size()); ++caller_id) {
       auto &caller = functions_[caller_id];
       EnsureNextIdPastBlockLabels(caller);
+      long long caller_instruction_count = CountFunctionInstructions(caller);
       std::vector<int> original_block_ids;
       original_block_ids.reserve(caller.blocks_.size());
       for (const auto &[block_id, block] : caller.blocks_) {
@@ -1523,10 +1533,13 @@ void IRVisitor::OptimizeShortFunctions() {
               inline_candidates.contains(instruction.function_name_)) {
             const auto &callee = inline_candidate_bodies.at(instruction.function_name_);
             const auto &candidate_info = inline_candidates.at(instruction.function_name_);
+            const long long estimated_growth = EstimateInlineInstructionGrowth(candidate_info);
             if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
                 CallMatchesCalleeReturn(instruction, callee) &&
-                candidate_info.eligible) {
+                candidate_info.eligible &&
+                caller_instruction_count + estimated_growth <= kInlineCallerInstructionGuard) {
               inline_call(instruction);
+              caller_instruction_count += estimated_growth;
               block_changed = true;
               changed = true;
               ++inline_stats_.callsites_inlined;
