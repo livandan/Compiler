@@ -1809,14 +1809,16 @@ static void ForwardScalarStackStoreLoads(
       if (it != word_slot.end()) {
         const int src_reg = it->second;
         const int dst_reg = inst.rd_;
-        inst.instruction_type_ = r_mv_;
+        // `lw` sign-extends bit 31 of the loaded word.  The stored source
+        // register may hold a 64-bit value whose upper bits aren't that
+        // sign-extension (e.g. pointers, ld-loaded values), so emit
+        // `addiw rB, rA, 0` (sext.w) rather than a plain `mv` to preserve
+        // load semantics.
+        inst.instruction_type_ = r_addiw_;
         inst.rs1_ = src_reg;
         inst.rs2_ = -1;
-        inst.imm_ = -1;
+        inst.imm_ = 0;
         invalidate_by_reg(dst_reg);
-        // The destination now equals src_reg.  Tracking it as a synonymous
-        // word_slot helps catch chained forwarding (`mv rB, rA; sw rB, off2`
-        // is captured by the alias pass instead, so nothing to do here).
         continue;
       }
       invalidate_by_reg(inst.rd_);
