@@ -184,6 +184,7 @@ RegisterAllocator::RegisterAllocator(const IRFunctionNode &ir_func,
 void RegisterAllocator::Run() {
   ClassifyVariables();
   BuildCFG();
+  ComputeLoopDepth();
   const int original_candidate_count = static_cast<int>(allocatable_nodes_.size());
 
   int instruction_count = 0;
@@ -196,12 +197,13 @@ void RegisterAllocator::Run() {
     phi_move_count += static_cast<int>(block.move_instructions_.size());
   }
 
-  ComputeSpillCosts();
-
   const bool dump_stats = RegAllocStatsEnabled();
   const long long liveness_start = MonotonicMillis();
   ComputeLiveness();
   const long long liveness_end = MonotonicMillis();
+
+  ComputeSpillCosts();
+
   const long long interference_start = MonotonicMillis();
   BuildInterferenceGraph();
   const long long interference_end = MonotonicMillis();
@@ -449,20 +451,100 @@ void RegisterAllocator::BuildCFG() {
   }
 }
 
+void RegisterAllocator::ComputeLoopDepth() {
+  block_loop_depth_.clear();
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    block_loop_depth_[block_id] = 0;
+  }
+  if (ir_func_.blocks_.empty()) {
+    return;
+  }
+  const int entry = ir_func_.blocks_.begin()->first;
+
+  // Identify backedges via iterative DFS from entry.  An edge (u, v) is a
+  // backedge iff v is a gray ancestor in the DFS tree.
+  enum Color { WHITE = 0, GRAY = 1, BLACK = 2 };
+  std::map<int, Color> color;
+  for (const auto &[block_id, block] : ir_func_.blocks_) {
+    color[block_id] = WHITE;
+  }
+  std::vector<std::pair<int, int>> backedges;
+  std::vector<std::pair<int, size_t>> stack;
+  stack.emplace_back(entry, 0);
+  color[entry] = GRAY;
+  while (!stack.empty()) {
+    auto &[u, ix] = stack.back();
+    const auto succ_it = successors_.find(u);
+    if (succ_it == successors_.end() || ix >= succ_it->second.size()) {
+      color[u] = BLACK;
+      stack.pop_back();
+      continue;
+    }
+    const int v = succ_it->second[ix++];
+    auto cit = color.find(v);
+    if (cit == color.end()) continue;
+    if (cit->second == WHITE) {
+      cit->second = GRAY;
+      stack.emplace_back(v, 0);
+    } else if (cit->second == GRAY) {
+      // Backedge to a gray ancestor.
+      backedges.emplace_back(u, v);
+    }
+  }
+
+  // For each backedge (tail -> header), the natural loop body is { header } ∪
+  // { all blocks that can reach tail without going through header }.  Walk
+  // predecessors from tail until header.
+  for (const auto &[tail, header] : backedges) {
+    std::set<int> in_loop;
+    in_loop.insert(header);
+    in_loop.insert(tail);
+    std::vector<int> worklist;
+    if (tail != header) worklist.push_back(tail);
+    while (!worklist.empty()) {
+      const int w = worklist.back();
+      worklist.pop_back();
+      const auto pred_it = predecessors_.find(w);
+      if (pred_it == predecessors_.end()) continue;
+      for (int p : pred_it->second) {
+        if (in_loop.insert(p).second && p != header) {
+          worklist.push_back(p);
+        }
+      }
+    }
+    for (int b : in_loop) {
+      ++block_loop_depth_[b];
+    }
+  }
+}
+
 void RegisterAllocator::ComputeSpillCosts() {
   std::fill(spill_cost_.begin(), spill_cost_.end(), 1);
+
+  // Loop-weighted cost: hot blocks contribute more to spill cost so that hot
+  // scalar values are kept in registers in preference to cold values.  Use a
+  // small multiplier — overly aggressive weighting fights the phi-move
+  // structure and causes worse stack traffic than it removes.
+  auto block_weight = [&](int block_id) -> long long {
+    const auto it = block_loop_depth_.find(block_id);
+    const int depth = (it == block_loop_depth_.end()) ? 0 : it->second;
+    return 1 + depth;
+  };
+
+  long long current_weight = 1;
   auto add_use_score = [&](int id, int amount = 1) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
-      spill_cost_[id] += amount;
+      spill_cost_[id] += static_cast<long long>(amount) * current_weight;
     }
   };
   auto add_def_score = [&](int id, int amount = 1) {
     if (id > 0 && BitTest(is_allocatable_, id)) {
-      spill_cost_[id] += amount;
+      spill_cost_[id] += static_cast<long long>(amount) * current_weight;
     }
   };
 
   for (const auto &[block_id, block] : ir_func_.blocks_) {
+    current_weight = block_weight(block_id);
     for (const auto &inst : block.instructions_) {
       switch (inst.instruction_type_) {
         case two_var_binary_operation_:
@@ -585,13 +667,21 @@ void RegisterAllocator::ComputeSpillCosts() {
       }
     }
   }
-  for (const auto &[block_id, block] : riscv_func_.blocks_) {
-    for (const auto &mv : block.move_instructions_) {
+  for (const auto &[block_id, r_block] : riscv_func_.blocks_) {
+    current_weight = block_weight(block_id);
+    for (const auto &mv : r_block.move_instructions_) {
       const int move_weight = (mv.type_ && mv.type_->basic_type == pointer_type) ? 8 : 4;
       add_def_score(mv.dest_, move_weight);
       if (!mv.src_is_value_) add_use_score(mv.src_, move_weight);
     }
   }
+
+  // Step 4 placeholder: a per-block per-instruction call-cross bonus and a
+  // per-value "prefers callee-saved" hint were tried here but did not improve
+  // the metrics: pushing more values into s-regs makes the parallel-phi-move
+  // graph more cyclic, and the cycle break uses extra scalar stack slots.  The
+  // loop-depth multiplier in the per-instruction use/def weighting above is
+  // sufficient for the current testcases.
 
   RebuildAllocatableNodes();
 }

@@ -52,9 +52,81 @@ The arrays must live in stack memory, but the current output also materializes
 too many scalar temporaries, GEP pointer temporaries, and trivial copy/select
 values to stack.
 
+### Recheck After Step 3
+
+After the copy-propagation cleanup was added, regenerate the testcase with:
+
+```text
+cmake --build cmake-build-debug --target code -j 4
+env LSAN_OPTIONS=detect_leaks=0 ./cmake-build-debug/code \
+  < RCompiler-Testcases/hidden_case/opti_dp_suite.rx
+```
+
+The generated assembly is:
+
+```text
+RCompiler-Testcases/working_space/debugging_my.s
+```
+
+Static counts now look better than the original baseline:
+
+| Function | Current instructions | Expected instructions | Main remaining gap |
+| --- | ---: | ---: | --- |
+| `run_grid_dp` | 308 | 250 | Hot scalar `lw`/`sw` traffic in inner loops |
+| `run_knapsack` | 158 | 169 | Fewer instructions, but still extra scalar `lw`/`sw` |
+| helpers + main | 96 | 108 | Similar |
+| total compiled code | 562 | 527 | Current is only about 7% larger statically |
+
+`run_grid_dp` is still the runtime bottleneck:
+
+| Function | Version | `lw` | `sw` | `ld` | `sd` | `call` | `remw` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `run_grid_dp` | current | 24 | 17 | 50 | 41 | 4 | 9 |
+| `run_grid_dp` | expected | 8 | 3 | 45 | 43 | 6 | 7 |
+| `run_knapsack` | current | 9 | 5 | 22 | 17 | 3 | 7 |
+| `run_knapsack` | expected | 4 | 1 | 32 | 27 | 5 | 5 |
+
+Important conclusion: the bare-metal 2x slowdown is not explained by total
+static instruction count anymore. The remaining problem is dynamic cost in hot
+loops: scalar stack slots are loaded/stored repeatedly inside the `j` loop, and
+call boundaries still save/restore values that should either live in
+callee-saved registers or be cheaper to rematerialize.
+
+Representative current `run_grid_dp` stack slots:
+
+```text
+340(sp): clamped width, reloaded for loop tests
+344(sp): `diag` temporary
+352(sp): row bias (`rng % 97`), loaded in every inner iteration
+360(sp): copy-loop scalar temporary
+372(sp): normalized `cur[j]` value
+376(sp), 380(sp): norm temporaries around setup/return
+```
+
+Representative hot patterns still visible:
+
+```asm
+remw    s0, s1, t1
+sw      s0, 372(sp)
+...
+lw      t1, 372(sp)
+sw      t1, 0(s3)
+```
+
+and:
+
+```asm
+lw      t0, 336(sp)
+...
+sw      s0, 336(sp)
+```
+
+The optimized assembly keeps most of these scalar values in registers and uses
+stack memory primarily for the two arrays and call-save slots.
+
 ## Root Causes
 
-### 1. Trivial Selects Survive Into Codegen
+### 1. Trivial Selects Survive Into Codegen (Fixed)
 
 The post-mem2reg IR contains many copies encoded as selects:
 
@@ -96,7 +168,11 @@ IR/src/IR_generator.cpp:2484
 These select-as-copy instructions increase register pressure and create extra
 stack slots after register allocation.
 
-### 2. Inlining Emits Copies For Returned Values
+Status after Step 3: current-source post-mem2reg IR for `opti_dp_suite` no
+longer contains the `select i1 true, X, X` copy pattern. This was necessary, but
+it did not remove the bare-metal runtime gap by itself.
+
+### 2. Inlining Emits Copies For Returned Values (Mostly Hidden By Step 3)
 
 `OptimizeShortFunctions()` inlines small helpers, including `norm`, but uses
 `AddSelect(...)` to copy the callee return into the caller result:
@@ -108,7 +184,59 @@ IR/src/IR_generator.cpp:1457-1472
 After inlining, those artificial copies become normal SSA values. Later passes
 do not always eliminate them, so they show up in hot loops.
 
-### 3. GEP Pointer Temporaries Still Spill
+### 3. Hot Scalar Values Still Spill
+
+After Step 3, the visible issue moved from IR copy values to backend register
+allocation. `run_grid_dp` still spills loop-carried scalars and single-use
+temporary values in hot loops. Examples include row bias, `norm` results,
+`diag`, copy-loop values, and width/index values.
+
+This is worse on bare metal than the static instruction count suggests:
+
+- every extra `lw`/`sw` in the `h * w * rounds` loop is paid many times;
+- stack traffic competes with array loads/stores;
+- saved caller registers increase pressure around `pm_rand_update`;
+- the optimized assembly has a similar amount of `ld`/`sd` call traffic, but
+  far fewer integer scalar `lw`/`sw` operations in the hot loops.
+
+### 4. Call-Crossing Values Are Not Weighted Strongly Enough
+
+`run_grid_dp` calls `pm_rand_update` inside nested loops. Current code saves and
+restores a broad set around the hot call sites, for example:
+
+```asm
+sd      ra, 128(sp)
+sd      a0, 136(sp)
+sd      a1, 144(sp)
+sd      a3, 160(sp)
+sd      a6, 184(sp)
+sd      a7, 192(sp)
+sd      t3, 200(sp)
+sd      t4, 208(sp)
+sd      t5, 216(sp)
+call    fn.4
+...
+ld      t5, 216(sp)
+```
+
+Some save/restore is unavoidable, but the allocator should avoid putting hot
+loop-carried values in caller-saved registers when they are live across calls.
+Those values should either use callee-saved registers or, if cold, be selected
+as spill candidates before hotter inner-loop values.
+
+### 5. Spill Costs Are Not Loop Weighted Enough
+
+Current spill cost is mostly use-count based:
+
+```text
+codegen/src/register_allocator.cpp:452
+```
+
+For this testcase, an inner-loop use is much more important than a setup/exit
+use. Without loop-depth and call-crossing weighting, hot values can still lose
+registers to colder values.
+
+### 6. GEP Pointer Temporaries Are Secondary Now
 
 GEP results are classified as allocatable pointer values:
 
@@ -125,22 +253,10 @@ codegen/src/code_generator.cpp:3020-3072
 
 This is expensive in array-heavy inner loops like `run_grid_dp`.
 
-### 4. Spill Costs Are Not Loop Weighted Enough
-
-Current spill cost is mostly use-count based:
-
-```text
-codegen/src/register_allocator.cpp:452
-```
-
-For this testcase, an inner-loop use is much more important than a setup/exit
-use. Without loop-depth weighting, hot values can still lose registers to colder
-values.
-
-### 5. Call Save/Restore Interacts With Stack-Backed Temps
-
-`run_grid_dp` calls `pm_rand_update` inside loops. Some save/restore traffic is
-unavoidable, but current scalar stack spills make the call boundaries worse.
+The recheck shows GEP is no longer the first thing to attack: current and
+expected both reload array base pointers in several places, while the biggest
+remaining delta is scalar `lw`/`sw` count. GEP lowering is still useful, but it
+should come after call/loop-aware spill decisions and scalar store-forwarding.
 
 Relevant codegen pipeline:
 
@@ -216,7 +332,7 @@ After trivial-select deletion, run copy propagation through:
 This is important because loop-carried phis can preserve artificial copy values
 even after their defining select is removed.
 
-### Step 4: Add Loop-Weighted Spill Costs
+### Step 4: Add Loop- And Call-Weighted Spill Costs
 
 Compute natural-loop depth from the CFG in `RegisterAllocator`:
 
@@ -227,25 +343,99 @@ Compute natural-loop depth from the CFG in `RegisterAllocator`:
 4. Weight spill-cost additions by:
 
 ```text
-block_weight = 1 + 4 * loop_depth
+block_weight = 1 + loop_depth
 ```
 
 Apply this in `ComputeSpillCosts()`.
 
-Give extra weight to:
+Implementation notes from landing Step 4:
 
-- GEP result values
-- GEP base pointers
-- array indexes in GEPs
-- loop-carried phi results and phi sources
-- values live across calls inside loops
+- DFS-based backedge detection (gray ancestor) plus the textbook reverse-flow
+  natural-loop body walk is enough; the function CFG is small.
+- `block_weight = 1 + depth` was the right multiplier.  Larger weights
+  (`1 + 4*depth`) push more values into callee-saved s-regs and create more
+  parallel-phi-move cycles, which the backend resolves with extra `sw/lw`
+  pairs on the stack — net worse for `run_grid_dp`.
+- A separate "values live across a call get a callee-saved bonus" pass was
+  tried (per-instruction liveness reconstruction, mark-and-prefer in
+  `AssignColors`).  It increased s-reg usage but also increased phi-cycle
+  stack traffic, so it was removed.  The loop-depth multiplier on the existing
+  use/def weighting is enough for the metric gain in this testcase.
+- `ComputeLiveness` was reordered before `ComputeSpillCosts` so future passes
+  can use per-instruction liveness; current implementation does not.
 
-Expected impact:
+Result on `run_grid_dp`:
 
-- Hot loop indexes and array addresses stay in registers more often.
-- Cold setup/exit temporaries become better spill candidates.
+| Metric | Pre-Step-4 | Post-Step-4 | Expected |
+| --- | ---: | ---: | ---: |
+| `lw` | 31 | 25 | 8 |
+| `sw` | 21 | 19 | 3 |
+| `ld` | 48 | 49 | 45 |
+| `sd` | 39 | 40 | 43 |
 
-### Step 5: Improve GEP Lowering For Short-Lived Addresses
+`run_knapsack` is unchanged.  The remaining gap is dominated by per-iteration
+scalar `lw`/`sw` of normalized values, row bias, copy-loop temporaries, and
+loop-bound `w`.  Step 5 (store-load forwarding on scalar stack slots) and
+Step 6 (short-lived GEP addresses) remain the next levers.
+
+### Step 5: Store-Load Forward Scalar Stack Slots
+
+Before attacking all GEPs, add a local backend peephole for scalar stack slots:
+
+```asm
+sw      rA, offset(sp)
+lw      rB, offset(sp)
+```
+
+with no intervening write/call/unknown memory clobber to that slot should become:
+
+```asm
+mv      rB, rA
+```
+
+and if `rB` is only used as the source of the next store:
+
+```asm
+sw      rA, offset(sp)
+lw      rB, offset(sp)
+sw      rB, 0(ptr)
+```
+
+can become:
+
+```asm
+sw      rA, offset(sp)       # only if later uses still need the stack home
+sw      rA, 0(ptr)
+```
+
+If the stack home has no later reads, delete the first `sw` too.
+
+This directly targets current hot patterns such as:
+
+```asm
+sw      s0, 372(sp)
+lw      t1, 372(sp)
+sw      t1, 0(s3)
+```
+
+and:
+
+```asm
+sw      t0, 376(sp)
+lw      t1, 376(sp)
+sw      t1, 0(s11)
+```
+
+Safety rules:
+
+- Only handle fixed `offset(sp)` slots.
+- Stop forwarding across `call`, `jal`, `jalr`, unknown stores, or another write
+  to the same stack slot.
+- Do not cross labels until block-local correctness is proven.
+- Preserve stores to true alloca-backed arrays; this pass is for scalar spill
+  slots only.
+
+### Step 6: Improve GEP Lowering For Short-Lived Addresses
 
 For a pattern like:
 
@@ -272,14 +462,15 @@ Expected impact:
 - Fewer spilled 8-byte pointer temporaries.
 - Fewer `sd`/`ld` pairs around array accesses.
 
-### Step 6: Recheck Call-Site Save Sets After Cleanup
+### Step 7: Recheck Call-Site Save Sets After Cleanup
 
-After Steps 1 to 5, recompute assembly metrics. If save/restore traffic is still
+After Steps 4 to 6, recompute assembly metrics. If save/restore traffic is still
 high around `pm_rand_update`, inspect call-site liveness and make sure only
 actually live caller-saved registers are saved at each call.
 
-Do not start here. The current visible problem is mostly artificial scalar and
-pointer temporaries leaking into stack traffic.
+Do not start here unless Step 4 does not move the numbers. Current call-save
+sets are already liveness-based, but allocator choices still make too many hot
+values cross calls in caller-saved registers or spill slots.
 
 ## Regression Metrics
 
@@ -298,9 +489,11 @@ Initial target for `run_grid_dp`:
 
 | Metric | Current | Target |
 | --- | ---: | ---: |
-| instructions | 327 | near 250 |
-| `lw` | 31 | near 8 |
-| `sw` | 22 | near 3 |
+| instructions | 308 | near 250 |
+| `lw` | 24 | near 8 |
+| `sw` | 17 | near 3 |
+| `ld` | 50 | no worse than 45 |
+| `sd` | 41 | no worse than 43 |
 
 Correctness checks should include:
 
@@ -317,11 +510,19 @@ env LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu LSAN_OPTIONS=detect_leaks=0 \
   ./cmake-build-debug/codegen_tests --gtest_filter=CodegenTestSingle.debugging_test
 ```
 
-## Recommended First Patch
+## Recommended Next Patch
 
-Start with Step 1: trivial-select deletion plus use replacement.
+Step 3 is already effective at the IR level. The next patch should be Step 4:
+loop- and call-weighted spill costs in `RegisterAllocator`.
 
-This is the most localized and lowest-risk change. It directly targets bad IR
-visible in the DP testcase, should reduce stack traffic before register
-allocation, and gives a clean metric to verify before changing allocator
-heuristics.
+Reason:
+
+- The remaining 2x bare-metal slowdown is dynamic hot-loop traffic, not a large
+  static-code-size gap.
+- The biggest current-vs-expected delta in `run_grid_dp` is integer scalar
+  `lw/sw`.
+- Better spill decisions can remove repeated hot loads/stores before requiring
+  lower-level peepholes.
+
+After Step 4, immediately rerun the table above. If `lw/sw` does not move,
+implement Step 5 store-load forwarding next.

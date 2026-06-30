@@ -21,6 +21,7 @@ private:
 
   // Step 1: Build CFG and compute liveness
   void BuildCFG();
+  void ComputeLoopDepth();
   void ComputeLiveness();
   void ComputeSpillCosts();
   void RebuildAllocatableNodes();
@@ -95,6 +96,7 @@ private:
   // ---- CFG (block-indexed, B is small so map is fine) ----
   std::map<int, std::vector<int>> successors_;
   std::map<int, std::vector<int>> predecessors_;
+  std::map<int, int> block_loop_depth_;
 
   // ---- Liveness: per-block bitsets ----
   std::map<int, std::vector<uint64_t>> live_in_;
