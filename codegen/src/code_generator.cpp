@@ -7,6 +7,7 @@
 #include <array>
 #include <climits>
 #include <cstdint>
+#include <functional>
 #include <queue>
 #include <set>
 #include <unordered_map>
@@ -2422,6 +2423,85 @@ void CodeGenerator::Generate() {
   for (int i = 0; i < IR_functions_.size(); ++i) {
     CompactStackFrame(i);
   }
+  struct DirectGepUse {
+    int block_id = -1;
+    int def_index = -1;
+    int use_index = -1;
+  };
+  std::vector<std::map<int, DirectGepUse>> direct_gep_uses(IR_functions_.size());
+  auto record_var_use = [](std::map<int, std::vector<std::pair<int, int>>> &uses,
+      int var_id, int block_id, int inst_index) {
+    if (var_id > 0) {
+      uses[var_id].push_back({block_id, inst_index});
+    }
+  };
+  auto record_address_use = [](std::map<int, std::vector<std::pair<int, int>>> &uses,
+      int pointer, int block_id, int inst_index) {
+    if (pointer > 0) {
+      uses[pointer].push_back({block_id, inst_index});
+    }
+  };
+  for (int func_id = 0; func_id < IR_functions_.size(); ++func_id) {
+    std::map<int, std::pair<int, int>> gep_defs;
+    std::map<int, std::vector<std::pair<int, int>>> all_uses;
+    std::map<int, std::vector<std::pair<int, int>>> address_uses;
+    for (const auto &[block_id, block] : IR_functions_[func_id].blocks_) {
+      for (const auto &phi : block.phi_instructions_) {
+        for (const auto &condition : phi.conditions) {
+          if (!condition.is_const) {
+            record_var_use(all_uses, condition.var_id, condition.from_block_id, -1);
+          }
+        }
+      }
+    }
+    for (const auto &[block_id, block] : IR_functions_[func_id].blocks_) {
+      for (int inst_index = 0; inst_index < static_cast<int>(block.instructions_.size());
+           ++inst_index) {
+        const auto &inst = block.instructions_[inst_index];
+        std::set<int> defs;
+        std::set<int> uses;
+        CollectIRDefUse(inst, defs, uses);
+        for (int use : uses) {
+          record_var_use(all_uses, use, block_id, inst_index);
+        }
+        switch (inst.instruction_type_) {
+          case get_element_ptr_by_value_:
+          case get_element_ptr_by_variable_:
+            gep_defs[inst.result_id_] = {block_id, inst_index};
+            break;
+          case load_:
+          case ptr_load_:
+          case value_store_:
+            record_address_use(address_uses, inst.pointer_, block_id, inst_index);
+            break;
+          case variable_store_:
+          case ptr_store_:
+            record_address_use(address_uses, inst.pointer_, block_id, inst_index);
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    for (const auto &[gep_id, def] : gep_defs) {
+      const auto loc_it = RISCV_functions_[func_id].location_.find(gep_id);
+      if (loc_it == RISCV_functions_[func_id].location_.end() || loc_it->second.first) {
+        continue;
+      }
+      const auto use_it = all_uses.find(gep_id);
+      const auto address_it = address_uses.find(gep_id);
+      if (use_it == all_uses.end() || use_it->second.size() != 1 ||
+          address_it == address_uses.end() || address_it->second.size() != 1 ||
+          use_it->second.front() != address_it->second.front()) {
+        continue;
+      }
+      const auto [use_block, use_index] = use_it->second.front();
+      if (use_block == def.first && use_index == def.second + 1) {
+        direct_gep_uses[func_id][gep_id] = {def.first, def.second, use_index};
+        RISCV_functions_[func_id].location_.erase(gep_id);
+      }
+    }
+  }
   registers_saved_.assign(IR_functions_.size(), false);
   for (int i = 0; i < IR_functions_.size(); ++i) {
     const auto direct_branch_icmps = FindDirectBranchIcmps(IR_functions_[i]);
@@ -2582,6 +2662,67 @@ void CodeGenerator::Generate() {
       regs.insert(1);
       return regs;
     };
+    auto user_call_clobber_regs = [&](int callee_id) {
+      std::set<int> regs;
+      regs.insert(1);
+      if (callee_id < 0 || callee_id >= static_cast<int>(IR_functions_.size()) ||
+          !is_leaf_[callee_id]) {
+        static constexpr int kCallerSaved[] = {
+          1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31
+        };
+        regs.insert(std::begin(kCallerSaved), std::end(kCallerSaved));
+        return regs;
+      }
+      regs.insert(5);
+      regs.insert(6);
+      regs.insert(7);
+      regs.insert(31);
+      regs.insert(used_caller_regs_[callee_id].begin(), used_caller_regs_[callee_id].end());
+      const int reg_param_count =
+          std::min(8, static_cast<int>(IR_functions_[callee_id].parameter_types_.size()));
+      for (int param_id = 0; param_id < reg_param_count; ++param_id) {
+        const auto &type = IR_functions_[callee_id].parameter_types_[param_id];
+        if (type->basic_type != array_type && type->basic_type != struct_type) {
+          regs.insert(10 + param_id);
+        }
+      }
+      if (IR_functions_[callee_id].return_type_ &&
+          IR_functions_[callee_id].return_type_->basic_type != unit_type) {
+        regs.insert(10);
+      }
+      return regs;
+    };
+    auto argument_setup_clobber_regs = [&](const std::vector<FunctionCallArgument> &arguments,
+        const auto &param_pass_pos) {
+      std::set<int> regs;
+      for (int arg_id = 0; arg_id < static_cast<int>(arguments.size()); ++arg_id) {
+        const auto [passed_by_reg, reg_id] = param_pass_pos(arg_id);
+        if (passed_by_reg) {
+          if (IsCallerSavedReg(reg_id)) {
+            regs.insert(reg_id);
+          }
+        } else {
+          regs.insert(5);
+          const auto &arg = arguments[arg_id];
+          if (arg.is_variable_) {
+            const auto [data_size, need_alignment] = GetSize(arg.type_);
+            if (data_size != 1 && !(data_size == 4 && need_alignment)) {
+              regs.insert(used_caller_regs_[i].begin(), used_caller_regs_[i].end());
+            }
+          }
+        }
+      }
+      return regs;
+    };
+    auto filter_call_regs = [](std::set<int> &regs, const std::set<int> &clobbers) {
+      for (auto it = regs.begin(); it != regs.end();) {
+        if (clobbers.contains(*it)) {
+          ++it;
+        } else {
+          it = regs.erase(it);
+        }
+      }
+    };
     auto add_argument_setup_save_regs = [&](std::set<int> &regs,
         const std::vector<FunctionCallArgument> &arguments, const auto &param_pass_pos) {
       std::set<int> modified_reg;
@@ -2637,6 +2778,84 @@ void CodeGenerator::Generate() {
           IsCallerSavedReg(it->second.second)) {
         regs.erase(it->second.second);
       }
+    };
+    std::function<void(RISCVBlock &, const IRInstruction &, int, int)> emit_gep_address =
+        [&](RISCVBlock &r_block, const IRInstruction &gep, int dest_reg, int avoid_reg) {
+      int index_reg = 6;
+      if (index_reg == dest_reg || index_reg == avoid_reg) {
+        index_reg = 7;
+      }
+      if (index_reg == dest_reg || index_reg == avoid_reg) {
+        index_reg = 31;
+      }
+      int size_reg = 7;
+      if (size_reg == dest_reg || size_reg == avoid_reg || size_reg == index_reg) {
+        size_reg = 31;
+      }
+      if (size_reg == dest_reg || size_reg == avoid_reg || size_reg == index_reg) {
+        size_reg = 6;
+      }
+
+      int base_reg = RISCV_functions_[i].location_.at(gep.pointer_).second;
+      if (!RISCV_functions_[i].location_.at(gep.pointer_).first) {
+        r_block.PushMemory_I(r_ld_, dest_reg, base_reg, 2);
+        base_reg = dest_reg;
+      } else if (registers_saved_[i] && IsCallerSavedReg(base_reg)) {
+        r_block.PushMemory_I(r_ld_, dest_reg, RegSavedLocation(i, base_reg), 2);
+        base_reg = dest_reg;
+      }
+
+      if (gep.instruction_type_ == get_element_ptr_by_value_) {
+        const int index = gep.index_;
+        int offset = 0;
+        if (gep.result_type_->basic_type == array_type) {
+          auto [element_size, need_alignment] = GetSize(gep.result_type_->element_type);
+          offset = index * (need_alignment ? (element_size + 3) / 4 * 4 : element_size);
+        } else {
+          const int struct_id = gep.result_type_->struct_node->IR_ID_;
+          for (int j = 0; j < index; ++j) {
+            auto [element_size, need_alignment] = GetSize(IR_structs_[struct_id].element_type_[j]);
+            if (need_alignment) {
+              offset = (offset + 3) / 4 * 4;
+            }
+            offset += element_size;
+          }
+          if (GetSize(IR_structs_[struct_id].element_type_[index]).second) {
+            offset = (offset + 3) / 4 * 4;
+          }
+        }
+        r_block.PushArithmetic_I(r_addi_, dest_reg, base_reg, offset);
+        return;
+      }
+
+      const int index_home = RISCV_functions_[i].location_.at(gep.index_).second;
+      if (RISCV_functions_[i].location_.at(gep.index_).first) {
+        if (registers_saved_[i] && IsCallerSavedReg(index_home)) {
+          r_block.PushMemory_I(r_ld_, index_reg, RegSavedLocation(i, index_home), 2);
+        } else {
+          r_block.PushArithmetic_R(r_add_, index_reg, index_home, 0);
+        }
+      } else {
+        r_block.PushMemory_I(r_lw_, index_reg, index_home, 2);
+      }
+
+      auto [element_size, need_alignment] = GetSize(gep.result_type_->element_type);
+      if (need_alignment) {
+        element_size = (element_size + 3) / 4 * 4;
+      }
+      if (element_size == 1) {
+        // index_reg already contains the byte offset.
+      } else if (IsPowerOfTwo(element_size)) {
+        r_block.PushArithmetic_I(r_slli_, index_reg, index_reg, Log2Int(element_size));
+      } else {
+        r_block.PushLi(size_reg, element_size);
+        r_block.PushExtended(r_mul_, index_reg, index_reg, size_reg);
+      }
+      r_block.PushArithmetic_R(r_add_, dest_reg, base_reg, index_reg);
+    };
+    auto direct_gep_definition = [&](int gep_id) -> const IRInstruction & {
+      const auto &use = direct_gep_uses[i].at(gep_id);
+      return IR_functions_[i].blocks_.at(use.block_id).instructions_.at(use.def_index);
     };
     auto deferred_load_typed_operand = [&](RISCVBlock &r_block, int var_id,
         int scratch_reg, const std::shared_ptr<IntegratedType> &type) {
@@ -3142,16 +3361,26 @@ void CodeGenerator::Generate() {
           }
           case load_: {
             const auto [load_size, need_alignment] = GetSize(instruction.result_type_);
+            auto load_pointer = [&](int scratch_reg) {
+              const auto loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+              if (loc_it == RISCV_functions_[i].location_.end()) {
+                emit_gep_address(r_block, direct_gep_definition(instruction.pointer_),
+                    scratch_reg, -1);
+                return scratch_reg;
+              }
+              int src_register = loc_it->second.second;
+              if (!loc_it->second.first) {
+                r_block.PushMemory_I(r_ld_, scratch_reg, src_register, 2);
+                src_register = scratch_reg;
+              } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                r_block.PushMemory_I(r_ld_, scratch_reg, RegSavedLocation(i, src_register), 2);
+                src_register = scratch_reg;
+              }
+              return src_register;
+            };
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
               const auto result_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
-              int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-              if (!RISCV_functions_[i].location_[instruction.pointer_].first) {
-                r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-                src_register = 5;
-              } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-                src_register = 5;
-              }
+              int src_register = load_pointer(5);
               if (load_size == 1) {
                 r_block.PushMemory_I(r_lbu_, result_reg, 0, src_register);
               } else if (load_size == 4 && need_alignment) {
@@ -3168,56 +3397,31 @@ void CodeGenerator::Generate() {
               const auto result_address_offset = RISCV_functions_[i].location_[instruction.result_id_].second;
               // move data from the space that starts from *pointer to that starts from result address
               if (load_size == 1) {
-                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-                  src_register = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-                  src_register = 5;
-                }
+                int src_register = load_pointer(5);
                 // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lbu_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sb_, 5, result_address_offset, 2);
               } else if (load_size == 4 && need_alignment) {
-                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-                  src_register = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-                  src_register = 5;
-                }
+                int src_register = load_pointer(5);
                 // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sw_, 5, result_address_offset, 2);
               } else if (load_size == 8) {
-                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-                  src_register = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-                  src_register = 5;
-                }
+                int src_register = load_pointer(5);
                 // src_register keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_ld_, 5, 0, src_register);
                 r_block.PushMemory_S(r_sd_, 5, result_address_offset, 2);
               } else {
                 std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
-                int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (RISCV_functions_[i].location_[instruction.pointer_].first &&
-                    IsCallerSavedReg(src_register)) {
+                const auto ptr_loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+                if (ptr_loc_it != RISCV_functions_[i].location_.end() &&
+                    ptr_loc_it->second.first &&
+                    IsCallerSavedReg(ptr_loc_it->second.second)) {
+                  const int src_register = ptr_loc_it->second.second;
                   call_save_regs.insert(src_register);
                 }
                 SaveCallerRegs(i, r_block, call_save_regs);
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-                  src_register = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-                  src_register = 5;
-                }
+                int src_register = load_pointer(5);
                 // src_register keeps the real address that the pointer points to
                 r_block.PushArithmetic_R(r_add_, 11, 0, src_register);
                 r_block.PushArithmetic_I(r_addi_, 10, 2, result_address_offset);
@@ -3229,13 +3433,20 @@ void CodeGenerator::Generate() {
             break;
           }
           case ptr_load_: {
-            int src_register = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // src_register actually stores the pointer's relative address to sp
-              r_block.PushMemory_I(r_ld_, 5, src_register, 2);
-              src_register = 5;
-            } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
-              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
-              src_register = 5;
+            const auto ptr_loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+            int src_register = 5;
+            if (ptr_loc_it == RISCV_functions_[i].location_.end()) {
+              emit_gep_address(r_block, direct_gep_definition(instruction.pointer_),
+                  src_register, -1);
+            } else {
+              src_register = ptr_loc_it->second.second;
+              if (!ptr_loc_it->second.first) { // src_register actually stores the pointer's relative address to sp
+                r_block.PushMemory_I(r_ld_, 5, src_register, 2);
+                src_register = 5;
+              } else if (registers_saved_[i] && IsCallerSavedReg(src_register)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, src_register), 2);
+                src_register = 5;
+              }
             }
             // src_register keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) {
@@ -3253,16 +3464,32 @@ void CodeGenerator::Generate() {
           }
           case variable_store_: {
             const auto [store_size, need_alignment] = GetSize(instruction.result_type_);
+            auto load_store_pointer = [&](int scratch_reg, int avoid_reg) {
+              if (scratch_reg == avoid_reg) {
+                scratch_reg = 7;
+              }
+              if (scratch_reg == avoid_reg) {
+                scratch_reg = 31;
+              }
+              const auto loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+              if (loc_it == RISCV_functions_[i].location_.end()) {
+                emit_gep_address(r_block, direct_gep_definition(instruction.pointer_),
+                    scratch_reg, avoid_reg);
+                return scratch_reg;
+              }
+              int dest_reg = loc_it->second.second;
+              if (!loc_it->second.first) {
+                r_block.PushMemory_I(r_ld_, scratch_reg, dest_reg, 2);
+                dest_reg = scratch_reg;
+              } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_I(r_ld_, scratch_reg, RegSavedLocation(i, dest_reg), 2);
+                dest_reg = scratch_reg;
+              }
+              return dest_reg;
+            };
             if (RISCV_functions_[i].location_[instruction.result_id_].first) { // the data to be stored is already in a src_reg
               const auto src_reg = RISCV_functions_[i].location_[instruction.result_id_].second;
-              auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-              if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-                r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-                dest_reg = 5;
-              } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-                dest_reg = 5;
-              }
+              auto dest_reg = load_store_pointer(5, src_reg);
               int data_reg = src_reg;
               if (registers_saved_[i] && IsCallerSavedReg(src_reg)) {
                 r_block.PushMemory_I(r_ld_, 6, RegSavedLocation(i, src_reg), 2);
@@ -3283,56 +3510,31 @@ void CodeGenerator::Generate() {
               }
             } else { // the data to be stored is in the memory
               if (store_size == 1) {
-                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-                  dest_reg = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-                  dest_reg = 5;
-                }
+                auto dest_reg = load_store_pointer(5, -1);
                 // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lbu_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sb_, 6, 0, dest_reg);
               } else if (store_size == 4 && need_alignment) {
-                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-                  dest_reg = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-                  dest_reg = 5;
-                }
+                auto dest_reg = load_store_pointer(5, -1);
                 // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_lw_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sw_, 6, 0, dest_reg);
               } else if (store_size == 8) {
-                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-                  dest_reg = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-                  dest_reg = 5;
-                }
+                auto dest_reg = load_store_pointer(5, -1);
                 // dest_reg keeps the real address that the pointer points to
                 r_block.PushMemory_I(r_ld_, 6, RISCV_functions_[i].location_[instruction.result_id_].second, 2);
                 r_block.PushMemory_S(r_sd_, 6, 0, dest_reg);
               } else {
                 std::set<int> call_save_regs = current_call_save_regs(block_id, inst_index);
-                auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-                if (RISCV_functions_[i].location_[instruction.pointer_].first &&
-                    IsCallerSavedReg(dest_reg)) {
+                const auto ptr_loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+                if (ptr_loc_it != RISCV_functions_[i].location_.end() &&
+                    ptr_loc_it->second.first &&
+                    IsCallerSavedReg(ptr_loc_it->second.second)) {
+                  auto dest_reg = ptr_loc_it->second.second;
                   call_save_regs.insert(dest_reg);
                 }
                 SaveCallerRegs(i, r_block, call_save_regs);
-                if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-                  r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-                  dest_reg = 5;
-                } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-                  r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-                  dest_reg = 5;
-                }
+                auto dest_reg = load_store_pointer(5, -1);
                 // dest_reg keeps the real address that the pointer points to
                 r_block.PushArithmetic_R(r_add_, 10, 0, dest_reg); // process it first to prevent the content of dest_register from being modified
                 r_block.PushArithmetic_I(r_addi_, 11, 2, RISCV_functions_[i].location_[instruction.result_id_].second);
@@ -3345,13 +3547,20 @@ void CodeGenerator::Generate() {
           }
           case value_store_: {
             const auto [store_size, need_alignment] = GetSize(instruction.result_type_);
-            auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-              r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-              dest_reg = 5;
-            } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-              dest_reg = 5;
+            int dest_reg = 5;
+            const auto ptr_loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+            if (ptr_loc_it == RISCV_functions_[i].location_.end()) {
+              emit_gep_address(r_block, direct_gep_definition(instruction.pointer_),
+                  dest_reg, 6);
+            } else {
+              dest_reg = ptr_loc_it->second.second;
+              if (!ptr_loc_it->second.first) { // dest_reg actually stores the pointer's relative address to sp
+                r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
+                dest_reg = 5;
+              } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+                dest_reg = 5;
+              }
             }
             // dest_reg keeps the real address that the pointer points to
             r_block.PushLi(6, instruction.result_id_); // reg6 keeps the value that need to be stored
@@ -3365,13 +3574,23 @@ void CodeGenerator::Generate() {
             break;
           }
           case ptr_store_: {
-            auto dest_reg = RISCV_functions_[i].location_[instruction.pointer_].second;
-            if (!RISCV_functions_[i].location_[instruction.pointer_].first) { // dest_reg actually stores the pointer's relative address to sp
-              r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
-              dest_reg = 5;
-            } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
-              r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
-              dest_reg = 5;
+            int dest_reg = 5;
+            const auto ptr_loc_it = RISCV_functions_[i].location_.find(instruction.pointer_);
+            if (ptr_loc_it == RISCV_functions_[i].location_.end()) {
+              const int avoid_reg = RISCV_functions_[i].location_[instruction.result_id_].first
+                  ? RISCV_functions_[i].location_[instruction.result_id_].second
+                  : -1;
+              emit_gep_address(r_block, direct_gep_definition(instruction.pointer_),
+                  dest_reg, avoid_reg);
+            } else {
+              dest_reg = ptr_loc_it->second.second;
+              if (!ptr_loc_it->second.first) { // dest_reg actually stores the pointer's relative address to sp
+                r_block.PushMemory_I(r_ld_, 5, dest_reg, 2);
+                dest_reg = 5;
+              } else if (registers_saved_[i] && IsCallerSavedReg(dest_reg)) {
+                r_block.PushMemory_I(r_ld_, 5, RegSavedLocation(i, dest_reg), 2);
+                dest_reg = 5;
+              }
             }
             // dest_reg keeps the real address that the pointer points to
             if (RISCV_functions_[i].location_[instruction.result_id_].first) { // the data to be stored is already in a src_reg
@@ -3389,6 +3608,9 @@ void CodeGenerator::Generate() {
             break;
           }
           case get_element_ptr_by_value_: { // pointer: array/struct ptr; result_id: element ptr; result_type: array/struct type
+            if (direct_gep_uses[i].contains(instruction.result_id_)) {
+              break;
+            }
             const int index = instruction.index_;
             int offset = 0;
             if (instruction.result_type_->basic_type == array_type) {
@@ -3428,6 +3650,9 @@ void CodeGenerator::Generate() {
             break;
           }
           case get_element_ptr_by_variable_: { // pointer: array/struct ptr; result_id: element ptr; result_type: array/struct type
+            if (direct_gep_uses[i].contains(instruction.result_id_)) {
+              break;
+            }
             // We must NOT clobber the index variable's home register, because
             // (after mem2reg) the same variable may be referenced by a later
             // instruction in a different block. Always move/copy the index
@@ -3998,10 +4223,17 @@ void CodeGenerator::Generate() {
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
             erase_result_reg(restore_regs, instruction.result_id_);
+            std::set<int> call_clobbers = user_call_clobber_regs(instruction.function_name_);
+            const auto setup_clobbers = argument_setup_clobber_regs(arguments, [&](int arg_id) {
+              return GetParamPassPos(instruction.function_name_, arg_id);
+            });
+            call_clobbers.insert(setup_clobbers.begin(), setup_clobbers.end());
+            filter_call_regs(restore_regs, call_clobbers);
             std::set<int> call_save_regs = restore_regs;
             add_argument_setup_save_regs(call_save_regs, arguments, [&](int arg_id) {
               return GetParamPassPos(instruction.function_name_, arg_id);
             });
+            filter_call_regs(call_save_regs, call_clobbers);
             SaveCallerRegs(i, r_block, call_save_regs);
             std::set<int> modified_reg;
             for (int j = 0; j < arguments.size(); ++j) {
@@ -4122,10 +4354,17 @@ void CodeGenerator::Generate() {
           case void_call_: {
             const auto &arguments = instruction.function_call_arguments_;
             std::set<int> restore_regs = current_call_save_regs(block_id, inst_index);
+            std::set<int> call_clobbers = user_call_clobber_regs(instruction.function_name_);
+            const auto setup_clobbers = argument_setup_clobber_regs(arguments, [&](int arg_id) {
+              return GetParamPassPos(instruction.function_name_, arg_id);
+            });
+            call_clobbers.insert(setup_clobbers.begin(), setup_clobbers.end());
+            filter_call_regs(restore_regs, call_clobbers);
             std::set<int> call_save_regs = restore_regs;
             add_argument_setup_save_regs(call_save_regs, arguments, [&](int arg_id) {
               return GetParamPassPos(instruction.function_name_, arg_id);
             });
+            filter_call_regs(call_save_regs, call_clobbers);
             SaveCallerRegs(i, r_block, call_save_regs);
             std::set<int> modified_reg;
             for (int j = 0; j < arguments.size(); ++j) {

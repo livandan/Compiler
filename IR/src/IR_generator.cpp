@@ -510,6 +510,7 @@ bool IsInlineSafeInstruction(const IRInstruction &instruction) {
 
 struct InlineCandidateInfo {
   bool eligible = false;
+  bool has_control_flow = false;
   int instruction_count = 0;
   int block_count = 0;
 };
@@ -554,6 +555,10 @@ InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
       const auto &instruction = block.instructions_[i];
       if (!IsInlineSafeInstruction(instruction)) {
         return info;
+      }
+      if (instruction.instruction_type_ == conditional_br_ ||
+          instruction.instruction_type_ == unconditional_br_) {
+        info.has_control_flow = true;
       }
       if (IsInlineTerminator(instruction.instruction_type_) &&
           i + 1 != static_cast<int>(block.instructions_.size())) {
@@ -1219,6 +1224,9 @@ void IRVisitor::OptimizeShortFunctions() {
         continue;
       }
       auto info = AnalyzeInlineCandidate(functions_[func_id]);
+      if (info.has_control_flow && call_it->second > 1) {
+        continue;
+      }
       if (info.eligible) {
         inline_candidates[func_id] = info;
       }
