@@ -17,7 +17,7 @@ void IRThrow(const std::string &err_info) {
 namespace {
 
 constexpr int kInlineInstructionLimit = 32;
-constexpr long long kInlineCallerInstructionGuard = 1200;
+constexpr long long kInlineCallerInstructionGuard = 1000;
 
 void AddUse(std::map<int, int> &use_count, const int var_id) {
   if (var_id >= 0) {
