@@ -1116,15 +1116,19 @@ void CodeGenerator::CompactStackFrame(const int func_id) {
   auto &save_offsets = reg_save_offsets_[func_id];
   save_offsets.clear();
   const int save_area_start = offset;
-  // Leaf functions never make calls, so caller-saved registers are never
-  // saved across calls and need no save slots.  Only callee-saved registers
-  // (which the callee must preserve for its caller) require frame space.
-  if (!is_leaf_[func_id]) {
-    for (int reg : used_caller_regs_[func_id]) {
-      offset = AlignUp(offset, 8);
-      save_offsets[reg] = offset;
-      offset += 8;
-    }
+  // Always allocate save slots for every used caller-saved register, even in
+  // "leaf" functions: the codegen may still emit a `call memset` / `call
+  // memcpy` for aggregate stores (`code_generator.cpp:3559`), aggregate-typed
+  // phi moves in `VariableAssignment`, or other lowerings that are not
+  // visible at the IR-instruction-type level. Without a slot for `ra` (and
+  // for any caller-saved register that holds a live variable across such an
+  // emission), `RegSavedLocation` throws and the codegen aborts. The size
+  // overhead is at most ~8 bytes per used register and is harmless for truly
+  // call-free leaves because `SaveCallerRegs` simply never runs there.
+  for (int reg : used_caller_regs_[func_id]) {
+    offset = AlignUp(offset, 8);
+    save_offsets[reg] = offset;
+    offset += 8;
   }
   for (int reg : used_callee_regs_[func_id]) {
     if (save_offsets.contains(reg)) continue;
