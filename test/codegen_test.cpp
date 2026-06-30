@@ -150,6 +150,14 @@ static void RunMem2RegOn(const std::string &base) {
     timer.AddCounter("ir_functions", static_cast<long long>(IR_generator.GetIRFunctions().size()));
     timer.AddCounter("ir_blocks", CountIRBlocks(IR_generator));
     timer.AddCounter("ir_insts_before_mem2reg", CountIRInstructions(IR_generator));
+    const auto &inline_stats = IR_generator.GetInlineStats();
+    timer.AddCounter("inline_rounds", inline_stats.rounds);
+    timer.AddCounter("inline_callsites", inline_stats.callsites_inlined);
+    timer.AddCounter("inline_eligible_functions", inline_stats.eligible_functions);
+    timer.AddCounter("ir_insts_before_inline", inline_stats.instructions_before);
+    timer.AddCounter("ir_insts_after_inline", inline_stats.instructions_after);
+    timer.AddCounter("ir_blocks_before_inline", inline_stats.blocks_before);
+    timer.AddCounter("ir_blocks_after_inline", inline_stats.blocks_after);
   } catch (...) {
     delete syntax_tree;
     syntax_tree = nullptr;

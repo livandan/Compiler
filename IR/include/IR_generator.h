@@ -326,6 +326,16 @@ struct IRStructNode {
   std::vector<std::shared_ptr<IntegratedType>> element_type_;
 };
 
+struct IRInlineStats {
+  long long instructions_before = 0;
+  long long instructions_after = 0;
+  long long blocks_before = 0;
+  long long blocks_after = 0;
+  int rounds = 0;
+  int callsites_inlined = 0;
+  int eligible_functions = 0;
+};
+
 struct LoopInfo {
   int begin;
   int end;
@@ -383,6 +393,7 @@ public:
   [[nodiscard]] const std::vector<IRFunctionNode> &GetIRFunctions() const;
   [[nodiscard]] const std::vector<IRStructNode> &GetIRStructs() const;
   [[nodiscard]] int GetMainFuncID() const;
+  [[nodiscard]] const IRInlineStats &GetInlineStats() const;
 private:
   void AddFunction(const std::shared_ptr<IntegratedType> &return_type);
   void AddStruct();
@@ -410,6 +421,7 @@ private:
   std::vector<int> wrapping_functions_;
   std::vector<LoopInfo> wrapping_loops_;
   std::vector<int> block_stack_;
+  IRInlineStats inline_stats_;
   int main_function_id_ = -1;
 };
 

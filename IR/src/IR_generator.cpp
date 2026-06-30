@@ -530,6 +530,31 @@ struct InlineCandidateInfo {
   int block_count = 0;
 };
 
+long long CountFunctionInstructions(const IRFunctionNode &function) {
+  long long count = static_cast<long long>(function.alloca_instructions_.size());
+  for (const auto &[block_id, block] : function.blocks_) {
+    count += static_cast<long long>(block.phi_instructions_.size());
+    count += static_cast<long long>(block.instructions_.size());
+  }
+  return count;
+}
+
+long long CountModuleInstructions(const std::vector<IRFunctionNode> &functions) {
+  long long count = 0;
+  for (const auto &function : functions) {
+    count += CountFunctionInstructions(function);
+  }
+  return count;
+}
+
+long long CountModuleBlocks(const std::vector<IRFunctionNode> &functions) {
+  long long count = 0;
+  for (const auto &function : functions) {
+    count += static_cast<long long>(function.blocks_.size());
+  }
+  return count;
+}
+
 InlineCandidateInfo AnalyzeInlineCandidate(const IRFunctionNode &function) {
   InlineCandidateInfo info;
   info.block_count = static_cast<int>(function.blocks_.size());
@@ -1209,6 +1234,9 @@ void IRVisitor::OptimizeAggregateCopies() {
 }
 
 void IRVisitor::OptimizeShortFunctions() {
+  inline_stats_ = IRInlineStats{};
+  inline_stats_.instructions_before = CountModuleInstructions(functions_);
+  inline_stats_.blocks_before = CountModuleBlocks(functions_);
   bool changed = false;
   do {
     changed = false;
@@ -1231,6 +1259,8 @@ void IRVisitor::OptimizeShortFunctions() {
         inline_candidate_bodies.emplace(func_id, functions_[func_id]);
       }
     }
+    inline_stats_.eligible_functions =
+        std::max(inline_stats_.eligible_functions, static_cast<int>(inline_candidates.size()));
     if (inline_candidates.empty()) {
       break;
     }
@@ -1499,6 +1529,7 @@ void IRVisitor::OptimizeShortFunctions() {
               inline_call(instruction);
               block_changed = true;
               changed = true;
+              ++inline_stats_.callsites_inlined;
               continue;
             }
           }
@@ -1515,7 +1546,12 @@ void IRVisitor::OptimizeShortFunctions() {
         }
       }
     }
+    if (changed) {
+      ++inline_stats_.rounds;
+    }
   } while (changed);
+  inline_stats_.instructions_after = CountModuleInstructions(functions_);
+  inline_stats_.blocks_after = CountModuleBlocks(functions_);
 }
 
 int IRVisitor::GetPreviousBlockHelper(const int func_id, const int start_block, const int target_block,
@@ -3764,4 +3800,8 @@ const std::vector<IRStructNode> &IRVisitor::GetIRStructs() const {
 
 int IRVisitor::GetMainFuncID() const {
   return this->main_function_id_;
+}
+
+const IRInlineStats &IRVisitor::GetInlineStats() const {
+  return this->inline_stats_;
 }
