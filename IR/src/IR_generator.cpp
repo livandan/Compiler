@@ -1252,6 +1252,29 @@ void IRVisitor::OptimizeShortFunctions() {
 
         int current_block_id = original_block_id;
         auto *current_block = &caller.blocks_[current_block_id];
+        std::map<int, int> value_aliases;
+
+        auto resolve_alias = [&](int var_id) {
+          std::set<int> visited;
+          while (value_aliases.contains(var_id) && !visited.contains(var_id)) {
+            visited.insert(var_id);
+            var_id = value_aliases.at(var_id);
+          }
+          return var_id;
+        };
+
+        auto apply_aliases_to_instruction = [&](IRInstruction &instruction) {
+          for (const auto &[from, to] : value_aliases) {
+            ReplaceInstructionUses(instruction, from, resolve_alias(to));
+          }
+        };
+
+        auto record_value_alias = [&](const int from, const int to) {
+          const int resolved_to = resolve_alias(to);
+          if (from >= 0 && resolved_to >= 0 && from != resolved_to) {
+            value_aliases[from] = resolved_to;
+          }
+        };
 
         auto update_successor_phis = [&](const int old_pred, const int new_pred) {
           if (old_pred == new_pred || current_block->instructions_.empty()) {
@@ -1266,6 +1289,9 @@ void IRVisitor::OptimizeShortFunctions() {
               for (auto &condition : phi.conditions) {
                 if (condition.from_block_id == old_pred) {
                   condition.from_block_id = new_pred;
+                  if (!condition.is_const) {
+                    condition.var_id = resolve_alias(condition.var_id);
+                  }
                 }
               }
             }
@@ -1465,9 +1491,7 @@ void IRVisitor::OptimizeShortFunctions() {
               } else if (instruction.instruction_type_ == variable_ret_) {
                 if (call_instruction.instruction_type_ == non_void_call_) {
                   const int mapped_ret = map_var(instruction.result_id_);
-                  target_block.AddSelect(0b100, call_instruction.result_id_, 1,
-                      call_instruction.result_type_, mapped_ret,
-                      call_instruction.result_type_, mapped_ret);
+                  record_value_alias(call_instruction.result_id_, mapped_ret);
                 }
                 target_block.AddUnconditionalBranch(after_block_id);
               } else if (instruction.instruction_type_ == void_ret_) {
@@ -1482,29 +1506,37 @@ void IRVisitor::OptimizeShortFunctions() {
         };
 
         for (const auto &instruction : original_block.instructions_) {
-          if ((instruction.instruction_type_ == non_void_call_ ||
-               instruction.instruction_type_ == void_call_) &&
-              instruction.function_name_ != caller_id &&
-              inline_candidates.contains(instruction.function_name_)) {
-            const auto &callee = functions_[instruction.function_name_];
-            const auto &candidate_info = inline_candidates.at(instruction.function_name_);
-            if (instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
-                ((instruction.instruction_type_ == non_void_call_ &&
+          auto remapped_instruction = instruction;
+          apply_aliases_to_instruction(remapped_instruction);
+          if ((remapped_instruction.instruction_type_ == non_void_call_ ||
+               remapped_instruction.instruction_type_ == void_call_) &&
+              remapped_instruction.function_name_ != caller_id &&
+              inline_candidates.contains(remapped_instruction.function_name_)) {
+            const auto &callee = functions_[remapped_instruction.function_name_];
+            const auto &candidate_info = inline_candidates.at(remapped_instruction.function_name_);
+            if (remapped_instruction.function_call_arguments_.size() == callee.parameter_types_.size() &&
+                ((remapped_instruction.instruction_type_ == non_void_call_ &&
                   callee.return_type_->basic_type != unit_type) ||
-                 (instruction.instruction_type_ == void_call_ &&
+                 (remapped_instruction.instruction_type_ == void_call_ &&
                   callee.return_type_->basic_type == unit_type)) &&
                 candidate_info.eligible) {
-              inline_call(instruction);
+              inline_call(remapped_instruction);
               block_changed = true;
               changed = true;
               continue;
             }
           }
-          current_block->instructions_.push_back(instruction);
+          current_block->instructions_.push_back(remapped_instruction);
         }
 
         if (block_changed) {
           update_successor_phis(original_block_id, current_block_id);
+          for (const auto &[from, to] : value_aliases) {
+            const int resolved_to = resolve_alias(to);
+            if (from != resolved_to) {
+              ReplaceAllUses(caller, from, resolved_to);
+            }
+          }
           if (current_block->instructions_.empty()) {
             current_block->AddVoidReturn();
           }
