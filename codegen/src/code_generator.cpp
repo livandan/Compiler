@@ -2011,7 +2011,87 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
       inst.rs2_ = -1;
     } else if (inst.instruction_type_ == r_addi_ && inst.imm_ == 0) {
       inst.instruction_type_ = r_mv_;
-      inst.imm_ = -1;
+      inst.imm_= -1;
+    }
+  }
+
+  // B2: strip redundant `addiw rd, rs, 0` (sext.w) when `rs` is already known
+  // to hold a 32-bit sign-extended value.  Replacing with `mv rd, rs` lets the
+  // downstream copy-propagation and dead-move passes remove the copy when its
+  // only role was to sign-extend an already-sign-extended value.  Track the
+  // set of registers known sext at each program point; conservatively assume a
+  // register is non-sext at block entry.
+  {
+    std::uint32_t sext_regs = 0;
+    auto is_sext = [&](int reg) {
+      return reg == 0 || (reg > 0 && reg < 32 && (sext_regs & (1u << reg)));
+    };
+    auto set_sext = [&](int reg, bool val) {
+      if (reg <= 0 || reg >= 32) return;
+      if (val) sext_regs |= (1u << reg);
+      else sext_regs &= ~(1u << reg);
+    };
+    for (auto &inst : r_block.instructions_) {
+      const auto t = inst.instruction_type_;
+      switch (t) {
+        // 32-bit-producing ops: result is sign-extended.
+        case r_addw_: case r_subw_: case r_sllw_: case r_srlw_: case r_sraw_:
+        case r_mulw_: case r_divw_: case r_divuw_: case r_remw_: case r_remuw_:
+        case r_addiw_: case r_slliw_: case r_srliw_: case r_sraiw_:
+        case r_lb_: case r_lbu_: case r_lh_: case r_lhu_: case r_lw_:
+        case r_slt_: case r_slti_: case r_sltu_: case r_sltiu_:
+          if (t == r_addiw_ && inst.imm_ == 0 && is_sext(inst.rs1_)) {
+            // Redundant sext.w on already-sext value -- turn into a plain mv
+            // so LocalCopyPropagate + RemoveDeadMoves can eliminate it.
+            fprintf(stderr, "B2: convert addiw rs1=%d rd=%d\n", inst.rs1_, inst.rd_);
+            inst.instruction_type_ = r_mv_;
+            inst.imm_ = -1;
+          } else if (t == r_addiw_ && inst.imm_ == 0) {
+            fprintf(stderr, "B2: no-convert addiw rs1=%d rd=%d sext_regs=0x%x\n", inst.rs1_, inst.rd_, sext_regs);
+          }
+          set_sext(inst.rd_, true);
+          break;
+        // Loads that produce values whose sext state we don't know for i32.
+        case r_ld_:
+          set_sext(inst.rd_, false);
+          break;
+        // 64-bit arithmetic: result may not be sext.
+        case r_add_: case r_sub_: case r_sll_: case r_srl_: case r_sra_:
+        case r_and_: case r_or_: case r_xor_:
+        case r_mul_: case r_div_: case r_divu_: case r_rem_: case r_remu_:
+        case r_addi_: case r_andi_: case r_ori_: case r_xori_:
+        case r_slli_: case r_srli_: case r_srai_:
+        case r_lui_: case r_auipc_: case r_la_:
+          set_sext(inst.rd_, false);
+          break;
+        // Copies inherit sext state from the source.
+        case r_mv_:
+          set_sext(inst.rd_, is_sext(inst.rs1_));
+          break;
+        // li with a value that fits in a signed 32-bit is sext by construction.
+        case r_li_:
+          set_sext(inst.rd_, inst.imm_ >= INT32_MIN && inst.imm_ <= INT32_MAX);
+          break;
+        // Calls clobber the caller-saved set; treat i32-typed return regs as
+        // sext (ABI guarantee for functions returning i32).  Callee-saved
+        // registers keep their prior state.
+        case r_call_:
+          sext_regs &= ~0xf000ffe0u;  // clear x1, x5..x7, x10..x17, x28..x31
+          set_sext(1, false);    // ra: irrelevant
+          set_sext(10, true);    // a0: return
+          set_sext(11, true);    // a1: return
+          break;
+        // Terminators and stores don't produce values we track.
+        case r_sb_: case r_sh_: case r_sw_: case r_sd_:
+        case r_beq_: case r_bne_: case r_blt_: case r_bge_:
+        case r_bltu_: case r_bgeu_: case r_beqz_: case r_bnez_:
+        case r_j_: case r_ret_: case r_jal_: case r_jalr_: case r_jr_:
+          break;
+        default:
+          // Unknown: conservatively clear the destination if any.
+          if (inst.rd_ >= 0 && inst.rd_ < 32) set_sext(inst.rd_, false);
+          break;
+      }
     }
   }
 
@@ -2131,6 +2211,33 @@ void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
             (next.rd_ == inst.rd_ ||
              !RegisterUsedBeforeDef(r_block.instructions_, i + 2, inst.rd_))) {
           emit(RISCVInstruction(r_addi_, next.rd_, other_reg, -1, inst.imm_, -1));
+          ++i;
+          continue;
+        }
+      }
+    }
+
+    if (inst.instruction_type_ == r_addiw_ && inst.imm_ == 0 &&
+        i + 1 < static_cast<int>(r_block.instructions_.size())) {
+      // B2: `addiw rd, rs, 0` is a sign-extending copy that only affects the
+      // upper 32 bits.  If the sole user is a sub-word store (sb/sh/sw) that
+      // reads only the low bits, drop the addiw and let the store read `rs`
+      // directly.  ForwardScalarStackStoreLoads inserts this addiw when it
+      // forwards a `lw` off a stack slot; the store consumer sees the same
+      // low 32 bits either way.
+      const RISCVInstruction &next = r_block.instructions_[i + 1];
+      const bool store_uses_low_only =
+          (next.instruction_type_ == r_sb_ || next.instruction_type_ == r_sh_ ||
+           next.instruction_type_ == r_sw_) &&
+          next.rs2_ == inst.rd_ && next.rs1_ != inst.rd_;
+      if (store_uses_low_only) {
+        const bool rd_dead =
+            !live_out_regs.contains(inst.rd_) &&
+            !RegisterUsedBeforeDef(r_block.instructions_, i + 2, inst.rd_);
+        if (rd_dead) {
+          RISCVInstruction new_store = next;
+          new_store.rs2_ = inst.rs1_;
+          emit(new_store);
           ++i;
           continue;
         }
