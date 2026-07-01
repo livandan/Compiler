@@ -130,7 +130,7 @@ instructions) into RISC-V 32-bit assembly.
 The following list follows the order in which the current compiler
 pipeline runs these optimizations.
 
-### 1. Logical-expression IR lowering
+### 1. Short-circuit logical IR lowering
 
 `&&` and `||` expressions are lowered directly as short-circuit control flow.
 Nested same-operator logical chains are flattened into a worklist-style branch
@@ -139,33 +139,52 @@ deep recursive branch trees before later passes.
 
 ### 2. Aggregate-copy cleanup in IR
 
-After IR generation, obvious aggregate-copy artifacts are removed before and
-after inlining. The pass forwards return slots and rewrites patterns such as
-"temporary aggregate result followed by memcpy/memset into the real
+After the AST has been lowered to IR, `IRVisitor::Visit(Crate)` first removes
+obvious aggregate-copy artifacts. It forwards return slots and rewrites patterns
+such as "temporary aggregate result followed by memcpy/memset into the real
 destination" so the producer writes to the final destination directly. It also
 removes alloca entries whose temporary storage becomes unused.
 
 ### 3. Short-function inlining
 
-Small scalar functions are inlined at IR level. The inliner handles single-block
-helpers and small acyclic helpers with limited branching, remaps variables and
-blocks, preserves phi inputs, and avoids recursive or call-containing callees.
-This reduces call overhead and exposes more code to Mem2Reg and later backend
-optimizations.
+Small scalar functions are inlined at IR level after the first aggregate cleanup.
+The inliner handles single-block helpers and small acyclic helpers with limited
+branching, remaps variables and blocks, preserves phi inputs, avoids recursive
+call chains, and stops before callers become too large. Direct variable returns
+are remapped to the caller's result when possible, avoiding artificial
+select-as-copy instructions.
 
-### 4. Mem2Reg and local IR cleanup
+### 4. Second aggregate-copy cleanup
+
+Inlining can expose new aggregate-return and memcpy/memset forwarding patterns,
+so the aggregate-copy cleanup runs a second time immediately after inlining.
+
+### 5. Mem2Reg SSA promotion
 
 Promotable scalar allocas are converted to SSA using CFG, dominator and
 dominance-frontier information. Loads are replaced by reaching definitions, and
 stores/allocas that become unnecessary are removed.
 
 During replacement, constants are propagated through common binary operations,
-comparisons, branches, selects, returns and phi operands. The pass then removes
-dead instructions, deletes dead phi cycles with a worklist, simplifies trivial
-constant phis, removes unreachable blocks, redirects jump-only blocks when it is
-safe for phi semantics, and merges some phi-only copy blocks.
+comparisons, branches, selects, returns and phi operands. The pass uses a
+use-list to avoid repeated full-IR scans.
 
-### 5. Phi lowering with parallel-copy handling
+### 6. Post-Mem2Reg IR cleanup
+
+After promotion, Mem2Reg removes dead loads/stores, deletes dead phi cycles by
+starting from non-phi uses, removes unreachable blocks, redirects jump-only
+blocks when it is safe for phi semantics, eliminates trivial constant phis,
+propagates copy aliases through phi inputs, deletes trivial selects, and merges
+some phi-only copy blocks.
+
+### 7. Block layout planning
+
+Codegen first computes the final block layout. The layout follows likely
+fall-through chains and prefers useful fall-through successors, so later branch
+lowering can remove jumps to the next block or invert branches to use the
+fall-through edge.
+
+### 8. Phi lowering with parallel-copy handling
 
 Codegen converts phi instructions into predecessor-edge move instructions. For
 variable-to-variable phi moves it builds a parallel-assignment graph and uses
@@ -173,20 +192,28 @@ temporaries to break cycles. Literal phi moves are emitted after variable moves
 on the same edge, preserving parallel-copy semantics when one phi writes a value
 another phi still needs to read.
 
-### 6. Stack-frame layout optimization
+### 9. Leaf detection and initial stack layout
 
-The initial stack layout gives every value a stack home. After register
-allocation, `CompactStackFrame` rebuilds offsets and packs the final frame. It
-scores stack slots by use hotness, loop depth, phi traffic, pointer/address use
-and call-crossing liveness, then places hotter and call-sensitive slots at
-smaller offsets. Leaf functions also skip the temporary nested-call save area,
-shrinking their frames.
+Before register allocation, codegen detects leaf functions and gives every
+stack-resident value an initial stack home. Leaf functions skip the temporary
+nested-call save area, shrinking their frames.
 
-### 7. Graph-coloring register allocation
+### 10. Graph-coloring register allocation
 
 Scalar IR results, loads, pointer loads, GEP results, selects and scalar phis
 are eligible for register allocation. Direct-branch compare results are kept
 stack-bound because they can be folded into the final branch instruction.
+
+Variable classification ignores instructions that do not define a fresh SSA
+value but still carry an operand id in `IRInstruction::result_id_` — returns,
+stores, branches, void calls, and `builtin_memcpy`. Without this guard, a phi
+result whose id coincides with the operand of such an instruction (for
+example `var.12` in `norm`, where `ret i32 %var.12` puts 12 in
+`result_id_`) is wrongly stack-bound by the catch-all `default` arm of the
+classifier and is never promoted, so its phi merge falls through to
+`sw`/`lw` against a stack slot. Excluding these opcodes keeps the phi result
+allocatable and lets coalescing land it in a register on every predecessor
+edge.
 
 The allocator uses bitset-based liveness, builds an interference graph, records
 move edges from phi moves, and colors it with Chaitin-Briggs style simplify,
@@ -195,26 +222,39 @@ non-interfering phi/copy-related values share a physical register and removes
 many generated moves.
 
 Spill selection is cost-based: values used often, used in pointer/address
-operations, used by phis, used as branch conditions or live across calls get a
-higher spill cost. The selected spill is the lowest
+operations, used by phis, used in deeper loops, used as branch conditions or
+live across calls get a higher spill cost. The selected spill is the lowest
 `spill_cost / current_degree` candidate, so hot values are less likely to be
-spilled just because they have many interference edges. The previous fixed cap
-on register-allocation candidates has been removed.
+spilled just because they have many interference edges. The previous fixed cap on
+register-allocation candidates has been removed.
 
 Leaf functions prefer caller-saved registers first. Non-leaf functions prefer
 callee-saved registers first, because those registers are saved once in the
 prologue/epilogue while caller-saved registers may need traffic around calls.
 
-### 8. Call-site save reduction
+### 11. Final stack-frame compaction
 
-Before final instruction emission, codegen computes variable liveness around
-each IR instruction and converts it to the set of live caller-saved physical
-registers. Calls save only the caller-saved registers that are live at that call
-site, instead of saving the full caller-saved set for the whole function. A
-small peephole later removes restore-save pairs when a restored register is not
-needed before being saved again.
+After register allocation, `CompactStackFrame` rebuilds offsets and packs the
+final frame. It scores stack slots by use hotness, loop depth, phi traffic,
+pointer/address use and call-crossing liveness, then places hotter and
+call-sensitive slots at smaller offsets.
 
-### 9. Cheap instruction selection and branch lowering
+### 12. Short-lived GEP lowering
+
+Before final instruction emission, codegen finds stack-bound GEP results that
+are used exactly once by the immediately following address operation. Those GEP
+temporaries are removed from the location map, and the address is emitted
+directly into the consuming load/store sequence.
+
+### 13. Call-site save reduction
+
+Codegen computes variable liveness around each IR instruction and converts it to
+the set of live caller-saved physical registers. Calls save only the
+caller-saved registers that are live at that call site and actually clobbered by
+argument setup or the callee, instead of saving the full caller-saved set for the
+whole function.
+
+### 14. Cheap instruction selection and branch lowering
 
 Arithmetic with constants prefers immediate instructions such as `addiw`,
 `andi`, `ori`, shifts with immediates, and cheap constant-multiply sequences
@@ -222,14 +262,29 @@ when possible. Compare results used only by the following conditional branch
 are lowered directly into RISC-V branch instructions, avoiding a separate
 boolean materialization.
 
-Block layout follows likely fall-through chains. Unconditional jumps to the
-next layout block are removed, and conditional branches are inverted or emitted
-as direct label branches when one successor is the fall-through block.
+During block emission, phi-induced moves are placed before the terminator, and
+branch-condition reloads that may be clobbered by those moves are deferred until
+after the moves. Unconditional jumps to the next layout block are removed, and
+conditional branches are inverted or emitted as direct label branches when one
+successor is the fall-through block.
 
-### 10. Backend peepholes and branch relaxation
+### 15. Block-local backend peepholes
 
-The final assembly pass removes redundant self-moves, canonicalizes zero-adds
-into moves, folds `li` plus arithmetic into immediate forms when possible, and
-removes some redundant caller-save restore/save pairs. A far-branch relaxation
-pass then expands direct conditional branches that exceed the RISC-V branch
-range, while keeping close branches compact.
+Each emitted block is cleaned locally. The peephole removes redundant
+restore-save pairs, forwards scalar stack stores to following loads, propagates
+local register copies, removes dead moves, canonicalizes zero-adds into moves,
+removes self-moves, folds `li` plus arithmetic into immediate forms, and removes
+some temporary sign-extension/move-back pairs.
+
+### 16. Dead stack-store elimination
+
+After all blocks of a function have been emitted, codegen removes stack-relative
+stores whose slots are never read and cannot be reached through tracked
+sp-derived pointers. Outgoing stack arguments and potentially aliased regions are
+kept.
+
+### 17. Far-branch relaxation
+
+The final backend pass checks direct conditional branch distances. Branches that
+fit the RISC-V branch range remain compact; branches that are too far are marked
+for long-branch emission.
