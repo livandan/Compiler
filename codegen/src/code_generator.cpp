@@ -1967,6 +1967,16 @@ static void RemoveDeadMoves(
       continue;
     }
 
+    if (t == r_ret_) {
+      // r_ret_ has no explicit operands but implicitly uses the return value
+      // register a0 (and a1 for compound returns) plus ra.  Mark them live so
+      // a return-value-setup `mv a0, sX` just before the ret is preserved.
+      live.insert(1);   // ra
+      live.insert(10);  // a0
+      live.insert(11);  // a1
+      continue;
+    }
+
     if (t == r_mv_) {
       const int dst = inst.rd_;
       if (dst >= 0 && dst < 32 && live.find(dst) == live.end()) {
@@ -1986,6 +1996,25 @@ static void RemoveDeadMoves(
 
 void CodeGenerator::PeepholeOptimizeBlock(RISCVBlock &r_block,
     const std::set<int> &live_out_regs) const {
+  // Canonicalize implicit copies (add/addi with x0/imm=0) to r_mv_ so the
+  // subsequent copy-propagation and dead-move passes can see them.  Without
+  // this, patterns like `add t0, s4, x0; slli t0, t0, K` (emitted by GEP
+  // index scaling) survive into the final assembly as `mv t0, s4; slli t0,
+  // t0, K` because the add->mv folding only runs in the final emit step.
+  for (auto &inst : r_block.instructions_) {
+    if (inst.instruction_type_ == r_add_ && inst.rs2_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.rs2_ = -1;
+    } else if (inst.instruction_type_ == r_add_ && inst.rs1_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.rs1_ = inst.rs2_;
+      inst.rs2_ = -1;
+    } else if (inst.instruction_type_ == r_addi_ && inst.imm_ == 0) {
+      inst.instruction_type_ = r_mv_;
+      inst.imm_ = -1;
+    }
+  }
+
   std::vector<RISCVInstruction> optimized;
   optimized.reserve(r_block.instructions_.size());
   std::vector<char> removed_indices(r_block.instructions_.size(), 0);
@@ -2610,6 +2639,23 @@ void CodeGenerator::Generate() {
         const auto it = RISCV_functions_[i].location_.find(var);
         if (it != RISCV_functions_[i].location_.end() && it->second.first) {
           live_out_regs[block_id].insert(it->second.second);
+        }
+      }
+    }
+    // PhiToMove emits a register move at the end of each predecessor block,
+    // writing into the phi result's register.  IR-level liveness records the
+    // phi result as defined in the phi's own block, so its register is not
+    // naturally in live_out_regs of the predecessor.  Without this, the
+    // RemoveDeadMoves pass can incorrectly kill the phi resolution move.
+    for (const auto &[succ_block_id, succ_block] : IR_functions_[i].blocks_) {
+      for (const auto &phi : succ_block.phi_instructions_) {
+        const auto loc_it = RISCV_functions_[i].location_.find(phi.result_id);
+        if (loc_it == RISCV_functions_[i].location_.end() || !loc_it->second.first) {
+          continue;
+        }
+        const int reg = loc_it->second.second;
+        for (const auto &condition : phi.conditions) {
+          live_out_regs[condition.from_block_id].insert(reg);
         }
       }
     }
